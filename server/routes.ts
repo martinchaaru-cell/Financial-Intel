@@ -111,10 +111,16 @@ export async function registerRoutes(
     res.status(201).json(pred);
   });
 
-  // Admin seed
-  app.post(api.admin.seed.path, async (_req, res) => {
-    const result = await storage.seedIfEmpty();
-    res.json(result);
+  // Admin fetch daily fixtures
+  app.post("/api/admin/fetch-fixtures", async (req, res) => {
+    const date = req.body.date || new Date().toISOString().split('T')[0];
+    try {
+      const { fetchDailyFixtures } = await import("./fetcher");
+      await fetchDailyFixtures(date);
+      res.json({ message: `Fixtures for ${date} fetched and predicted.` });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
   return httpServer;

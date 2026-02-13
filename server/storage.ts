@@ -333,130 +333,41 @@ export class DatabaseStorage implements IStorage {
   }
 
   async seed(): Promise<SeedStatusResponse> {
-    // Create baseline sports/leagues/teams/games/predictions.
-    // Safe to run multiple times: checks for existing rows by slug.
-
-    const existingSports = await db.select().from(sports);
+    // Check if we already have sports/leagues to avoid duplicates
     const existingLeagues = await db.select().from(leagues);
-    const existingTeams = await db.select().from(teams);
-    const existingGames = await db.select().from(games);
-    const existingPreds = await db.select().from(predictions);
-
-    const haveAny =
-      existingSports.length +
-        existingLeagues.length +
-        existingTeams.length +
-        existingGames.length +
-        existingPreds.length >
-      0;
-
-    if (haveAny) {
+    if (existingLeagues.length > 0) {
       return {
         seeded: false,
         counts: {
-          sports: existingSports.length,
-          leagues: existingLeagues.length,
-          teams: existingTeams.length,
-          games: existingGames.length,
-          predictions: existingPreds.length,
+          sports: (await db.select({ c: sql<number>`count(*)` }).from(sports))[0].c,
+          leagues: (await db.select({ c: sql<number>`count(*)` }).from(leagues))[0].c,
+          teams: (await db.select({ c: sql<number>`count(*)` }).from(teams))[0].c,
+          games: (await db.select({ c: sql<number>`count(*)` }).from(games))[0].c,
+          predictions: (await db.select({ c: sql<number>`count(*)` }).from(predictions))[0].c,
         },
       };
     }
 
-    const [basketball] = await db
-      .insert(sports)
-      .values({ name: "Basketball", slug: "basketball" })
-      .returning();
     const [soccer] = await db
       .insert(sports)
       .values({ name: "Soccer", slug: "soccer" })
       .returning();
 
-    const [nba] = await db
+    const [epl] = await db
       .insert(leagues)
-      .values({ sportId: basketball.id, name: "NBA", slug: "nba" })
-      .returning();
-    const [mls] = await db
-      .insert(leagues)
-      .values({ sportId: soccer.id, name: "MLS", slug: "mls" })
+      .values({ sportId: soccer.id, name: "Premier League", slug: "epl" })
       .returning();
 
-    const teamDefs = [
-      { leagueId: nba.id, name: "Boston Celtics", shortName: "BOS", slug: "bos" },
-      { leagueId: nba.id, name: "Los Angeles Lakers", shortName: "LAL", slug: "lal" },
-      { leagueId: nba.id, name: "Golden State Warriors", shortName: "GSW", slug: "gsw" },
-      { leagueId: nba.id, name: "Milwaukee Bucks", shortName: "MIL", slug: "mil" },
-      { leagueId: mls.id, name: "LA Galaxy", shortName: "LAG", slug: "la-galaxy" },
-      { leagueId: mls.id, name: "Seattle Sounders", shortName: "SEA", slug: "seattle" },
-      { leagueId: mls.id, name: "Inter Miami", shortName: "MIA", slug: "inter-miami" },
-      { leagueId: mls.id, name: "Atlanta United", shortName: "ATL", slug: "atlanta" },
-    ];
-
-    const insertedTeams = await db.insert(teams).values(teamDefs).returning();
-    const bySlug = new Map(insertedTeams.map((t) => [t.slug, t] as const));
-
-    const now = new Date();
-    const oneHour = 60 * 60 * 1000;
-
-    const gameDefs: Array<CreateGameRequest> = [
-      {
-        leagueId: nba.id,
-        startTime: new Date(now.getTime() + oneHour * 6),
-        homeTeamId: bySlug.get("bos")!.id,
-        awayTeamId: bySlug.get("lal")!.id,
-        status: "scheduled",
-      },
-      {
-        leagueId: nba.id,
-        startTime: new Date(now.getTime() + oneHour * 30),
-        homeTeamId: bySlug.get("gsw")!.id,
-        awayTeamId: bySlug.get("mil")!.id,
-        status: "scheduled",
-      },
-      {
-        leagueId: mls.id,
-        startTime: new Date(now.getTime() + oneHour * 10),
-        homeTeamId: bySlug.get("inter-miami")!.id,
-        awayTeamId: bySlug.get("seattle")!.id,
-        status: "scheduled",
-      },
-      {
-        leagueId: mls.id,
-        startTime: new Date(now.getTime() - oneHour * 12),
-        homeTeamId: bySlug.get("la-galaxy")!.id,
-        awayTeamId: bySlug.get("atlanta")!.id,
-        status: "final",
-      },
-    ];
-
-    const insertedGames = await db.insert(games).values(gameDefs).returning();
-
-    // Add scores for the final game (last one)
-    const finalGame = insertedGames[insertedGames.length - 1];
-    await db
-      .update(games)
-      .set({ homeScore: 2, awayScore: 1 })
-      .where(eq(games.id, finalGame.id));
-
-    // Create an initial prediction for each game
-    for (const g of insertedGames) {
-      await this.createPrediction({ gameId: g.id });
-    }
-
-    const [cSports] = await db.select({ c: sql<number>`count(*)` }).from(sports);
-    const [cLeagues] = await db.select({ c: sql<number>`count(*)` }).from(leagues);
-    const [cTeams] = await db.select({ c: sql<number>`count(*)` }).from(teams);
-    const [cGames] = await db.select({ c: sql<number>`count(*)` }).from(games);
-    const [cPreds] = await db.select({ c: sql<number>`count(*)` }).from(predictions);
-
+    // The logic below for games/teams will be handled by live fetching
+    // but we can seed some placeholder teams if needed for the engine
     return {
       seeded: true,
       counts: {
-        sports: Number(cSports.c),
-        leagues: Number(cLeagues.c),
-        teams: Number(cTeams.c),
-        games: Number(cGames.c),
-        predictions: Number(cPreds.c),
+        sports: 1,
+        leagues: 1,
+        teams: 0,
+        games: 0,
+        predictions: 0,
       },
     };
   }
