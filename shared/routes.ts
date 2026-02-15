@@ -31,6 +31,7 @@ export const api = {
           status: z.string().optional(),
           from: z.string().optional(),
           to: z.string().optional(),
+          sortBy: z.enum(["date", "probability"]).optional(),
         })
         .optional(),
       responses: {

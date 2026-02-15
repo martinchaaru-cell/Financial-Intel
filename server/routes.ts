@@ -16,6 +16,7 @@ export async function registerRoutes(
       status: input?.status,
       from: input?.from ? new Date(input.from) : undefined,
       to: input?.to ? new Date(input.to) : undefined,
+      sortBy: input?.sortBy as "date" | "probability",
     };
 
     const games = await storage.listGamesWithTeamsAndLatestPrediction(filters);
