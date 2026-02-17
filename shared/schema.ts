@@ -90,6 +90,10 @@ export const predictions = pgTable("predictions", {
   // Optional: derived recommendation
   recommendedPick: text("recommended_pick"),
 
+  // Forensic report (42-check bilateral report)
+  forensicReport: text("forensic_report"),
+  checksPassed: integer("checks_passed").default(0),
+
   // Actual outcomes for grading
   isFinal: boolean("is_final").notNull().default(false),
   winner: text("winner"),

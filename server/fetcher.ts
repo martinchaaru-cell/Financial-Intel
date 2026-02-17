@@ -60,13 +60,15 @@ export async function fetchDailyFixtures(date: string) {
         }).returning();
     }
 
-    // 3. Upsert Game
+    // 3. Upsert Game with EAT time handling
+    // EAT is UTC+3
+    const fixtureDate = new Date(fixture.date);
     const gameData = {
         leagueId: league.id,
-        startTime: new Date(fixture.date),
+        startTime: fixtureDate,
         homeTeamId: home.id,
         awayTeamId: away.id,
-        status: fixture.status.short === "FT" ? "final" : "scheduled",
+        status: fixture.status.short === "FT" ? "final" : (fixture.status.short === "NS" ? "scheduled" : "live"),
         homeScore: f.goals.home,
         awayScore: f.goals.away,
     };
@@ -75,7 +77,7 @@ export async function fetchDailyFixtures(date: string) {
         and(
             eq(games.homeTeamId, home.id),
             eq(games.awayTeamId, away.id),
-            sql`ABS(EXTRACT(EPOCH FROM (${games.startTime} - ${gameData.startTime}::timestamp))) < 3600`
+            sql`ABS(EXTRACT(EPOCH FROM (${games.startTime} - ${gameData.startTime}::timestamp))) < 43200` // 12 hour window
         )
     ).limit(1);
 

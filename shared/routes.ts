@@ -63,6 +63,8 @@ export const api = {
                 awayWinProb: z.number(),
                 drawProb: z.number().nullable(),
                 recommendedPick: z.string().nullable(),
+                forensicReport: z.string().nullable(),
+                checksPassed: z.number().nullable(),
                 isFinal: z.boolean(),
                 winner: z.string().nullable(),
               })
