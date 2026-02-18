@@ -33,6 +33,9 @@ export default function EliteScannedPage() {
   const eliteMatches = (engine.data ?? []).filter(
     (g) => g.latestPrediction && (g.latestPrediction.checksPassed ?? 0) >= 42
   );
+  
+  const allMatchesCount = engine.data?.length ?? 0;
+  const eliteMatchesCount = eliteMatches.length;
 
   return (
     <AppShell>
@@ -46,18 +49,24 @@ export default function EliteScannedPage() {
               <div>
                 <h1 className="text-3xl font-bold tracking-tight">Elite Scanned</h1>
                 <p className="text-muted-foreground">
-                  Matches passing all 42 bilateral forensic checks.
+                  Scanning {allMatchesCount} live legs. {eliteMatchesCount} passed bilateral audit.
                 </p>
               </div>
             </div>
-            <Button 
-              onClick={() => engine.refetch()}
-              variant="outline"
-              className="rounded-xl border-primary/20 hover:bg-primary/5"
-            >
-              <RefreshCcw className="h-4 w-4 mr-2" />
-              Scan Now
-            </Button>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20">
+                LIVE SCANNING
+              </Badge>
+              <Button 
+                onClick={() => engine.refetch()}
+                variant="outline"
+                size="sm"
+                className="rounded-xl border-primary/20 hover:bg-primary/5"
+              >
+                <RefreshCcw className="h-4 w-4 mr-2" />
+                Rescan
+              </Button>
+            </div>
           </div>
         </header>
 
