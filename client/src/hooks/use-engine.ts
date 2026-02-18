@@ -40,6 +40,7 @@ export function useEngineGames(params?: {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to fetch engine games (${res.status})`);
       const json = await res.json();
+      console.log("[Elite] Matches fetched:", json.length);
       return parseWithLogging(api.engine.gamesWithPredictions.responses[200], json, "engine.gamesWithPredictions");
     },
   });

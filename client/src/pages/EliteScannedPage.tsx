@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
-import { ShieldCheck, Info } from "lucide-react";
+import { ShieldCheck, Info, RefreshCcw, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -38,16 +38,26 @@ export default function EliteScannedPage() {
     <AppShell>
       <div className="anim-in">
         <header className="glass rounded-3xl p-6 sm:p-7">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 rounded-xl bg-primary/10 text-primary">
-              <ShieldCheck className="h-6 w-6" />
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-primary/10 text-primary">
+                <ShieldCheck className="h-6 w-6" />
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold tracking-tight">Elite Scanned</h1>
+                <p className="text-muted-foreground">
+                  Matches passing all 42 bilateral forensic checks.
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight">Elite Scanned</h1>
-              <p className="text-muted-foreground">
-                Matches passing all 42 bilateral forensic checks.
-              </p>
-            </div>
+            <Button 
+              onClick={() => engine.refetch()}
+              variant="outline"
+              className="rounded-xl border-primary/20 hover:bg-primary/5"
+            >
+              <RefreshCcw className="h-4 w-4 mr-2" />
+              Scan Now
+            </Button>
           </div>
         </header>
 
@@ -89,8 +99,12 @@ export default function EliteScannedPage() {
                       </div>
                     </div>
 
-                    <div className="text-xl font-bold mb-4">
+                    <div className="text-xl font-bold mb-1">
                       {g.homeTeam.name} vs {g.awayTeam.name}
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground mb-4">
+                      <Globe className="h-3 w-3" />
+                      <span>League #{g.leagueId}</span>
                     </div>
 
                     <ProbabilityBar
