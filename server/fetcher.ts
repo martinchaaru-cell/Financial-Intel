@@ -35,7 +35,8 @@ export async function fetchDailyFixtures(date: string) {
         [league] = await db.insert(leagues).values({
             sportId: sport.id,
             name: leagueData.name,
-            slug: leagueData.name.toLowerCase().replace(/ /g, '-')
+            slug: leagueData.name.toLowerCase().replace(/ /g, '-'),
+            country: f.league.country,
         }).returning();
     }
 

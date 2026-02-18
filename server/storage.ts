@@ -324,10 +324,15 @@ export class DatabaseStorage implements IStorage {
           isFinal: predictions.isFinal,
           winner: predictions.winner,
         },
+        league: {
+          name: leagues.name,
+          country: leagues.country,
+        },
       })
       .from(games)
       .innerJoin(teams, eq(teams.id, games.homeTeamId))
       .innerJoin(sql`teams as away_team`, sql`away_team.id = ${games.awayTeamId}`)
+      .innerJoin(leagues, eq(leagues.id, games.leagueId))
       .leftJoin(
         predictions,
         and(
@@ -343,6 +348,8 @@ export class DatabaseStorage implements IStorage {
     const result = rows.map((r) => ({
       id: r.game.id,
       leagueId: r.game.leagueId,
+      leagueName: r.league.name,
+      country: r.league.country ?? "International",
       startTime: r.game.startTime.toISOString(),
       status: r.game.status,
       homeScore: r.game.homeScore ?? null,

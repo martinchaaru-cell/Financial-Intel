@@ -39,6 +39,8 @@ export const api = {
           z.object({
             id: z.number(),
             leagueId: z.number(),
+            leagueName: z.string().optional(),
+            country: z.string().optional(),
             startTime: z.string(),
             status: z.string(),
             homeScore: z.number().nullable(),

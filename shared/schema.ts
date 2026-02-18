@@ -50,6 +50,7 @@ export const leagues = pgTable("leagues", {
   sportId: integer("sport_id").notNull(),
   name: text("name").notNull(),
   slug: text("slug").notNull().unique(),
+  country: text("country"),
 });
 
 export type League = typeof leagues.$inferSelect;
@@ -153,6 +154,8 @@ export type PredictionsListResponse = Prediction[];
 export interface GameWithTeams {
   id: number;
   leagueId: number;
+  leagueName?: string;
+  country?: string;
   startTime: string; // ISO
   status: string;
   homeScore: number | null;

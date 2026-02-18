@@ -104,7 +104,7 @@ export default function EliteScannedPage() {
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground mb-4">
                       <Globe className="h-3 w-3" />
-                      <span>League #{g.leagueId}</span>
+                      <span>{g.country} • {g.leagueName}</span>
                     </div>
 
                     <ProbabilityBar
@@ -116,29 +116,20 @@ export default function EliteScannedPage() {
                       recommendedPick={pred.recommendedPick}
                     />
 
-                    <div className="mt-6 pt-4 border-t border-primary/10 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
+                    <div className="mt-6 pt-4 border-t border-primary/10">
+                      <div className="flex items-center justify-between mb-4">
                         <span className="text-xs font-semibold text-primary uppercase tracking-wider">
-                          Forensic Data
+                          Forensic Audit Report
                         </span>
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground">
-                                <Info className="h-3 w-3" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent className="max-w-xs p-3 font-mono text-[10px] leading-tight">
-                              <pre className="whitespace-pre-wrap">
-                                {pred.forensicReport}
-                              </pre>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
+                        <Badge variant="outline" className="text-[10px] border-primary/30">
+                          AUDITED BILATERAL
+                        </Badge>
                       </div>
-                      <Badge variant="outline" className="text-[10px] border-primary/30">
-                        AUDITED BILATERAL
-                      </Badge>
+                      <div className="bg-black/40 rounded-xl p-4 font-mono text-[10px] leading-tight overflow-y-auto max-h-48 custom-scrollbar border border-white/5">
+                        <pre className="whitespace-pre-wrap text-muted-foreground/90">
+                          {pred.forensicReport}
+                        </pre>
+                      </div>
                     </div>
                   </div>
                 );
