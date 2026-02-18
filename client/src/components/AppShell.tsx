@@ -7,6 +7,7 @@ import {
   Moon,
   Sun,
   Sparkles,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/ThemeProvider";
@@ -129,6 +130,12 @@ export default function AppShell({ children }: PropsWithChildren) {
                   label="Dashboard"
                   testId="nav-dashboard"
                   icon={<Activity className="h-4.5 w-4.5 text-foreground/90" />}
+                />
+                <NavItem
+                  href="/elite"
+                  label="Elite Scanned"
+                  testId="nav-elite"
+                  icon={<ShieldCheck className="h-4.5 w-4.5 text-primary" />}
                 />
                 <NavItem
                   href="/games"
