@@ -98,6 +98,7 @@ export const predictions = pgTable("predictions", {
   // Actual outcomes for grading
   isFinal: boolean("is_final").notNull().default(false),
   winner: text("winner"),
+  kingOfHillScore: doublePrecision("king_of_hill_score").default(0),
 });
 
 export type Prediction = typeof predictions.$inferSelect;

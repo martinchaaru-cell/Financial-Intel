@@ -15,6 +15,8 @@ import { StatPill } from "@/components/StatPill";
 import { cn } from "@/lib/utils";
 import { Flame, Filter, RefreshCcw } from "lucide-react";
 
+import { Link } from "wouter";
+
 function fmtDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleString(undefined, {

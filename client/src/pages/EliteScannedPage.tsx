@@ -5,7 +5,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
-import { ShieldCheck, Info, RefreshCcw, Globe } from "lucide-react";
+import { ShieldCheck, Info, RefreshCcw, Globe, Crown, ArrowRight } from "lucide-react";
+import { Link } from "wouter";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -30,9 +31,10 @@ export default function EliteScannedPage() {
     status: "scheduled",
   });
 
-  const eliteMatches = (engine.data ?? []).filter(
-    (g) => g.latestPrediction && (g.latestPrediction.checksPassed ?? 0) >= 42
-  );
+  const eliteMatches = (engine.data ?? [])
+    .filter((g) => g.latestPrediction && (g.latestPrediction.checksPassed ?? 0) >= 42)
+    .sort((a, b) => (b.latestPrediction?.kingOfHillScore ?? 0) - (a.latestPrediction?.kingOfHillScore ?? 0))
+    .slice(0, 3);
   
   const allMatchesCount = engine.data?.length ?? 0;
   const eliteMatchesCount = eliteMatches.length;
@@ -91,56 +93,57 @@ export default function EliteScannedPage() {
               {eliteMatches.map((g) => {
                 const pred = g.latestPrediction!;
                 return (
-                  <div
-                    key={g.id}
-                    className="rounded-3xl border border-primary/20 bg-primary/5 p-5 hover:bg-primary/8 transition-colors relative overflow-hidden group"
-                  >
-                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                      <ShieldCheck className="h-24 w-24 text-primary" />
-                    </div>
-
-                    <div className="flex justify-between items-start mb-4">
-                      <Badge className="bg-primary text-primary-foreground font-bold px-3">
-                        ELITE PASS: 42/42
-                      </Badge>
-                      <div className="text-xs text-muted-foreground font-mono">
-                        {fmtDate(g.startTime)}
+                  <Link key={g.id} href={`/game/${g.id}`}>
+                    <div
+                      className="rounded-3xl border border-primary/20 bg-primary/5 p-5 hover:bg-primary/8 transition-colors relative overflow-hidden group cursor-pointer"
+                    >
+                      <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                        <ShieldCheck className="h-24 w-24 text-primary" />
                       </div>
-                    </div>
 
-                    <div className="text-xl font-bold mb-1">
-                      {g.homeTeam.name} vs {g.awayTeam.name}
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground mb-4">
-                      <Globe className="h-3 w-3" />
-                      <span>{g.country} • {g.leagueName}</span>
-                    </div>
-
-                    <ProbabilityBar
-                      homeLabel={g.homeTeam.shortName}
-                      awayLabel={g.awayTeam.shortName}
-                      homeProb={pred.homeWinProb}
-                      awayProb={pred.awayWinProb}
-                      drawProb={pred.drawProb}
-                      recommendedPick={pred.recommendedPick}
-                    />
-
-                    <div className="mt-6 pt-4 border-t border-primary/10">
-                      <div className="flex items-center justify-between mb-4">
-                        <span className="text-xs font-semibold text-primary uppercase tracking-wider">
-                          Forensic Audit Report
-                        </span>
-                        <Badge variant="outline" className="text-[10px] border-primary/30">
-                          AUDITED BILATERAL
+                      <div className="flex justify-between items-start mb-4">
+                        <Badge className="bg-primary text-primary-foreground font-bold px-3">
+                          ELITE PASS: 42/42
                         </Badge>
+                        <div className="text-xs text-muted-foreground font-mono">
+                          {fmtDate(g.startTime)}
+                        </div>
                       </div>
-                      <div className="bg-black/40 rounded-xl p-4 font-mono text-[10px] leading-tight overflow-y-auto max-h-48 custom-scrollbar border border-white/5">
-                        <pre className="whitespace-pre-wrap text-muted-foreground/90">
-                          {pred.forensicReport}
-                        </pre>
+
+                      <div className="text-xl font-bold mb-1">
+                        {g.homeTeam.name} vs {g.awayTeam.name}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-4">
+                        <Globe className="h-3 w-3" />
+                        <span>{g.country} • {g.leagueName}</span>
+                      </div>
+
+                      <ProbabilityBar
+                        homeLabel={g.homeTeam.shortName}
+                        awayLabel={g.awayTeam.shortName}
+                        homeProb={pred.homeWinProb}
+                        awayProb={pred.awayWinProb}
+                        drawProb={pred.drawProb}
+                        recommendedPick={pred.recommendedPick}
+                      />
+
+                      <div className="mt-6 pt-4 border-t border-primary/10">
+                        <div className="flex items-center justify-between mb-4">
+                          <span className="text-xs font-semibold text-primary uppercase tracking-wider">
+                            Forensic Audit Report
+                          </span>
+                          <Badge variant="outline" className="text-[10px] border-primary/30">
+                            AUDITED BILATERAL
+                          </Badge>
+                        </div>
+                        <div className="bg-black/40 rounded-xl p-4 font-mono text-[10px] leading-tight overflow-y-auto max-h-48 custom-scrollbar border border-white/5">
+                          <pre className="whitespace-pre-wrap text-muted-foreground/90 line-clamp-3">
+                            {pred.forensicReport}
+                          </pre>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  </Link>
                 );
               })}
             </div>

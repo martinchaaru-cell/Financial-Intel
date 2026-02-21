@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import NotFound from "@/pages/not-found";
 import DashboardPage from "@/pages/DashboardPage";
 import EliteScannedPage from "@/pages/EliteScannedPage";
+import GameDetailPage from "@/pages/GameDetailPage";
 import GamesPage from "@/pages/GamesPage";
 import AboutPage from "@/pages/AboutPage";
 
@@ -16,6 +17,7 @@ function Router() {
     <Switch>
       <Route path="/" component={DashboardPage} />
       <Route path="/elite" component={EliteScannedPage} />
+      <Route path="/game/:id" component={GameDetailPage} />
       <Route path="/games" component={GamesPage} />
       <Route path="/about" component={AboutPage} />
       <Route component={NotFound} />

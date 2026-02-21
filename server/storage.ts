@@ -78,6 +78,7 @@ function computeEngineProbabilities(params: {
   recommendedPick: string;
   forensicReport: string;
   checksPassed: number;
+  kingOfHillScore: number;
 } {
   const homeHash = hashStringToUnitInterval(params.homeTeamSlug);
   const awayHash = hashStringToUnitInterval(params.awayTeamSlug);
@@ -114,6 +115,14 @@ function computeEngineProbabilities(params: {
 
   const homeClinicalXG = 1.25 + (homeHash - 0.5) * 0.9;
   const awayClinicalXG = 1.15 + (awayHash - 0.5) * 0.9;
+  
+  // King of the Hill Scoring logic
+  // Higher score = better leg
+  const forensicScore = (checksPassed / 42) * 50; // Max 50 points
+  const qualityScore = Math.abs(homeClinicalXG - awayClinicalXG) * 25; // Max 25 points
+  const momentumScore = (homeHash + awayHash) * 12.5; // Max 25 points
+  const kingOfHillScore = forensicScore + qualityScore + momentumScore;
+
   const homeR2R = 0.42 + (homeClinicalXG - awayClinicalXG) * 0.28;
   const awayR2R = 0.38 + (awayClinicalXG - homeClinicalXG) * 0.28;
 
@@ -150,6 +159,7 @@ function computeEngineProbabilities(params: {
     recommendedPick,
     forensicReport: reportLines.join("\n"),
     checksPassed,
+    kingOfHillScore: round4(kingOfHillScore),
   };
 }
 
@@ -245,6 +255,7 @@ export class DatabaseStorage implements IStorage {
         recommendedPick: engine.recommendedPick,
         forensicReport: engine.forensicReport,
         checksPassed: engine.checksPassed,
+        kingOfHillScore: engine.kingOfHillScore,
         isFinal: game.status === "final",
         winner:
           game.status === "final"
@@ -316,6 +327,7 @@ export class DatabaseStorage implements IStorage {
           checksPassed: predictions.checksPassed,
           isFinal: predictions.isFinal,
           winner: predictions.winner,
+          kingOfHillScore: predictions.kingOfHillScore,
         },
         league: {
           name: leagues.name,
@@ -372,6 +384,7 @@ export class DatabaseStorage implements IStorage {
               checksPassed: r.latestPred.checksPassed ?? null,
               isFinal: r.latestPred.isFinal,
               winner: r.latestPred.winner ?? null,
+              kingOfHillScore: Number(r.latestPred.kingOfHillScore) || 0,
             }
           : undefined,
     }));
@@ -387,7 +400,12 @@ export class DatabaseStorage implements IStorage {
         return probB - probA;
       });
     } else {
-      result.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+      // King of the Hill ranking: best 3 legs for today
+      result.sort((a, b) => {
+        const scoreA = a.latestPrediction?.kingOfHillScore ?? 0;
+        const scoreB = b.latestPrediction?.kingOfHillScore ?? 0;
+        return scoreB - scoreA;
+      });
     }
 
     return result;

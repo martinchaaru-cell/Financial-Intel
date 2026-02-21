@@ -69,6 +69,7 @@ export const api = {
                 checksPassed: z.number().nullable(),
                 isFinal: z.boolean(),
                 winner: z.string().nullable(),
+                kingOfHillScore: z.number().nullable(),
               })
               .optional(),
           }),
