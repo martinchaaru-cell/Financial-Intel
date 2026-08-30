@@ -1,16 +1,18 @@
 import os
 import csv
 import io
+import re
 from flask import Flask, render_template, request, jsonify, send_file
 from datetime import datetime
 import openpyxl
 
 from models import (
     db, Company, FinancialPeriod, FinancialStatement, FinancialLineItem,
-    SourceDocument, ImportJob,
+    SourceDocument, ImportJob, CalculatedMetric, FinancialSegment,
+    OperationalMetric, FinancialNote,
 )
 from ratios import calculate_ratios
-from nse_import import fetch_nse_filings, fetch_nse_page, NSE_FINANCIAL_RESULTS_URL
+from nse_import import fetch_nse_filings, fetch_nse_page, NSE_FINANCIAL_RESULTS_URL, NSE_COMPANIES
 from nse_pdf_parse import fetch_and_parse_pdf, match_canonical_label
 
 # ---------- SCORING ----------
@@ -87,6 +89,34 @@ class Financials(db.Model):
 def latest_financials(company_id):
     return Financials.query.filter_by(company_id=company_id).order_by(Financials.period.desc()).first()
 
+def latest_two_financials(company_id):
+    """Latest and prior-period Financials rows for one company (prior may be None)."""
+    rows = Financials.query.filter_by(company_id=company_id).order_by(Financials.period.desc()).limit(2).all()
+    latest = rows[0] if len(rows) > 0 else None
+    prior = rows[1] if len(rows) > 1 else None
+    return latest, prior
+
+def latest_three_financials(company_id):
+    """Up to 3 most recent Financials rows, newest first (missing slots are None)."""
+    rows = Financials.query.filter_by(company_id=company_id).order_by(Financials.period.desc()).limit(3).all()
+    rows = rows + [None] * (3 - len(rows))
+    return rows[0], rows[1], rows[2]
+
+def pct_change(new, old):
+    if new is None or old is None or old == 0:
+        return None
+    return (new - old) / abs(old) * 100
+
+def extract_year(period_label):
+    """Best-effort year extraction from a free-text period label like
+    'FY2025', 'H1 2025', 'Q2 2025 6M'. Manual entry means format isn't
+    strictly controlled, so this just grabs the first 4-digit number
+    that looks like a year."""
+    if not period_label:
+        return None
+    m = re.search(r'(19|20)\d{2}', period_label)
+    return int(m.group(0)) if m else None
+
 # ---------- PAGE ----------
 
 @app.route('/')
@@ -100,36 +130,78 @@ def overview_stats():
     companies = Company.query.all()
     total_companies = len(companies)
 
+    now = datetime.utcnow()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
     margins, roes, revenues, net_incomes, scores = [], [], [], [], []
+    prior_margins, prior_roes = [], []
+    revenue_growth_pcts = []
+    prior_revenue_growth_pcts = []
+    latest_revenue_sum, prior_revenue_sum = 0.0, 0.0
+    latest_income_sum, prior_income_sum = 0.0, 0.0
+    has_prior_revenue, has_prior_income = False, False
     companies_with_data = 0
+    companies_added_this_month = 0
+    companies_updated_this_month = 0
+    high_risk_added_this_month = 0
     performers = []
     health_counts = {'strong': 0, 'moderate': 0, 'weak': 0}
     latest_updated = None
 
     for c in companies:
-        f = latest_financials(c.id)
-        if f:
-            d = f.to_dict()
+        if c.created_at and c.created_at >= month_start:
+            companies_added_this_month += 1
+
+        latest, prior, two_back = latest_three_financials(c.id)
+        if latest:
+            d = latest.to_dict()
             companies_with_data += 1
+            if latest.updated_at and latest.updated_at >= month_start:
+                companies_updated_this_month += 1
             if d['net_margin'] is not None:
                 margins.append(d['net_margin'])
             if d['roe'] is not None:
                 roes.append(d['roe'])
             if d['revenue']:
                 revenues.append(d['revenue'])
+                latest_revenue_sum += d['revenue']
             if d['net_income']:
                 net_incomes.append(d['net_income'])
+                latest_income_sum += d['net_income']
             if d['financial_score'] is not None:
                 scores.append(d['financial_score'])
                 health_counts[d['score_band']] += 1
+                if d['score_band'] == 'weak' and latest.updated_at and latest.updated_at >= month_start:
+                    high_risk_added_this_month += 1
             performers.append({
                 'id': c.id, 'name': c.name, 'ticker': c.ticker,
                 'sector': c.sector, 'period': d['period'],
                 'net_margin': d['net_margin'], 'roe': d['roe'],
                 'financial_score': d['financial_score']
             })
-            if f.updated_at and (latest_updated is None or f.updated_at > latest_updated):
-                latest_updated = f.updated_at
+            if latest.updated_at and (latest_updated is None or latest.updated_at > latest_updated):
+                latest_updated = latest.updated_at
+
+            if prior:
+                pd = prior.to_dict()
+                if pd['revenue']:
+                    prior_revenue_sum += pd['revenue']
+                    has_prior_revenue = True
+                if pd['net_income']:
+                    prior_income_sum += pd['net_income']
+                    has_prior_income = True
+                if pd['net_margin'] is not None:
+                    prior_margins.append(pd['net_margin'])
+                if pd['roe'] is not None:
+                    prior_roes.append(pd['roe'])
+                g = pct_change(d['revenue'], pd['revenue'])
+                if g is not None:
+                    revenue_growth_pcts.append(g)
+                if two_back:
+                    tbd = two_back.to_dict()
+                    pg = pct_change(pd['revenue'], tbd['revenue'])
+                    if pg is not None:
+                        prior_revenue_growth_pcts.append(pg)
 
     top_performers = sorted(
         [p for p in performers if p['financial_score'] is not None],
@@ -150,18 +222,266 @@ def overview_stats():
     for a in activity:
         a['at'] = a['at'].isoformat() if a['at'] else None
 
+    avg_net_margin = (sum(margins) / len(margins)) if margins else None
+    avg_roe = (sum(roes) / len(roes)) if roes else None
+    avg_prior_margin = (sum(prior_margins) / len(prior_margins)) if prior_margins else None
+    avg_prior_roe = (sum(prior_roes) / len(prior_roes)) if prior_roes else None
+    avg_revenue_growth = (sum(revenue_growth_pcts) / len(revenue_growth_pcts)) if revenue_growth_pcts else None
+    avg_prior_revenue_growth = (sum(prior_revenue_growth_pcts) / len(prior_revenue_growth_pcts)) if prior_revenue_growth_pcts else None
+
     return jsonify({
         'total_companies': total_companies,
         'companies_with_data': companies_with_data,
         'combined_revenue': sum(revenues) if revenues else None,
         'combined_net_income': sum(net_incomes) if net_incomes else None,
-        'avg_net_margin': (sum(margins) / len(margins)) if margins else None,
-        'avg_roe': (sum(roes) / len(roes)) if roes else None,
+        'avg_net_margin': avg_net_margin,
+        'avg_roe': avg_roe,
         'avg_financial_score': (sum(scores) / len(scores)) if scores else None,
+        'avg_revenue_growth': avg_revenue_growth,
         'health_distribution': health_counts,
         'top_performers': top_performers,
         'recent_activity': activity,
-        'last_updated': latest_updated.isoformat() if latest_updated else None
+        'last_updated': latest_updated.isoformat() if latest_updated else None,
+        'trends': {
+            'companies_added_this_month': companies_added_this_month,
+            'companies_updated_this_month': companies_updated_this_month,
+            'companies_updated_pct_of_total': (companies_with_data / total_companies * 100) if total_companies else None,
+            'combined_revenue_yoy': pct_change(latest_revenue_sum, prior_revenue_sum) if has_prior_revenue else None,
+            'combined_income_yoy': pct_change(latest_income_sum, prior_income_sum) if has_prior_income else None,
+            # margin/ROE/growth deltas are in percentage points (current avg minus prior avg), not % change
+            'net_margin_delta': (avg_net_margin - avg_prior_margin) if (avg_net_margin is not None and avg_prior_margin is not None) else None,
+            'roe_delta': (avg_roe - avg_prior_roe) if (avg_roe is not None and avg_prior_roe is not None) else None,
+            'revenue_growth_delta': (avg_revenue_growth - avg_prior_revenue_growth) if (avg_revenue_growth is not None and avg_prior_revenue_growth is not None) else None,
+            'high_risk_added_this_month': high_risk_added_this_month,
+        }
+    })
+
+def assess_company_risks(c, latest, prior):
+    """Risk candidates for one company: (severity_rank, issue_label, metric_label).
+    severity_rank: 3=High, 2=Medium. Built only from fields the schema
+    actually captures (revenue, net income, debt/equity) - no liquidity
+    data exists here, so a "Low Liquidity" issue type is intentionally
+    not produced; adding it would mean fabricating a number."""
+    d = latest.to_dict()
+    candidates = []
+
+    if d['debt_equity'] is not None:
+        if d['debt_equity'] > 3.0:
+            candidates.append((3, 'High Debt', f"Debt/Equity: {round(d['debt_equity'],1)}"))
+        elif d['debt_equity'] > 2.0:
+            candidates.append((2, 'High Debt', f"Debt/Equity: {round(d['debt_equity'],1)}"))
+
+    if prior:
+        pd = prior.to_dict()
+        income_change = pct_change(d['net_income'], pd['net_income'])
+        if income_change is not None and income_change < 0:
+            sev = 3 if income_change < -20 else 2
+            candidates.append((sev, 'Falling Profit', f"Net Profit ↓ {round(abs(income_change))}%"))
+
+        revenue_change = pct_change(d['revenue'], pd['revenue'])
+        if revenue_change is not None and revenue_change < 0:
+            sev = 3 if revenue_change < -15 else 2
+            candidates.append((sev, 'Revenue Decline', f"Revenue ↓ {round(abs(revenue_change))}%"))
+
+    if not candidates and d['score_band'] == 'weak':
+        candidates.append((2, 'Weak Financial Health', f"Score: {d['financial_score']}/100"))
+
+    return candidates
+
+def assess_company_opportunity(c, latest, prior):
+    """A single positive-signal candidate for one company, or None.
+    Only fires on real YoY revenue growth vs the prior period - no
+    forward-looking projection, since the model has no basis for one."""
+    if not prior:
+        return None
+    d, pd = latest.to_dict(), prior.to_dict()
+    revenue_change = pct_change(d['revenue'], pd['revenue'])
+    if revenue_change is not None and revenue_change > 20:
+        return (f"Revenue ↑ {round(revenue_change)}%",)
+    return None
+
+@app.route('/api/overview/charts')
+def overview_charts():
+    companies = Company.query.all()
+
+    # ---- Revenue Growth Trend: combined revenue by year, YoY growth % ----
+    # Year is extracted from each Financials row's free-text period label.
+    # Manual entry means periods aren't strictly standardized, so where a
+    # company has more than one statement tagged with the same year, the
+    # most recently updated one is used (avoids double-counting a year).
+    year_revenue = {}   # year -> {company_id -> revenue}
+    for c in companies:
+        rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.updated_at.desc()).all()
+        seen_years = set()
+        for f in rows:
+            yr = extract_year(f.period)
+            if yr is None or yr in seen_years or not f.revenue:
+                continue
+            seen_years.add(yr)
+            year_revenue.setdefault(yr, {})[c.id] = f.revenue
+
+    years_sorted = sorted(year_revenue.keys())[-4:]  # last 4 years with any data
+    revenue_trend = []
+    prev_total = None
+    for yr in years_sorted:
+        total = sum(year_revenue[yr].values())
+        revenue_trend.append({
+            'year': yr,
+            'combined_revenue': total,
+            'growth_pct': pct_change(total, prev_total) if prev_total is not None else None
+        })
+        prev_total = total
+
+    # ---- Profitability Comparison: top 5 companies by net margin ----
+    profitability = []
+    for c in companies:
+        f = latest_financials(c.id)
+        if f:
+            d = f.to_dict()
+            if d['net_margin'] is not None:
+                profitability.append({'name': c.name, 'ticker': c.ticker, 'net_margin': d['net_margin']})
+    profitability.sort(key=lambda p: p['net_margin'], reverse=True)
+    profitability = profitability[:5]
+
+    # ---- Sector Performance: avg financial score by sector ----
+    sector_scores = {}  # sector -> list of scores
+    for c in companies:
+        f = latest_financials(c.id)
+        if f:
+            d = f.to_dict()
+            if d['financial_score'] is not None:
+                sector = c.sector or 'Unclassified'
+                sector_scores.setdefault(sector, []).append(d['financial_score'])
+    sector_performance = sorted(
+        [{'sector': s, 'avg_score': round(sum(v) / len(v))} for s, v in sector_scores.items()],
+        key=lambda x: x['avg_score'], reverse=True
+    )[:8]
+
+    return jsonify({
+        'revenue_trend': revenue_trend,
+        'profitability': profitability,
+        'sector_performance': sector_performance,
+    })
+
+@app.route('/api/overview/attention')
+def overview_attention():
+    companies = Company.query.all()
+
+    # ---- Companies Requiring Attention ----
+    # Built only from data the model actually captures (revenue, net income,
+    # debt/equity). There's no liquidity data in this schema (no current
+    # assets/liabilities), so a "Low Liquidity" issue type is intentionally
+    # not included here - it would have to be fabricated.
+    issues = []
+    for c in companies:
+        latest, prior = latest_two_financials(c.id)
+        if not latest:
+            continue
+        candidates = assess_company_risks(c, latest, prior)
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            sev_rank, issue, metric = candidates[0]
+            issues.append({
+                'company_id': c.id, 'company_name': c.name,
+                'issue': issue, 'metric': metric,
+                'severity': 'High' if sev_rank == 3 else 'Medium',
+                'last_updated': latest.updated_at.isoformat() if latest.updated_at else None,
+            })
+
+    severity_order = {'High': 0, 'Medium': 1}
+    issues.sort(key=lambda i: (severity_order.get(i['severity'], 2),
+                                i['last_updated'] or ''), reverse=False)
+
+    # ---- Data Summary ----
+    all_financials = Financials.query.all()
+    total_statements = len(all_financials)
+    quarterly = 0
+    for f in all_financials:
+        label = (f.period or '').upper()
+        if re.search(r'\bQ[1-4]\b', label) or re.search(r'\b[369]M\b', label):
+            quarterly += 1
+    annual = total_statements - quarterly
+    data_sources = len({f.source for f in all_financials if f.source})
+
+    return jsonify({
+        'issues': issues[:8],
+        'data_summary': {
+            'total_statements': total_statements,
+            'quarterly_reports': quarterly,
+            'annual_reports': annual,
+            'kpis_tracked': 4,  # net margin, ROE, debt/equity, financial score
+            'data_sources': data_sources,
+        }
+    })
+
+ALERT_TITLES = {
+    'High Debt': 'High Debt Alert',
+    'Falling Profit': 'Profit Declining',
+    'Revenue Decline': 'Revenue Slowing',
+    'Weak Financial Health': 'Weak Financial Health',
+}
+
+def _compute_alert_feed():
+    """Shared by /api/overview/alerts (top-4 widget) and /api/alerts (the
+    full Alerts page) so both always agree on what counts as a risk or
+    an opportunity - same detection logic, just different amounts shown."""
+    companies = Company.query.all()
+    risk_items, opportunity_items = [], []
+
+    for c in companies:
+        latest, prior = latest_two_financials(c.id)
+        if not latest:
+            continue
+
+        risks = assess_company_risks(c, latest, prior)
+        if risks:
+            risks.sort(key=lambda x: x[0], reverse=True)
+            sev_rank, issue, metric = risks[0]
+            risk_items.append({
+                'kind': 'risk',
+                'title': ALERT_TITLES.get(issue, issue),
+                'company_id': c.id, 'company_name': c.name,
+                'metric': metric,
+                'severity': 'High' if sev_rank == 3 else 'Medium',
+                'last_updated': latest.updated_at.isoformat() if latest.updated_at else None,
+            })
+
+        opp = assess_company_opportunity(c, latest, prior)
+        if opp:
+            (metric,) = opp
+            opportunity_items.append({
+                'kind': 'opportunity',
+                'title': 'Strong Opportunity',
+                'company_id': c.id, 'company_name': c.name,
+                'metric': metric,
+                'severity': 'Positive',
+                'last_updated': latest.updated_at.isoformat() if latest.updated_at else None,
+            })
+
+    risk_items.sort(key=lambda i: (0 if i['severity'] == 'High' else 1, i['last_updated'] or ''))
+    opportunity_items.sort(key=lambda i: i['last_updated'] or '', reverse=True)
+    return risk_items, opportunity_items
+
+@app.route('/api/overview/alerts')
+def overview_alerts():
+    """Alerts & Opportunities widget on Overview: a short, mixed feed
+    capped at 4 items - lead with up to 3 risks, fill the rest with
+    opportunities. For the full, uncapped list see /api/alerts."""
+    risk_items, opportunity_items = _compute_alert_feed()
+    alerts = risk_items[:3] + opportunity_items[:max(0, 4 - min(3, len(risk_items)))]
+    return jsonify({'alerts': alerts[:4]})
+
+@app.route('/api/alerts')
+def all_alerts():
+    """Full Alerts page: every risk and every opportunity currently
+    detected, not just the top 4 shown on Overview."""
+    risk_items, opportunity_items = _compute_alert_feed()
+    return jsonify({
+        'risks': risk_items,
+        'opportunities': opportunity_items,
+        'risk_count': len(risk_items),
+        'opportunity_count': len(opportunity_items),
     })
 
 # ---------- API: COMPANIES ----------
@@ -210,6 +530,98 @@ def get_company(company_id):
     result = c.to_dict()
     result['financials'] = [f.to_dict() for f in financials]
     return jsonify(result)
+
+@app.route('/api/companies/<int:company_id>', methods=['DELETE'])
+def delete_company(company_id):
+    """Deletes a company and everything that hangs off it.
+
+    Company.periods and Company.source_documents both cascade
+    ('all, delete-orphan') in models.py, so FinancialPeriod ->
+    FinancialStatement -> FinancialLineItem (and segments/notes/
+    operational_metrics/calculated_metrics) are removed automatically by
+    the ORM when the Company row is deleted.
+
+    Two things live OUTSIDE that relationship graph and need cleaning up
+    by hand, or they'd be left as orphaned rows pointing at a company_id
+    that no longer exists:
+      - Financials: the old flat legacy table (kept in app.py on purpose,
+        see its class docstring) - no relationship/cascade is defined on
+        it at all.
+      - ImportJob: has a company_id FK but no relationship/backref was
+        added in models.py, so SQLAlchemy won't touch it automatically.
+    """
+    c = Company.query.get_or_404(company_id)
+
+    try:
+        # Delete everything explicitly, in dependency order, instead of
+        # relying on ORM cascade ordering across two separate relationship
+        # trees (Company.periods and Company.source_documents). Those two
+        # trees aren't linked by an ORM relationship even though
+        # FinancialStatement.source_document_id is a real FK to
+        # SourceDocument - so cascade-deleting both in the same flush can
+        # hit a FK violation if statements aren't cleared before their
+        # source documents are. Doing it by hand removes that risk.
+        period_ids = [p.id for p in FinancialPeriod.query.filter_by(company_id=company_id)]
+        if period_ids:
+            statement_ids = [
+                s.id for s in FinancialStatement.query.filter(
+                    FinancialStatement.period_id.in_(period_ids)
+                )
+            ]
+            if statement_ids:
+                FinancialLineItem.query.filter(
+                    FinancialLineItem.statement_id.in_(statement_ids)
+                ).delete(synchronize_session=False)
+                FinancialStatement.query.filter(
+                    FinancialStatement.id.in_(statement_ids)
+                ).delete(synchronize_session=False)
+
+        for period_id in period_ids:
+            CalculatedMetric.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            FinancialSegment.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            OperationalMetric.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            FinancialNote.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+
+        FinancialPeriod.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        ImportJob.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        Financials.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        SourceDocument.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+
+        db.session.delete(c)
+        db.session.commit()
+        return jsonify({'deleted': company_id}), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception('Failed to delete company %s', company_id)
+        return jsonify({'error': f'Delete failed: {e}'}), 500
+
+@app.route('/api/companies/seed-nse', methods=['POST'])
+def seed_nse_companies():
+    """Create a Company row for every entry in NSE_COMPANIES that doesn't
+    already exist (matched by ticker). This decouples "is this company in
+    our roster" from "have we successfully imported a filing for it yet" -
+    without this, the Companies page only ever shows whichever companies
+    happened to have a matched filing get saved, which is a small,
+    shifting subset of the full 63-company exchange at any given moment.
+
+    Safe to call repeatedly - existing companies (matched by ticker) are
+    left untouched, nothing is updated or duplicated.
+    """
+    created = []
+    for entry in NSE_COMPANIES:
+        existing = Company.query.filter(
+            db.func.lower(Company.ticker) == entry['ticker'].lower()
+        ).first()
+        if existing:
+            continue
+        c = Company(
+            name=entry['name'], ticker=entry['ticker'], exchange='NSE',
+            sector=entry.get('sector', ''), country='Kenya'
+        )
+        db.session.add(c)
+        created.append(entry['name'])
+    db.session.commit()
+    return jsonify({'created': created, 'created_count': len(created), 'skipped_count': len(NSE_COMPANIES) - len(created)}), 200
 
 # ---------- API: FINANCIALS ----------
 
@@ -282,57 +694,89 @@ def nse_parse():
         return jsonify({'error': f'Could not parse PDF: {e}'}), 502
     return jsonify({'pdf_url': pdf_url, 'parsed': parsed})
 
-@app.route('/api/import/nse/save', methods=['POST'])
-def nse_save():
-    """Human has reviewed the parsed line items (and can have hand-edited
-    them) - this saves them into the normalized schema: one FinancialPeriod,
-    one FinancialStatement per statement type present, and a
-    FinancialLineItem per reviewed line.
+@app.route('/api/import/nse/parse-batch', methods=['POST'])
+def nse_parse_batch():
+    """Parses several filings in one call, instead of one /parse round
+    trip per filing. Each filing is parsed independently - one bad PDF
+    (network hiccup, unparseable scan) doesn't abort the rest of the
+    batch, it just comes back with its own 'error' field so the review
+    screen can show it as failed rather than losing the whole batch.
 
-    Expected payload shape (matches what /parse returns, after review):
-        {
-          "company_id": 1,            # or company_name/ticker/sector to create one
-          "period": "FY2025",
-          "pdf_url": "https://...",   # optional, recorded as the SourceDocument
-          "statements": {
-            "income_statement": {"line_items": [{"label", "normalized_name",
-                                                   "amount", "page", "confidence"}, ...]},
-            "balance_sheet": {...}, "cash_flow": {...}, "equity": {...}
-          }
-        }
+    Expected payload:
+        {"filings": [{"title", "pdf_url", "matched_company", "period_guess",
+                       "existing_company_id"}, ...]}
+    (i.e. entries taken straight from /scan's response - pass through
+    whichever ones the user selected).
 
-    Also writes a matching flat `Financials` row (source='nse_import') so
-    existing routes that haven't been upgraded yet (overview stats, the
-    older exports) keep working unchanged - see models.py's migration
-    notes for why that table is being kept around for now.
+    Returns the same list back, each entry augmented with either
+    "parsed" (the draft statements) or "error".
     """
     data = request.get_json(force=True) or {}
+    filings = data.get('filings') or []
+    if not filings:
+        return jsonify({'error': 'filings is required'}), 400
 
+    results = []
+    for f in filings:
+        pdf_url = (f.get('pdf_url') or '').strip()
+        entry = dict(f)
+        if not pdf_url:
+            entry['error'] = 'Missing pdf_url'
+            results.append(entry)
+            continue
+        try:
+            entry['parsed'] = fetch_and_parse_pdf(pdf_url)
+        except Exception as e:
+            entry['error'] = f'Could not parse PDF: {e}'
+        results.append(entry)
+
+    return jsonify(results)
+
+def _save_one_import(data):
+    """Shared save logic behind both /save (one filing) and /save-batch
+    (many filings in one request) - see nse_save()'s old docstring for the
+    payload shape this expects. Returns (result_dict, status_code) instead
+    of a Flask response directly, so batch callers can collect per-item
+    results without each item needing its own HTTP round trip.
+    """
     company_id = data.get('company_id')
     if not company_id:
         company_name = (data.get('company_name') or '').strip()
+        ticker = (data.get('ticker') or '').strip()
         if not company_name:
-            return jsonify({'error': 'company_id or company_name is required'}), 400
-        c = Company(
-            name=company_name,
-            ticker=(data.get('ticker') or '').strip(),
-            exchange='NSE',
-            sector=(data.get('sector') or '').strip(),
-            country='Kenya'
-        )
-        db.session.add(c)
-        db.session.commit()
+            return {'error': 'company_id or company_name is required'}, 400
+
+        # Reuse an existing Company instead of creating a duplicate row.
+        # Match by ticker first (more reliable, unique per NSE listing),
+        # then fall back to a case-insensitive name match.
+        c = None
+        if ticker:
+            c = Company.query.filter(db.func.lower(Company.ticker) == ticker.lower()).first()
+        if c is None:
+            c = Company.query.filter(db.func.lower(Company.name) == company_name.lower()).first()
+
+        if c is None:
+            c = Company(
+                name=company_name,
+                ticker=ticker,
+                exchange='NSE',
+                sector=(data.get('sector') or '').strip(),
+                country='Kenya'
+            )
+            db.session.add(c)
+            db.session.commit()
         company_id = c.id
     else:
-        Company.query.get_or_404(company_id)
+        if Company.query.get(company_id) is None:
+            return {'error': f'company_id {company_id} not found'}, 404
 
     period_label = (data.get('period') or '').strip()
     if not period_label:
-        return jsonify({'error': 'period is required'}), 400
+        return {'error': 'period is required'}, 400
 
     statements_payload = data.get('statements') or {}
     if not statements_payload:
-        return jsonify({'error': 'statements (with at least one line item) is required'}), 400
+        return {'error': 'statements (with at least one line item) is required'}, 400
 
     # Optional source document, so line items can point back to "which PDF,
     # which page" - only created if a pdf_url was actually supplied.
@@ -422,7 +866,7 @@ def nse_save():
         job.error_message = str(e)
         job.finished_at = datetime.utcnow()
         db.session.commit()
-        return jsonify({'error': f'Save failed: {e}'}), 500
+        return {'error': f'Save failed: {e}'}, 500
 
     # Dual-write: keep the old flat Financials table populated too, so
     # /api/overview and the pre-Phase-6 export routes keep working exactly
@@ -442,11 +886,71 @@ def nse_save():
     db.session.add(f)
     db.session.commit()
 
-    return jsonify({
+    return {
         'company_id': company_id,
         'period': period.to_dict(),
         'financials': f.to_dict(),   # legacy shape, for any frontend code still reading it
-    }), 201
+    }, 201
+
+@app.route('/api/import/nse/save', methods=['POST'])
+def nse_save():
+    """Human has reviewed the parsed line items (and can have hand-edited
+    them) - this saves them into the normalized schema: one FinancialPeriod,
+    one FinancialStatement per statement type present, and a
+    FinancialLineItem per reviewed line.
+
+    Expected payload shape (matches what /parse returns, after review):
+        {
+          "company_id": 1,            # or company_name/ticker/sector to create one
+          "period": "FY2025",
+          "pdf_url": "https://...",   # optional, recorded as the SourceDocument
+          "statements": {
+            "income_statement": {"line_items": [{"label", "normalized_name",
+                                                   "amount", "page", "confidence"}, ...]},
+            "balance_sheet": {...}, "cash_flow": {...}, "equity": {...}
+          }
+        }
+
+    Also writes a matching flat `Financials` row (source='nse_import') so
+    existing routes that haven't been upgraded yet (overview stats, the
+    older exports) keep working unchanged - see models.py's migration
+    notes for why that table is being kept around for now.
+    """
+    data = request.get_json(force=True) or {}
+    result, status = _save_one_import(data)
+    return jsonify(result), status
+
+@app.route('/api/import/nse/save-batch', methods=['POST'])
+def nse_save_batch():
+    """Saves several already-reviewed filings in one request, instead of
+    one /save round trip per filing. Each item is independent - one
+    failing item (bad period label, a company_id that got deleted mid-
+    review, etc.) doesn't roll back the ones that already succeeded.
+
+    Expected payload:
+        {"items": [ <same shape /save takes>, ... ]}
+
+    Returns:
+        {"results": [{"ok": true, "company_id":..., "period":...} or
+                      {"ok": false, "error":...}, ...],
+         "saved": <count>, "failed": <count>}
+    """
+    data = request.get_json(force=True) or {}
+    items = data.get('items') or []
+    if not items:
+        return jsonify({'error': 'items is required'}), 400
+
+    results = []
+    saved = 0
+    for item in items:
+        result, status = _save_one_import(item)
+        if status == 201:
+            saved += 1
+            results.append({'ok': True, **result})
+        else:
+            results.append({'ok': False, 'error': result.get('error', 'Unknown error')})
+
+    return jsonify({'results': results, 'saved': saved, 'failed': len(items) - saved}), 200
 
 @app.route('/api/companies/<int:company_id>/periods')
 def list_periods(company_id):
@@ -602,6 +1106,84 @@ def export_raw_csv(company_id):
     with open(filepath, 'w', newline='') as fh:
         fh.write(output.getvalue())
     return send_file(filepath, as_attachment=True, mimetype='text/csv')
+
+@app.route('/api/system/status')
+def system_status():
+    """Live check of what's actually configured right now - not what the
+    code supports, what's active in THIS running process - so the
+    Settings page can show a real answer instead of generic advice."""
+    dialect = db.engine.dialect.name  # 'sqlite', 'postgresql', etc.
+    is_persistent = dialect != 'sqlite'
+    return jsonify({
+        'database_engine': dialect,
+        'persistent': is_persistent,
+        'warning': None if is_persistent else (
+            "Running on SQLite. If this app is deployed (not just the dev "
+            "editor), an Autoscale deployment's local disk is reset on "
+            "every restart/redeploy - saved data will disappear. Set the "
+            "DATABASE_URL environment variable to a persistent Postgres "
+            "instance (Replit's built-in Database, under Tools) to fix this."
+        ),
+        'counts': {
+            'companies': Company.query.count(),
+            'periods': FinancialPeriod.query.count(),
+            'line_items': FinancialLineItem.query.count(),
+            'source_documents': SourceDocument.query.count(),
+            'import_jobs': ImportJob.query.count(),
+            'legacy_financials_rows': Financials.query.count(),
+        }
+    })
+
+@app.route('/api/compare')
+def compare_companies():
+    """Side-by-side comparison for a chosen set of companies - same
+    latest-period metrics the Companies/Rankings pages already use, so
+    numbers never disagree between pages."""
+    ids_param = request.args.get('ids', '')
+    try:
+        ids = [int(x) for x in ids_param.split(',') if x.strip()]
+    except ValueError:
+        return jsonify({'error': 'ids must be a comma-separated list of integers'}), 400
+    if not ids:
+        return jsonify({'error': 'ids is required, e.g. ?ids=1,2,3'}), 400
+
+    result = []
+    for cid in ids:
+        c = Company.query.get(cid)
+        if c is None:
+            continue
+        d = c.to_dict()
+        f = latest_financials(c.id)
+        d['latest'] = f.to_dict() if f else None
+        result.append(d)
+
+    return jsonify(result)
+
+@app.route('/api/companies/<int:company_id>/trends')
+def company_trends(company_id):
+    """Every period's metrics for one company, oldest to newest, for the
+    Financial Analytics trend charts. Reuses Financials.to_dict() so the
+    ratios shown match everywhere else in the app exactly."""
+    Company.query.get_or_404(company_id)
+    rows = Financials.query.filter_by(company_id=company_id).order_by(Financials.period.asc()).all()
+    return jsonify([r.to_dict() for r in rows])
+
+@app.route('/api/import-jobs')
+def import_jobs():
+    """Audit trail of every scan->parse->save attempt (manual entries
+    included, since those go through the same ImportJob row) - status,
+    which company, which source PDF, when. Backs the Reports page."""
+    jobs = ImportJob.query.order_by(ImportJob.started_at.desc()).limit(200).all()
+    result = []
+    for j in jobs:
+        company = Company.query.get(j.company_id) if j.company_id else None
+        doc = SourceDocument.query.get(j.source_document_id) if j.source_document_id else None
+        row = j.to_dict()
+        row['company_name'] = company.name if company else None
+        row['source_url'] = doc.url if doc else None
+        row['period_label'] = doc.period_label if doc else None
+        result.append(row)
+    return jsonify(result)
 
 with app.app_context():
     db.create_all()

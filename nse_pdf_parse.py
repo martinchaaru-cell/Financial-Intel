@@ -154,8 +154,35 @@ def _split_label_and_numbers(line: str):
     return label, numbers
 
 
+_JUNK_LABEL_RES = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"^k?shs\.?[`']?\s*$",                    # "Shs." / "Kshs.`" bare currency-unit fragments
+        r"^k?shs\.?\s*['\u2018\u2019]?0*\s*$",     # "Shs '000" style unit-column headers
+        r"^assets\s*k?shs\.?[`']?\s*$",            # "Assets Shs.`" - column header run-together
+        r"^liabilities\s*k?shs\.?[`']?\s*$",
+        r"^[a-h]\)\s*$",                           # bare lettered legend marker, e.g. "a)" alone
+        r"^[a-h]\s+assets\s*$",                    # "A Assets" - lettered column header, not a
+        r"^[a-h]\s+liabilities\s*$",               # real reported line item (compare "Total Assets",
+        r"^assets\s*$",                            # which has a real qualifier word and is kept)
+        r"^liabilities\s*$",
+    ]
+]
+
+
 def _looks_like_label(label: str) -> bool:
-    return bool(label) and bool(_LABEL_RE.match(label)) and len(label) > 2
+    if not label or not _LABEL_RE.match(label):
+        return False
+    stripped = label.strip()
+    if len(stripped) <= 2:
+        return False
+    # Reject currency/unit header fragments and bare lettered legend
+    # markers that tabular banking-disclosure pages (e.g. NPL schedules
+    # with an "a) ... g)" column legend and a "Shs. '000" unit header
+    # running through the number columns) get misread as if they were
+    # real reported line items.
+    if any(rx.match(stripped) for rx in _JUNK_LABEL_RES):
+        return False
+    return True
 
 
 def _classify_statement(line: str):
@@ -202,6 +229,7 @@ def parse_financials_text(pages_text) -> dict:
     current_stmt = None
     order_counters = {stmt: 0 for stmt in STATEMENT_HEADINGS}
     seen_normalized = {stmt: set() for stmt in STATEMENT_HEADINGS}
+    seen_raw = {stmt: set() for stmt in STATEMENT_HEADINGS}
 
     for page_num, page_text in pages_text:
         for raw_line in page_text.splitlines():
@@ -231,9 +259,21 @@ def parse_financials_text(pages_text) -> dict:
             if normalized not in _SIGNED_ALLOWED:
                 amount = abs(amount)
 
-            # Dedupe: keep the first occurrence of a recognized line item
-            # per statement (subtotals sometimes repeat on continuation
-            # pages / in the notes cross-reference).
+            # Dedupe, two levels:
+            # 1. Any exact (label, amount) repeat within a statement is
+            #    dropped outright - this catches identical rows that
+            #    appear more than once regardless of whether they were
+            #    canonically recognized (e.g. an unmapped line repeated
+            #    across a continuation page or a note cross-reference).
+            raw_key = (label.strip().lower(), amount)
+            if raw_key in seen_raw[current_stmt]:
+                continue
+            seen_raw[current_stmt].add(raw_key)
+
+            # 2. For recognized (normalized) line items specifically, only
+            #    the first occurrence is kept even if a later repeat has a
+            #    different-looking label (subtotals sometimes repeat with
+            #    slightly reworded text on continuation pages).
             if normalized:
                 if normalized in seen_normalized[current_stmt]:
                     continue
