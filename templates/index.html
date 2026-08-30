@@ -1,0 +1,2526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Financial Intel</title>
+<style>
+:root{
+  --bg-app:#0a0f1c; --bg-sidebar:#080c17; --bg-panel:#111a2e; --bg-panel-2:#0d1526;
+  --bg-hover:#182238; --border:rgba(255,255,255,.06);
+  --text:#f5f7fc; --text-dim:#aab4cc; --text-faint:#7986a3;
+  --blue:#5b9bff; --blue-soft:rgba(59,130,246,.14);
+  --green:#3ddc84; --green-soft:rgba(34,197,94,.14);
+  --amber:#ffb020; --amber-soft:rgba(245,158,11,.14);
+  --red:#ff6161; --red-soft:rgba(239,68,68,.14);
+  --purple:#b79bfc; --purple-soft:rgba(183,155,252,.16); --radius:14px; --radius-sm:9px;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,'Segoe UI',Arial,sans-serif;}
+body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5px;}
+.shell{display:flex;min-height:100vh;}
+
+.sidebar{width:224px;flex-shrink:0;background:var(--bg-sidebar);border-right:1px solid var(--border);
+  padding:18px 12px;display:flex;flex-direction:column;}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 8px 22px;}
+.brand .mark{width:34px;height:34px;background:var(--blue);border-radius:9px;display:flex;
+  align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+.brand .name{font-weight:700;font-size:14px;}
+.brand .sub{color:var(--text-faint);font-size:10.5px;}
+.nav-list{display:flex;flex-direction:column;gap:2px;flex:1;overflow-y:auto;}
+.nav-btn{display:flex;align-items:center;gap:10px;width:100%;border:none;background:transparent;
+  color:var(--text-dim);padding:9px 12px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;
+  text-align:left;transition:background .12s;}
+.nav-btn:hover{background:var(--bg-hover);color:var(--text);}
+.nav-btn.active{background:var(--blue-soft);color:#fff;box-shadow:inset 2px 0 0 var(--blue);}
+.nav-btn .ic{width:16px;text-align:center;opacity:.85;}
+.nav-btn.disabled{opacity:.4;cursor:default;}
+.nav-btn.disabled:hover{background:transparent;color:var(--text-dim);}
+.nav-btn .soon-tag{margin-left:auto;font-size:8.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+  color:var(--text-faint);background:var(--bg-panel-2);border:1px solid var(--border);border-radius:5px;
+  padding:1.5px 5px;flex-shrink:0;}
+
+.sidebar-footer{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);
+  display:flex;flex-direction:column;gap:10px;flex-shrink:0;}
+.help-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;}
+.help-card .hc-title{font-size:12px;font-weight:700;margin-bottom:4px;}
+.help-card .hc-desc{font-size:11px;color:var(--text-faint);line-height:1.5;margin-bottom:10px;}
+.help-card .hc-btn{width:100%;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text-dim);
+  padding:7px 10px;border-radius:8px;font-size:11.5px;cursor:pointer;text-align:center;margin-top:0;font-weight:600;}
+.help-card .hc-btn:hover{background:var(--bg-hover);color:var(--text);}
+
+.sidebar-account{display:flex;align-items:center;gap:9px;padding:8px;border-radius:10px;cursor:default;}
+.sidebar-account .acc-avatar{width:32px;height:32px;border-radius:50%;background:var(--blue);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700;flex-shrink:0;}
+.sidebar-account .acc-info{min-width:0;}
+.sidebar-account .acc-name{font-size:12.5px;font-weight:600;line-height:1.25;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;}
+.sidebar-account .acc-role{font-size:10.5px;color:var(--text-faint);line-height:1.25;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;}
+.sidebar-account .acc-chevron{color:var(--text-faint);font-size:10px;margin-left:auto;flex-shrink:0;}
+
+.header-actions{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+
+/* ---------- shared: icon-circle stat cards, filter bars, avatars, view buttons ---------- */
+.stat-icon-circle{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:18px;margin-bottom:10px;}
+.filter-bar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin-bottom:14px;}
+.filter-group{display:flex;flex-direction:column;gap:4px;}
+.filter-group label{font-size:9.5px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.04em;}
+.filter-select{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
+  padding:8px 10px;border-radius:9px;font-size:12.5px;min-width:130px;}
+.filter-search{min-width:200px;flex:1 1 200px;}
+.toggle-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);cursor:pointer;
+  padding-bottom:1px;}
+.toggle-switch{position:relative;width:32px;height:18px;background:var(--bg-panel-2);border:1px solid var(--border);
+  border-radius:20px;flex-shrink:0;transition:background .15s;}
+.toggle-switch.on{background:var(--blue);border-color:var(--blue);}
+.toggle-switch .knob{position:absolute;top:1px;left:1px;width:14px;height:14px;background:#fff;border-radius:50%;
+  transition:transform .15s;}
+.toggle-switch.on .knob{transform:translateX(14px);}
+.co-avatar{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;color:#fff;flex-shrink:0;}
+.co-cell{display:flex;align-items:center;gap:9px;}
+.co-cell .co-name{font-weight:600;}
+.view-btn{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text-dim);padding:6px 14px;
+  border-radius:8px;font-size:11.5px;font-weight:600;cursor:pointer;margin:0;}
+.view-btn:hover{background:var(--bg-hover);color:var(--text);}
+.score-band-label{font-size:10px;margin-left:5px;font-weight:600;}
+.results-footer{display:flex;align-items:center;justify-content:space-between;margin-top:14px;
+  font-size:11.5px;color:var(--text-faint);flex-wrap:wrap;gap:8px;}
+.export-btn{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text-dim);
+  padding:8px 13px;border-radius:9px;font-size:12.5px;font-weight:600;cursor:pointer;margin:0;
+  display:inline-flex;align-items:center;gap:6px;}
+.export-btn:hover{background:var(--bg-hover);color:var(--text);}
+.compare-chip{display:flex;align-items:center;gap:8px;background:var(--bg-panel-2);border:1px solid var(--border);
+  border-radius:11px;padding:8px 10px;}
+.compare-chip .co-avatar{width:26px;height:26px;}
+.compare-chip .cc-name{font-size:12px;font-weight:600;}
+.compare-chip .cc-ticker{font-size:10px;color:var(--text-faint);}
+.compare-chip .cc-remove{margin-left:2px;cursor:pointer;color:var(--text-faint);font-size:13px;padding:0 2px;}
+.compare-chip .cc-remove:hover{color:var(--red);}
+.insight-item{display:flex;gap:8px;padding:9px 0;border-bottom:1px solid var(--border);font-size:11.5px;
+  color:var(--text-dim);line-height:1.55;}
+.insight-item:last-child{border-bottom:none;}
+.insight-item .ii-icon{flex-shrink:0;}
+.methodology-weight{display:flex;justify-content:space-between;align-items:center;font-size:12px;
+  padding:5px 0;color:var(--text-dim);}
+.methodology-weight .mw-bar{flex:1;height:5px;border-radius:3px;background:var(--bg-panel-2);margin:0 8px;overflow:hidden;}
+.methodology-weight .mw-fill{height:100%;background:var(--blue);}
+.summary-metric{text-align:center;}
+.summary-metric .sm-val{font-size:17px;font-weight:700;}
+.summary-metric .sm-label{font-size:10.5px;color:var(--text-faint);margin-top:3px;}
+.mini-bar-panel .mb-title{font-size:11px;color:var(--text-faint);margin-bottom:12px;}
+.mini-bar-chart{display:flex;align-items:flex-end;gap:10px;height:120px;}
+.mini-bar-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
+.mini-bar-col .mbc-val{font-size:10.5px;color:var(--text-dim);margin-bottom:4px;font-weight:600;}
+.mini-bar-col .mbc-bar{width:55%;border-radius:4px 4px 0 0;}
+.mini-bar-col .mbc-label{font-size:9.5px;color:var(--text-faint);margin-top:6px;text-align:center;}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0;}
+.topbar{display:flex;align-items:center;gap:14px;padding:16px 28px;border-bottom:1px solid var(--border);}
+.topbar-title{flex:1;min-width:0;}
+.page-title{font-size:22px;font-weight:700;}
+.page-sub{color:var(--text-faint);font-size:11.5px;margin-top:2px;}
+.search-box{flex:0 0 auto;width:220px;position:relative;}
+.search-box input{width:100%;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
+  padding:8px 30px 8px 12px;border-radius:9px;font-size:12.5px;}
+.search-box input::placeholder{color:var(--text-faint);}
+.search-kbd{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:9.5px;color:var(--text-faint);
+  background:var(--bg-panel);border:1px solid var(--border);border-radius:5px;padding:1px 5px;pointer-events:none;}
+
+.date-badge{display:inline-flex;align-items:center;gap:5px;color:var(--text-faint);font-size:11px;margin-top:2px;}
+
+.topbar-actions{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.icon-btn{position:relative;width:32px;height:32px;border-radius:9px;background:var(--bg-panel-2);
+  border:1px solid var(--border);color:var(--text-dim);display:flex;align-items:center;justify-content:center;
+  font-size:13px;cursor:pointer;}
+.icon-btn:hover{background:var(--bg-hover);color:var(--text);}
+.icon-btn .badge-dot{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 3px;
+  background:var(--red);color:#fff;border-radius:8px;font-size:9.5px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;}
+.btn-primary-cta{background:var(--blue);color:#fff;border:none;padding:9px 14px;border-radius:10px;
+  font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.btn-primary-cta:hover{background:#2f6fd8;}
+
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(3,6,14,.6);z-index:50;
+  align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal-box{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:22px;width:100%;max-width:420px;}
+.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+.modal-head h2{font-size:15px;}
+.modal-close{cursor:pointer;color:var(--text-faint);font-size:16px;}
+.modal-close:hover{color:var(--text);}
+
+.content{padding:24px 28px;flex:1;}
+
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
+.stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+.stat-card .stat-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px;background:transparent;}
+.stat-value{font-size:22px;font-weight:700;line-height:1;}
+.stat-label{color:var(--text-dim);font-size:11.5px;margin-top:5px;}
+.stat-trend{font-size:11px;margin-top:7px;display:flex;align-items:center;gap:4px;}
+.stat-trend.up{color:var(--green);}
+.stat-trend.down{color:var(--red);}
+.stat-trend.neutral{color:var(--text-faint);}
+.purple-soft{background:transparent;}
+
+.row{display:grid;gap:14px;margin-bottom:14px;}
+.row-3{grid-template-columns:1fr 1.3fr 1fr;}
+.row-4{grid-template-columns:repeat(4,1fr);}
+.chart-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+.chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+.chart-head h3{font-size:12.5px;font-weight:600;}
+.chart-select{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text-dim);
+  font-size:10.5px;padding:3px 8px;border-radius:6px;}
+.chart-link{color:var(--blue);font-size:11px;cursor:pointer;margin-top:10px;display:block;}
+
+.linechart-svg{width:100%;height:130px;}
+.linechart-svg .grid-line{stroke:var(--border);stroke-width:1;}
+.linechart-svg .trend-line{fill:none;stroke:var(--blue);stroke-width:2;}
+.linechart-svg .trend-dot{fill:var(--blue);}
+.linechart-svg .trend-label{fill:var(--text-dim);font-size:9px;}
+.linechart-svg .axis-label{fill:var(--text-faint);font-size:8.5px;}
+
+.vbar-chart{display:flex;align-items:flex-end;justify-content:space-between;gap:8px;height:130px;padding-top:16px;}
+.vbar-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
+.vbar-col .vbar-val{font-size:10px;color:var(--text-dim);margin-bottom:4px;}
+.vbar-col .vbar{width:60%;background:var(--blue);border-radius:4px 4px 0 0;}
+.vbar-col .vbar-label{font-size:10px;color:var(--text-faint);margin-top:6px;}
+
+.hbar-list{display:flex;flex-direction:column;gap:9px;}
+.hbar-row{display:grid;grid-template-columns:88px 1fr 24px;align-items:center;gap:8px;}
+.hbar-row .hbar-label{font-size:11px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.hbar-row .hbar-track{background:var(--bg-panel-2);border-radius:5px;height:9px;overflow:hidden;}
+.hbar-row .hbar-fill{height:100%;border-radius:5px;}
+.hbar-row .hbar-val{font-size:10.5px;color:var(--text-dim);text-align:right;}
+
+.severity-badge{padding:0;background:transparent;font-size:11.5px;font-weight:700;letter-spacing:.2px;}
+.severity-High{color:var(--red);}
+.severity-Medium{color:var(--amber);}
+.severity-Positive{color:var(--green);}
+.status-badge{font-weight:700;font-size:11.5px;}
+.status-saved{color:var(--green);}
+.status-failed{color:var(--red);}
+.status-pending,.status-parsed,.status-reviewed{color:var(--amber);}
+.alert-card{padding:12px 0;border-bottom:1px solid var(--border);}
+.alert-card:last-child{border-bottom:none;}
+.alert-card .alert-title{font-weight:700;font-size:13px;margin-bottom:2px;}
+.alert-card .alert-meta{font-size:11.5px;color:var(--text-faint);}
+.compare-picker{display:flex;flex-wrap:wrap;gap:8px 16px;margin-bottom:14px;}
+.compare-picker label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-dim);}
+.chart-wrap{position:relative;height:260px;margin:14px 0 22px;}
+.status-banner{padding:12px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);margin-bottom:14px;font-size:12.5px;line-height:1.5;}
+.status-banner.warn{border-color:rgba(255,176,32,.4);color:var(--amber);}
+.status-banner.ok{border-color:rgba(61,220,132,.4);color:var(--green);}
+.company-flag{width:22px;height:22px;border-radius:6px;background:transparent;color:var(--blue);border:1px solid var(--border);
+  display:inline-flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;margin-right:8px;}
+.data-summary-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);}
+.data-summary-row:last-child{border-bottom:none;}
+.data-summary-row .ds-label{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--text-dim);}
+.data-summary-row .ds-icon{width:26px;height:26px;border-radius:7px;background:var(--bg-panel-2);
+  display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
+.data-summary-row .ds-val{font-size:13px;font-weight:700;}
+
+.alert-item{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);}
+.alert-item:last-child{border-bottom:none;}
+.alert-title{font-size:12px;font-weight:700;}
+.alert-title.risk-High{color:var(--red);}
+.alert-title.risk-Medium{color:var(--amber);}
+.alert-title.risk-Positive{color:var(--green);}
+.alert-company{font-size:11px;color:var(--text-dim);margin-top:2px;}
+.alert-meta{text-align:right;flex-shrink:0;}
+.alert-metric{font-size:11px;color:var(--text-dim);}
+.alert-time{font-size:10px;color:var(--text-faint);margin-top:2px;}
+
+.mini-donut-wrap{display:flex;align-items:center;gap:14px;}
+.mini-donut{width:76px;height:76px;border-radius:50%;position:relative;flex-shrink:0;}
+.mini-donut .donut-hole{width:48px;height:48px;}
+.mini-legend{font-size:10.5px;line-height:1.9;}
+.mini-legend .dot{width:6px;height:6px;}
+
+.panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px;}
+.panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.panel-head h2{font-size:13.5px;font-weight:600;}
+.panel-link{color:var(--blue);font-size:11.5px;cursor:pointer;}
+.empty{color:var(--text-faint);font-size:12.5px;padding:18px 0;text-align:center;}
+
+.donut-wrap{display:flex;align-items:center;gap:18px;}
+.donut{width:130px;height:130px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;position:relative;}
+.donut-hole{width:80px;height:80px;background:var(--bg-panel);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+.donut-hole .n{font-size:20px;font-weight:700;}
+.donut-hole .l{font-size:9.5px;color:var(--text-faint);}
+.legend{display:flex;flex-direction:column;gap:9px;font-size:12px;}
+.legend-item{display:flex;align-items:center;gap:8px;}
+.dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+
+table{width:100%;border-collapse:collapse;}
+th,td{padding:9px 8px;text-align:left;border-bottom:1px solid var(--border);font-size:12.5px;}
+th{color:var(--text-faint);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;}
+tr.clickable{cursor:pointer;}
+tr.clickable:hover{background:var(--bg-hover);}
+.rank-medal{font-size:14px;}
+.score-badge{padding:0;background:transparent;font-weight:700;font-size:12.5px;display:inline-block;}
+.score-strong{color:var(--green);}
+.score-moderate{color:var(--amber);}
+.score-weak{color:var(--red);}
+
+.activity-item{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);}
+.activity-item:last-child{border-bottom:none;}
+.activity-dot{width:7px;height:7px;border-radius:50%;background:var(--blue);margin-top:5px;flex-shrink:0;}
+.activity-label{font-size:12.5px;}
+.activity-time{color:var(--text-faint);font-size:11px;margin-top:1px;}
+
+.badge{background:transparent;color:var(--text-dim);font-size:11px;font-weight:600;padding:2px 0;border-bottom:1px solid var(--border);}
+
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
+input{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
+  padding:9px 10px;border-radius:var(--radius-sm);font-size:13px;width:100%;}
+input::placeholder{color:var(--text-faint);}
+button{background:var(--blue);color:#fff;border:none;padding:9px 16px;
+  border-radius:var(--radius-sm);font-weight:600;cursor:pointer;font-size:13px;margin-top:10px;}
+button:hover{opacity:.9;}
+button.secondary{background:var(--bg-hover);color:var(--text);border:1px solid var(--border);}
+.error{color:var(--red);font-size:12px;margin-top:6px;}
+.back-link{color:var(--blue);cursor:pointer;font-size:13px;display:inline-block;margin-bottom:14px;}
+
+.download-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;}
+.download-card{background:var(--bg-panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:14px;display:flex;flex-direction:column;gap:6px;}
+.download-card .dl-title{font-weight:600;font-size:12.5px;}
+.download-card .dl-desc{color:var(--text-faint);font-size:11.5px;}
+.download-card button{margin-top:auto;}
+
+.hidden{display:none;}
+
+.tab-bar{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:14px;flex-wrap:wrap;}
+.tab-btn{padding:8px 14px;background:transparent;border:none;color:var(--text-dim);cursor:pointer;
+  font-size:12.5px;border-bottom:2px solid transparent;font-weight:600;}
+.tab-btn:hover{color:var(--text);}
+.tab-btn.active{color:#fff;border-bottom-color:var(--blue);}
+.period-select{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
+  padding:7px 10px;border-radius:var(--radius-sm);font-size:12.5px;}
+td.amount,th.amount{text-align:right;}
+.li-normalized{margin-left:6px;opacity:.7;}
+.li-toggle{display:inline-block;width:14px;cursor:pointer;color:var(--text-dim);user-select:none;}
+.li-toggle-spacer{display:inline-block;width:14px;}
+.li-row-label{cursor:default;}
+tr.li-child td:first-child{color:var(--text-dim);}
+.builder-row{display:grid;grid-template-columns:2fr 1fr auto;gap:8px;margin-bottom:8px;align-items:center;}
+.builder-row input{margin:0;}
+.builder-row button{margin:0;padding:9px 12px;}
+.subhead{font-size:13px;font-weight:600;margin:18px 0 10px;}
+.batch-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.batch-select-all{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-dim);}
+.batch-card{margin-top:12px;}
+.period-jump-nav{display:flex;flex-wrap:wrap;gap:6px 16px;padding:10px 0 14px;margin-bottom:8px;border-bottom:1px solid var(--border);}
+.period-jump-nav a{color:var(--blue);font-size:12.5px;font-weight:600;text-decoration:none;}
+.period-jump-nav a:hover{text-decoration:underline;}
+.period-section{padding:20px 0;border-bottom:1px solid var(--border);}
+.period-section:last-child{border-bottom:none;padding-bottom:0;}
+.period-section-head{font-size:17px;font-weight:700;color:var(--text);margin-bottom:6px;scroll-margin-top:16px;}
+.subhead:first-child{margin-top:0;}
+.nse-row-input{background:transparent;border:1px solid transparent;color:var(--text);
+  padding:6px 4px;font-size:12.5px;width:100%;border-radius:6px;}
+.nse-row-input:hover,.nse-row-input:focus{border-color:var(--border);background:var(--bg-panel-2);outline:none;}
+.nse-row-input.amount{text-align:right;}
+.icon-btn{background:transparent;border:none;color:var(--text-faint);cursor:pointer;padding:4px 8px;
+  font-size:13px;margin:0;}
+.icon-btn:hover{color:var(--red);opacity:1;}
+@media(max-width:900px){.stat-grid{grid-template-columns:repeat(2,1fr);} .row-3{grid-template-columns:1fr;} .row-4{grid-template-columns:1fr 1fr;} .builder-row{grid-template-columns:1fr;}}
+
+/* ---------- Mobile (<=768px): off-canvas sidebar + stacked layout ---------- */
+.hamburger-btn{display:none;background:transparent;border:1px solid var(--border);color:var(--text);
+  width:34px;height:34px;border-radius:8px;font-size:16px;flex-shrink:0;cursor:pointer;padding:0;}
+.sidebar-backdrop{display:none;}
+
+@media(max-width:768px){
+  .hamburger-btn{display:flex;align-items:center;justify-content:center;}
+  .shell{position:relative;overflow-x:hidden;}
+  .sidebar{position:fixed;top:0;left:0;bottom:0;z-index:200;transform:translateX(-100%);
+    transition:transform .2s ease;box-shadow:2px 0 24px rgba(0,0,0,.4);}
+  .sidebar.open{transform:translateX(0);}
+  .sidebar-backdrop.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:190;}
+  .main{width:100%;}
+  .topbar{padding:12px 14px;gap:10px;flex-wrap:wrap;}
+  .topbar-title{min-width:0;}
+  .page-title{font-size:16px;}
+  .search-box{order:3;flex-basis:100%;max-width:none;}
+  .topbar-actions{flex-shrink:0;}
+  .content{padding:14px;}
+  .stat-grid{grid-template-columns:1fr 1fr;gap:8px;}
+  .row-3,.row-4,.row-2{grid-template-columns:1fr;}
+  .grid{grid-template-columns:1fr;}
+  .panel{padding:14px;}
+  .panel-head{flex-wrap:wrap;gap:8px;}
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;}
+  .download-grid{grid-template-columns:1fr;}
+}
+@media(max-width:420px){
+  .stat-grid{grid-template-columns:1fr;}
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mark">📈</div>
+      <div><div class="name">FinSight</div><div class="sub">Financial Intelligence</div></div>
+    </div>
+    <div class="nav-list" id="navList"></div>
+    <div class="sidebar-footer">
+      <div class="help-card">
+        <div class="hc-title">Need Help?</div>
+        <div class="hc-desc">Check our documentation or contact support.</div>
+        <button type="button" class="hc-btn" onclick="alert('Financial Intel — track NSE-listed and comparator companies, their filings, and computed financial-health scores. Use Add Company to get started, then add financials from a company\'s detail page.')">View Help Center</button>
+      </div>
+      <div class="sidebar-account" title="Account management isn't set up yet — this is a placeholder">
+        <div class="acc-avatar">A</div>
+        <div class="acc-info">
+          <div class="acc-name">Admin</div>
+          <div class="acc-role">No auth configured</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
+
+  <div class="main">
+    <div class="topbar">
+      <button class="hamburger-btn" id="hamburgerBtn" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+      <div class="topbar-title">
+        <div class="page-title" id="pageTitle">Overview</div>
+        <div class="page-sub" id="pageSub"></div>
+      </div>
+      <div class="search-box">
+        <input id="global-search" placeholder="Search any company (e.g. Apple, Microsoft, Safaricom...)" oninput="handleGlobalSearch(this.value)">
+        <span class="search-kbd">Ctrl+K</span>
+      </div>
+      <div class="topbar-actions">
+        <div class="icon-btn" id="bellBtn" onclick="goTo('alerts')" title="View alerts">
+          🔔<span class="badge-dot hidden" id="bellBadge">0</span>
+        </div>
+        <div class="header-actions" id="headerActions"></div>
+      </div>
+    </div>
+    <div class="content" id="app"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="addCompanyModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Add Company</h2>
+      <span class="modal-close" onclick="closeAddCompanyModal()">✕</span>
+    </div>
+    <div class="grid">
+      <input id="f-name" placeholder="Company name (e.g. KCB Group)">
+      <input id="f-ticker" placeholder="Ticker (e.g. KCB)">
+      <input id="f-exchange" placeholder="Exchange (e.g. NSE)">
+      <input id="f-sector" placeholder="Sector">
+      <input id="f-country" placeholder="Country" value="Kenya">
+    </div>
+    <button onclick="addCompany()">Add Company</button>
+    <div id="add-company-error" class="error"></div>
+  </div>
+</div>
+
+<script>
+const PAGES = [
+  {id:'overview', label:'Overview', icon:'🏠'},
+  {id:'companies', label:'Companies', icon:'🏢'},
+  {id:'compare', label:'Comparisons', icon:'⚖️'},
+  {id:'rankings', label:'Rankings', icon:'🏆'},
+  {id:'reports', label:'Reports', icon:'📄'},
+  {id:'presentations', label:'Presentations', icon:'🖥️', soon:true},
+  {id:'data-extractor', label:'Data Extractor', icon:'🔎', soon:true},
+  {id:'documents', label:'Documents', icon:'📁', soon:true},
+  {id:'watchlist', label:'Watchlist', icon:'⭐', soon:true},
+  {id:'alerts', label:'Alerts', icon:'🔔'},
+  {id:'settings', label:'Settings', icon:'⚙️'},
+  // Kept below the new nav's 11 items so nothing that worked before this
+  // redesign becomes unreachable - not part of the reference design, but
+  // still real, working pages.
+  {id:'sectors', label:'Sectors', icon:'🏭'},
+  {id:'analytics', label:'Financial Analytics', icon:'📈'},
+  {id:'exports', label:'Exports', icon:'📤'},
+];
+let currentPage = 'overview';
+let currentCompanyId = null;
+let currentCompanyName = '';
+let allCompaniesCache = [];
+
+// ---- full FY report state (company detail page) ----
+let currentPeriodsCache = [];
+let currentPeriodLabel = null;
+let currentPeriodDetail = null;
+let currentStatementTab = null;
+
+// ---- manual report builder state (replaces the old flat "Add Financials" form) ----
+let builderPeriod = '';
+let builderTab = 'income_statement';
+let builderRows = { income_statement: [], balance_sheet: [], cash_flow: [], equity: [] };
+
+// ---- NSE import review state (replaces the old flat preview form) ----
+let nsePreviewState = null; // {filing, statements, tab}
+
+const STATEMENT_LABELS = {
+  income_statement: 'Income Statement', balance_sheet: 'Balance Sheet',
+  cash_flow: 'Cash Flow', equity: 'Equity'
+};
+const METRIC_LABELS = {
+  net_margin: 'Net Margin', roe: 'ROE', roa: 'ROA',
+  debt_equity: 'Debt/Equity', debt_assets: 'Debt/Assets'
+};
+const PCT_METRICS = new Set(['net_margin', 'roe', 'roa']);
+
+function renderNav(){
+  document.getElementById('navList').innerHTML = PAGES.map(p => p.soon ? `
+    <button class="nav-btn disabled" title="Coming soon" onclick="return false;">
+      <span class="ic">${p.icon}</span><span>${p.label}</span><span class="soon-tag">Soon</span>
+    </button>` : `
+    <button class="nav-btn ${p.id===currentPage?'active':''}" onclick="goTo('${p.id}')">
+      <span class="ic">${p.icon}</span><span>${p.label}</span>
+    </button>`).join('');
+}
+
+function goTo(pageId){
+  currentPage = pageId;
+  currentCompanyId = null;
+  renderNav();
+  render();
+  closeSidebar();
+}
+function goToCompany(companyId){
+  currentPage = 'company-detail';
+  currentCompanyId = companyId;
+  renderNav();
+  render();
+  closeSidebar();
+}
+
+function toggleSidebar(){
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.getElementById('sidebarBackdrop').classList.toggle('open');
+}
+function closeSidebar(){
+  document.querySelector('.sidebar').classList.remove('open');
+  document.getElementById('sidebarBackdrop').classList.remove('open');
+}
+
+async function handleGlobalSearch(query){
+  if (currentPage !== 'companies') { goTo('companies'); }
+  await renderCompaniesPage(query);
+}
+
+function updateHeaderActions(){
+  const el = document.getElementById('headerActions');
+  if (!el) return;
+  el.innerHTML = (currentPage === 'overview' || currentPage === 'companies')
+    ? `<button class="btn-primary-cta" onclick="openAddCompanyModal()">+ Add Company</button>`
+    : '';
+}
+
+async function render(){
+  const app = document.getElementById('app');
+  const title = document.getElementById('pageTitle');
+  const sub = document.getElementById('pageSub');
+  updateHeaderActions();
+  app.innerHTML = '<div class="empty">Loading...</div>';
+
+  if (currentPage === 'overview') {
+    title.textContent = 'Overview';
+    sub.innerHTML = 'Portfolio Overview · All Companies';
+    await renderOverview();
+  } else if (currentPage === 'companies') {
+    title.textContent = 'Companies';
+    sub.textContent = 'Manage and analyze all companies you track';
+    await renderCompaniesPage('');
+  } else if (currentPage === 'rankings') {
+    title.textContent = 'Rankings';
+    sub.textContent = 'Rank companies across multiple financial metrics and overall performance';
+    await renderRankingsPage();
+  } else if (currentPage === 'sectors') {
+    title.textContent = 'Sectors';
+    sub.textContent = 'Companies grouped by sector';
+    await renderSectorsPage();
+  } else if (currentPage === 'compare') {
+    title.textContent = 'Comparisons';
+    sub.textContent = 'Analyze and benchmark financial performance side by side';
+    await renderComparePage();
+  } else if (currentPage === 'analytics') {
+    title.textContent = 'Financial Analytics';
+    sub.textContent = 'Trends across every period on record for one company';
+    await renderAnalyticsPage();
+  } else if (currentPage === 'alerts') {
+    title.textContent = 'Alerts';
+    sub.textContent = 'Active risk flags and opportunities across the portfolio';
+    await renderAlertsPage();
+  } else if (currentPage === 'reports') {
+    title.textContent = 'Reports';
+    sub.textContent = 'Import activity — every scan, parse, and save attempt';
+    await renderReportsPage();
+  } else if (currentPage === 'exports') {
+    title.textContent = 'Exports';
+    sub.textContent = 'Download portfolio and comparison data';
+    renderExportsPage();
+  } else if (currentPage === 'settings') {
+    title.textContent = 'Settings';
+    sub.textContent = 'Database status and portfolio management';
+    await renderSettingsPage();
+  } else if (currentPage === 'company-detail') {
+    await renderCompanyDetail(currentCompanyId);
+  }
+}
+
+async function renderOverview(){
+  const [res, chartsRes, attnRes, alertsRes] = await Promise.all([
+    fetch('/api/overview'), fetch('/api/overview/charts'), fetch('/api/overview/attention'), fetch('/api/overview/alerts')
+  ]);
+  const s = await res.json();
+  const charts = await chartsRes.json();
+  const attn = await attnRes.json();
+  const alerts = await alertsRes.json();
+  const app = document.getElementById('app');
+
+  const sub = document.getElementById('pageSub');
+  if (sub) {
+    const dateLabel = s.last_updated
+      ? new Date(s.last_updated).toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'})
+      : 'no data yet';
+    sub.innerHTML = `Portfolio Overview · All Companies <span class="date-badge">📅 Data as of: ${dateLabel}</span>`;
+  }
+  const bellBadge = document.getElementById('bellBadge');
+  if (bellBadge) {
+    const riskCount = (s.health_distribution && s.health_distribution.weak) || 0;
+    bellBadge.textContent = riskCount;
+    bellBadge.classList.toggle('hidden', riskCount === 0);
+  }
+
+  const hd = s.health_distribution || {strong:0, moderate:0, weak:0};
+  const hdTotal = hd.strong + hd.moderate + hd.weak;
+  const donutStyle = hdTotal > 0
+    ? `background:conic-gradient(var(--green) 0 ${hd.strong/hdTotal*360}deg, var(--amber) ${hd.strong/hdTotal*360}deg ${(hd.strong+hd.moderate)/hdTotal*360}deg, var(--red) ${(hd.strong+hd.moderate)/hdTotal*360}deg 360deg);`
+    : `background:var(--bg-panel-2);`;
+
+  const performersRows = (s.top_performers || []).map((p, i) => {
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i+1);
+    const band = p.financial_score >= 70 ? 'strong' : p.financial_score >= 40 ? 'moderate' : 'weak';
+    return `
+      <tr class="clickable" onclick="goToCompany(${p.id})">
+        <td class="rank-medal">${medal}</td>
+        <td>${escapeHtml(p.name)}</td>
+        <td><span class="score-badge score-${band}">${p.financial_score}/100</span></td>
+        <td>${fmt(p.net_margin)}%</td>
+        <td>${fmt(p.roe)}%</td>
+      </tr>`;
+  }).join('');
+
+  const activityItems = (s.recent_activity || []).map(a => `
+    <div class="activity-item">
+      <div class="activity-dot"></div>
+      <div>
+        <div class="activity-label">${escapeHtml(a.label)}</div>
+        <div class="activity-time">${timeAgo(a.at)}</div>
+      </div>
+    </div>`).join('');
+
+  const t = s.trends || {};
+
+  app.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div>
+        <div class="stat-value">${s.total_companies}</div>
+        <div class="stat-label">Total Companies</div>
+        ${trendCount(t.companies_added_this_month, 'this month')}
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📊</div>
+        <div class="stat-value">${s.companies_with_data}</div>
+        <div class="stat-label">Companies Updated</div>
+        <div class="stat-trend neutral">${t.companies_updated_pct_of_total != null ? fmt(t.companies_updated_pct_of_total, 1) + '% of total' : 'No data yet'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">💰</div>
+        <div class="stat-value">${s.combined_revenue ? fmtMoney(s.combined_revenue) : '-'}</div>
+        <div class="stat-label">Combined Revenue</div>
+        ${trendBadge(t.combined_revenue_yoy, {suffix: '% YoY'})}
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">💼</div>
+        <div class="stat-value">${s.combined_net_income ? fmtMoney(s.combined_net_income) : '-'}</div>
+        <div class="stat-label">Combined Net Income</div>
+        ${trendBadge(t.combined_income_yoy, {suffix: '% YoY'})}
+      </div>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">📈</div>
+        <div class="stat-value">${fmt(s.avg_revenue_growth)}%</div>
+        <div class="stat-label">Avg. Revenue Growth</div>
+        ${trendBadge(t.revenue_growth_delta, {suffix: '% vs prior'})}
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📊</div>
+        <div class="stat-value">${fmt(s.avg_net_margin)}%</div>
+        <div class="stat-label">Avg. Net Margin</div>
+        ${trendBadge(t.net_margin_delta, {suffix: '% vs prior'})}
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">🎯</div>
+        <div class="stat-value">${fmt(s.avg_roe)}%</div>
+        <div class="stat-label">Avg. ROE</div>
+        ${trendBadge(t.roe_delta, {suffix: '% vs prior'})}
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--red-soft);color:var(--red);">⚠️</div>
+        <div class="stat-value">${hd.weak}</div>
+        <div class="stat-label">High Risk Companies</div>
+        ${trendCount(t.high_risk_added_this_month, 'this month')}
+      </div>
+    </div>
+
+    <div class="row row-3">
+      <div class="panel">
+        <div class="panel-head"><h2>Financial Health Summary</h2></div>
+        ${hdTotal > 0 ? `
+        <div class="donut-wrap">
+          <div class="donut" style="${donutStyle}">
+            <div class="donut-hole"><div class="n">${hdTotal}</div><div class="l">Companies</div></div>
+          </div>
+          <div class="legend">
+            <div class="legend-item"><span class="dot" style="background:var(--green)"></span>Strong (70-100): ${hd.strong}</div>
+            <div class="legend-item"><span class="dot" style="background:var(--amber)"></span>Moderate (40-69): ${hd.moderate}</div>
+            <div class="legend-item"><span class="dot" style="background:var(--red)"></span>Weak (0-39): ${hd.weak}</div>
+          </div>
+        </div>` : `<div class="empty">Add financials to at least one company to see health distribution.</div>`}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Top Financial Performers</h2>
+          <span class="panel-link" onclick="goTo('companies')">View all &rarr;</span>
+        </div>
+        ${performersRows ? `
+        <table>
+          <thead><tr><th>Rank</th><th>Company</th><th>Score</th><th>Margin</th><th>ROE</th></tr></thead>
+          <tbody>${performersRows}</tbody>
+        </table>` : `<div class="empty">No scored companies yet. Add financials to see rankings here.</div>`}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Alerts &amp; Opportunities</h2></div>
+        ${buildAlertsList(alerts.alerts)}
+      </div>
+    </div>
+
+    <div class="row row-4">
+      ${buildRevenueTrendChart(charts.revenue_trend)}
+      ${buildProfitabilityChart(charts.profitability)}
+      ${buildHealthDistributionMiniDonut(hd, hdTotal, donutStyle)}
+      ${buildSectorPerformanceChart(charts.sector_performance)}
+    </div>
+
+    <div class="row" style="grid-template-columns:1.6fr 1fr 1fr;">
+      ${buildAttentionTable(attn.issues)}
+      <div class="panel">
+        <div class="panel-head"><h2>Recent Activity</h2></div>
+        ${activityItems ? activityItems : `<div class="empty">No activity yet.</div>`}
+      </div>
+      ${buildDataSummary(attn.data_summary)}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Portfolio Downloads</h2></div>
+      <div class="download-grid">
+        <div class="download-card">
+          <div class="dl-title">Portfolio Export</div>
+          <div class="dl-desc">One row per company with latest KPIs (Excel)</div>
+          <button class="secondary" onclick="window.location.href='/api/export/portfolio'">Download</button>
+        </div>
+        <div class="download-card">
+          <div class="dl-title">Comparison Report</div>
+          <div class="dl-desc">One sheet per company + summary ranking (Excel)</div>
+          <button class="secondary" onclick="window.location.href='/api/export/comparison'">Download</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Import from NSE</h2></div>
+      <div style="font-size:12px;color:var(--text-faint);margin-bottom:10px;">
+        Pulls the latest filed financial statements straight from NSE's public results page and matches them to companies.
+      </div>
+      <button onclick="scanNSE()">Scan NSE Filings</button>
+      <div id="nse-scan-status" class="empty hidden"></div>
+      <div id="nse-scan-results"></div>
+    </div>
+  `;
+}
+
+function buildRevenueTrendChart(trend){
+  const head = `<div class="chart-head"><h3>Revenue Growth Trend (Portfolio)</h3><span class="chart-select">Last ${(trend||[]).length || 4} Years</span></div>`;
+  if (!trend || trend.length < 2) {
+    return `<div class="chart-panel">${head}<div class="empty">Add financials across at least 2 years to see a trend.</div></div>`;
+  }
+  const w = 280, h = 110, pad = 10;
+  const pts = trend.filter(t => t.growth_pct !== null);
+  if (pts.length < 1) {
+    return `<div class="chart-panel">${head}<div class="empty">Not enough prior-year data yet to compute growth.</div></div>`;
+  }
+  const vals = pts.map(p => p.growth_pct);
+  const minV = Math.min(0, ...vals), maxV = Math.max(...vals) * 1.15 || 1;
+  const stepX = pts.length > 1 ? (w - pad*2) / (pts.length - 1) : 0;
+  const yFor = v => h - pad - ((v - minV) / (maxV - minV || 1)) * (h - pad*2);
+  const coords = pts.map((p, i) => ({x: pad + i*stepX, y: yFor(p.growth_pct), p}));
+  const line = coords.map((c, i) => (i === 0 ? 'M' : 'L') + c.x.toFixed(1) + ',' + c.y.toFixed(1)).join(' ');
+  const dots = coords.map(c => `<circle class="trend-dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3"></circle>
+    <text class="trend-label" x="${c.x.toFixed(1)}" y="${(c.y-8).toFixed(1)}" text-anchor="middle">${fmt(c.p.growth_pct)}%</text>`).join('');
+  const labels = coords.map(c => `<text class="axis-label" x="${c.x.toFixed(1)}" y="${h-1}" text-anchor="middle">${c.p.year}</text>`).join('');
+  return `<div class="chart-panel">${head}
+    <svg class="linechart-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <line class="grid-line" x1="0" y1="${h-14}" x2="${w}" y2="${h-14}"></line>
+      <path class="trend-line" d="${line}"></path>
+      ${dots}${labels}
+    </svg>
+  </div>`;
+}
+
+function buildProfitabilityChart(list){
+  const head = `<div class="chart-head"><h3>Profitability Comparison</h3><span class="chart-select">Latest Period</span></div>`;
+  if (!list || list.length === 0) {
+    return `<div class="chart-panel">${head}<div class="empty">No margin data yet.</div></div>`;
+  }
+  const maxV = Math.max(...list.map(p => p.net_margin), 1);
+  const bars = list.map(p => `
+    <div class="vbar-col">
+      <div class="vbar-val">${fmt(p.net_margin)}%</div>
+      <div class="vbar" style="height:${Math.max(4, p.net_margin / maxV * 90)}px;"></div>
+      <div class="vbar-label">${escapeHtml(p.ticker || p.name)}</div>
+    </div>`).join('');
+  return `<div class="chart-panel">${head}<div class="vbar-chart">${bars}</div></div>`;
+}
+
+function buildHealthDistributionMiniDonut(hd, hdTotal, donutStyle){
+  const head = `<div class="chart-head"><h3>Financial Health Distribution</h3></div>`;
+  if (hdTotal === 0) {
+    return `<div class="chart-panel">${head}<div class="empty">No scored companies yet.</div></div>`;
+  }
+  return `<div class="chart-panel">${head}
+    <div class="mini-donut-wrap">
+      <div class="mini-donut" style="${donutStyle}">
+        <div class="donut-hole" style="width:48px;height:48px;"></div>
+      </div>
+      <div class="mini-legend">
+        <div><span class="dot" style="background:var(--green);display:inline-block;border-radius:50%;margin-right:5px;"></span>Strong: ${hd.strong} (${Math.round(hd.strong/hdTotal*100)}%)</div>
+        <div><span class="dot" style="background:var(--amber);display:inline-block;border-radius:50%;margin-right:5px;"></span>Moderate: ${hd.moderate} (${Math.round(hd.moderate/hdTotal*100)}%)</div>
+        <div><span class="dot" style="background:var(--red);display:inline-block;border-radius:50%;margin-right:5px;"></span>Weak: ${hd.weak} (${Math.round(hd.weak/hdTotal*100)}%)</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildSectorPerformanceChart(list){
+  const head = `<div class="chart-head"><h3>Sector Performance (Avg Score)</h3><span class="chart-select">By Score</span></div>`;
+  if (!list || list.length === 0) {
+    return `<div class="chart-panel">${head}<div class="empty">No sector data yet.</div></div>`;
+  }
+  const rows = list.map(s => {
+    const color = s.avg_score >= 70 ? 'var(--green)' : s.avg_score >= 40 ? 'var(--amber)' : 'var(--red)';
+    return `<div class="hbar-row">
+      <div class="hbar-label">${escapeHtml(s.sector)}</div>
+      <div class="hbar-track"><div class="hbar-fill" style="width:${s.avg_score}%;background:${color};"></div></div>
+      <div class="hbar-val">${s.avg_score}</div>
+    </div>`;
+  }).join('');
+  return `<div class="chart-panel">${head}<div class="hbar-list">${rows}</div></div>`;
+}
+
+function buildAttentionTable(issues){
+  if (!issues || issues.length === 0) {
+    return `<div class="panel">
+      <div class="panel-head"><h2>Companies Requiring Attention</h2></div>
+      <div class="empty">No companies currently flagged. Issues are detected from high debt/equity, falling profit, and revenue decline vs the prior period.</div>
+    </div>`;
+  }
+  const rows = issues.map(i => `
+    <tr class="clickable" onclick="goToCompany(${i.company_id})">
+      <td><span class="company-flag">${escapeHtml(i.company_name.slice(0,1).toUpperCase())}</span>${escapeHtml(i.company_name)}</td>
+      <td>${escapeHtml(i.issue)}</td>
+      <td>${escapeHtml(i.metric)}</td>
+      <td><span class="severity-badge severity-${i.severity}">${i.severity}</span></td>
+      <td>${timeAgo(i.last_updated)}</td>
+    </tr>`).join('');
+  return `<div class="panel">
+    <div class="panel-head"><h2>Companies Requiring Attention</h2></div>
+    <table>
+      <thead><tr><th>Company</th><th>Issue</th><th>Metric</th><th>Severity</th><th>Last Updated</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function buildDataSummary(ds){
+  if (!ds) return '';
+  const rows = [
+    ['📄', 'Total Financial Statements', ds.total_statements],
+    ['📅', 'Quarterly Reports', ds.quarterly_reports],
+    ['📁', 'Annual Reports', ds.annual_reports],
+    ['📈', 'KPIs Tracked', ds.kpis_tracked],
+    ['🗂️', 'Data Sources', ds.data_sources],
+  ];
+  const body = rows.map(([icon, label, val]) => `
+    <div class="data-summary-row">
+      <div class="ds-label"><span class="ds-icon">${icon}</span>${escapeHtml(label)}</div>
+      <div class="ds-val">${val}</div>
+    </div>`).join('');
+  return `<div class="panel">
+    <div class="panel-head"><h2>Data Summary</h2></div>
+    ${body}
+  </div>`;
+}
+
+function buildAlertsList(alerts){
+  if (!alerts || alerts.length === 0) {
+    return `<div class="empty">No alerts or opportunities right now. These are detected from debt/equity, profit, and revenue changes vs the prior period.</div>`;
+  }
+  return alerts.map(a => `
+    <div class="alert-item clickable" onclick="goToCompany(${a.company_id})">
+      <div>
+        <div class="alert-title risk-${a.severity}">${escapeHtml(a.title)}</div>
+        <div class="alert-company">${escapeHtml(a.company_name)}</div>
+      </div>
+      <div class="alert-meta">
+        <div class="alert-metric">${escapeHtml(a.metric)}</div>
+        <div class="alert-time">${timeAgo(a.last_updated)}</div>
+      </div>
+    </div>`).join('');
+}
+
+async function addCompany(){
+  const errorEl = document.getElementById('add-company-error');
+  errorEl.textContent = '';
+  const payload = {
+    name: document.getElementById('f-name').value,
+    ticker: document.getElementById('f-ticker').value,
+    exchange: document.getElementById('f-exchange').value,
+    sector: document.getElementById('f-sector').value,
+    country: document.getElementById('f-country').value
+  };
+  const res = await fetch('/api/companies', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok) { errorEl.textContent = data.error || 'Failed to add company'; return; }
+  closeAddCompanyModal();
+  render();
+}
+
+function openAddCompanyModal(){
+  document.getElementById('add-company-error').textContent = '';
+  ['f-name','f-ticker','f-exchange','f-sector'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-country').value = 'Kenya';
+  document.getElementById('addCompanyModal').classList.add('open');
+}
+function closeAddCompanyModal(){
+  document.getElementById('addCompanyModal').classList.remove('open');
+}
+
+/* ---------- NSE IMPORT ---------- */
+
+let nseFilingsCache = [];
+
+async function scanNSE(){
+  const statusEl = document.getElementById('nse-scan-status');
+  const resultsEl = document.getElementById('nse-scan-results');
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = 'Scanning NSE financial results...';
+  resultsEl.innerHTML = '';
+  try {
+    const res = await fetch('/api/import/nse/scan');
+    const data = await res.json();
+    if (!res.ok) { statusEl.textContent = data.error || 'Scan failed.'; return; }
+    nseFilingsCache = data;
+    statusEl.classList.add('hidden');
+    renderNSEResults(data);
+  } catch (e) {
+    statusEl.textContent = 'Scan failed: ' + e.message;
+  }
+}
+
+function renderNSEResults(filings){
+  const resultsEl = document.getElementById('nse-scan-results');
+  if (!filings.length) {
+    resultsEl.innerHTML = '<div class="empty">No filings found.</div>';
+    return;
+  }
+  const rows = filings.map((f, i) => {
+    const mc = f.matched_company;
+    const matchLabel = mc
+      ? `${escapeHtml(mc.name)} <span class="badge">${Math.round((f.match_score || 0) * 100)}% match</span>`
+      : '<span class="badge">No match</span>';
+    const statusLabel = f.existing_company_id
+      ? '<span class="badge">Already tracked</span>'
+      : '<span class="badge">New company</span>';
+    return `
+      <tr>
+        <td><input type="checkbox" class="nse-select-box" data-idx="${i}" onchange="updateNSEBatchButton()"></td>
+        <td>${escapeHtml(f.title)}</td>
+        <td>${matchLabel}</td>
+        <td>${statusLabel}</td>
+        <td><button class="secondary" onclick="previewNSEFiling(${i})">Parse &amp; Preview</button></td>
+      </tr>`;
+  }).join('');
+  resultsEl.innerHTML = `
+    <div class="batch-toolbar">
+      <label class="batch-select-all"><input type="checkbox" id="nse-select-all" onchange="toggleAllNSESelect(this.checked)"> Select all</label>
+      <button id="nse-batch-parse-btn" onclick="parseSelectedNSEFilings()" disabled>Parse Selected (0)</button>
+    </div>
+    <table>
+      <thead><tr><th></th><th>Filing</th><th>Matched Company</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function toggleAllNSESelect(checked){
+  document.querySelectorAll('.nse-select-box').forEach(cb => cb.checked = checked);
+  updateNSEBatchButton();
+}
+
+function updateNSEBatchButton(){
+  const n = document.querySelectorAll('.nse-select-box:checked').length;
+  const btn = document.getElementById('nse-batch-parse-btn');
+  btn.disabled = n === 0;
+  btn.textContent = `Parse Selected (${n})`;
+}
+
+async function previewNSEFiling(index){
+  const filing = nseFilingsCache[index];
+  const statusEl = document.getElementById('nse-scan-status');
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = `Parsing PDF: ${filing.title}...`;
+  try {
+    const res = await fetch('/api/import/nse/parse', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ pdf_url: filing.pdf_url })
+    });
+    const data = await res.json();
+    statusEl.classList.add('hidden');
+    if (!res.ok) { alert(data.error || 'Parse failed.'); return; }
+    renderNSEPreview(filing, data.parsed);
+  } catch (e) {
+    statusEl.classList.add('hidden');
+    alert('Parse failed: ' + e.message);
+  }
+}
+
+function renderNSEPreview(filing, parsed){
+  nsePreviewState = {
+    filing,
+    statements: JSON.parse(JSON.stringify((parsed && parsed.statements) || {})),
+    tab: null
+  };
+  const types = Object.keys(nsePreviewState.statements);
+  nsePreviewState.tab = types.length ? types[0] : 'income_statement';
+  renderNSEPreviewPanel();
+}
+
+function renderNSEPreviewPanel(){
+  const resultsEl = document.getElementById('nse-scan-results');
+  const filing = nsePreviewState.filing;
+  const mc = filing.matched_company;
+  const types = Object.keys(nsePreviewState.statements);
+
+  const tabs = types.map(t =>
+    `<button class="tab-btn ${t === nsePreviewState.tab ? 'active' : ''}" onclick="switchNSETab('${t}')">${STATEMENT_LABELS[t] || t}</button>`
+  ).join('');
+
+  const activeItems = (nsePreviewState.statements[nsePreviewState.tab] || { line_items: [] }).line_items;
+  const rows = activeItems.length ? renderNSEEditableRows(activeItems)
+    : '<tr><td colspan="4" class="empty">No line items yet on this statement.</td></tr>';
+
+  resultsEl.innerHTML = `
+    <div class="panel" style="background:var(--bg-panel-2);margin-top:10px;">
+      <div class="panel-head"><h2>Review before saving</h2></div>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(filing.title)}</div>
+      <div class="grid">
+        <input id="nse-company-name" placeholder="Company name" value="${mc ? escapeHtml(mc.name) : ''}">
+        <input id="nse-ticker" placeholder="Ticker" value="${mc ? escapeHtml(mc.ticker) : ''}">
+        <input id="nse-period" placeholder="Period" value="${escapeHtml(filing.period_guess || '')}">
+      </div>
+      <div style="font-size:11px;color:var(--text-faint);margin:10px 0;">
+        Parsed automatically from the PDF - a page badge shows where a figure came from in the filing so you can double-check it. Edit any label or amount, remove anything wrong, or add lines by hand.
+      </div>
+      ${types.length ? `<div class="tab-bar">${tabs}</div>` : '<div class="empty">Nothing recognizable was extracted from this PDF - add lines manually below.</div>'}
+      <table>
+        <thead><tr><th>Label</th><th class="amount">Amount</th><th>Page</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <button class="secondary" onclick="addNSELineItem()">+ Add Line Item</button>
+      <button onclick="confirmNSESave(${filing.existing_company_id ?? 'null'})">Confirm &amp; Save</button>
+      <button class="secondary" onclick="renderNSEResults(nseFilingsCache)">Cancel</button>
+      <div id="nse-save-error" class="error"></div>
+    </div>
+  `;
+}
+
+function switchNSETab(t){ nsePreviewState.tab = t; renderNSEPreviewPanel(); }
+
+function renderNSEEditableRows(items){
+  return items.map((li, i) => `
+    <tr>
+      <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateNSELineItem(${i},'label',this.value)"></td>
+      <td><input class="nse-row-input amount" type="number" step="any" value="${li.amount ?? ''}" oninput="updateNSELineItem(${i},'amount',this.value)"></td>
+      <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
+      <td><button class="icon-btn" onclick="removeNSELineItem(${i})" title="Remove">✕</button></td>
+    </tr>`).join('');
+}
+
+function updateNSELineItem(i, field, val){
+  nsePreviewState.statements[nsePreviewState.tab].line_items[i][field] = val;
+}
+function removeNSELineItem(i){
+  nsePreviewState.statements[nsePreviewState.tab].line_items.splice(i, 1);
+  renderNSEPreviewPanel();
+}
+function addNSELineItem(){
+  if (!nsePreviewState.statements[nsePreviewState.tab]) {
+    nsePreviewState.statements[nsePreviewState.tab] = { line_items: [] };
+  }
+  nsePreviewState.statements[nsePreviewState.tab].line_items.push({ label: '', amount: '', page: null, normalized_name: null });
+  renderNSEPreviewPanel();
+}
+
+async function confirmNSESave(existingCompanyId){
+  const errorEl = document.getElementById('nse-save-error');
+  errorEl.textContent = '';
+  const period = document.getElementById('nse-period').value.trim();
+  if (!period) { errorEl.textContent = 'Period is required.'; return; }
+
+  const statements = {};
+  for (const [stmtType, data] of Object.entries(nsePreviewState.statements)) {
+    const items = (data.line_items || [])
+      .filter(li => li.label && li.amount !== '' && li.amount !== null && li.amount !== undefined)
+      .map((li, idx) => ({
+        label: li.label, normalized_name: li.normalized_name || null,
+        amount: parseFloat(li.amount), page: li.page || null,
+        confidence: li.confidence ?? null, order_index: idx
+      }));
+    if (items.length) statements[stmtType] = { line_items: items };
+  }
+  if (!Object.keys(statements).length) { errorEl.textContent = 'Add at least one line item before saving.'; return; }
+
+  const payload = { period, pdf_url: nsePreviewState.filing.pdf_url, statements };
+  if (existingCompanyId) {
+    payload.company_id = existingCompanyId;
+  } else {
+    payload.company_name = document.getElementById('nse-company-name').value;
+    payload.ticker = document.getElementById('nse-ticker').value;
+  }
+  const res = await fetch('/api/import/nse/save', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok) { errorEl.textContent = data.error || 'Save failed.'; return; }
+  nsePreviewState = null;
+  renderOverview();
+}
+
+// ---------- Batch import: parse many filings at once, review them all on
+// one screen, then save whichever are still checked in one request. This
+// is the multi-filing counterpart to the single Parse & Preview flow
+// above - it doesn't replace the review step (nse_pdf_parse.py's own
+// results are best-effort/DRAFT), it just batches the round trips so
+// getting through NSE's full company list isn't 60+ one-at-a-time clicks. ----------
+
+let nseBatchState = [];
+
+async function parseSelectedNSEFilings(){
+  const indexes = Array.from(document.querySelectorAll('.nse-select-box:checked')).map(cb => parseInt(cb.dataset.idx, 10));
+  if (!indexes.length) return;
+
+  const statusEl = document.getElementById('nse-scan-status');
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = `Parsing ${indexes.length} filing(s)...`;
+
+  const filings = indexes.map(i => nseFilingsCache[i]);
+  try {
+    const res = await fetch('/api/import/nse/parse-batch', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filings })
+    });
+    const data = await res.json();
+    statusEl.classList.add('hidden');
+    if (!res.ok) { alert(data.error || 'Batch parse failed.'); return; }
+
+    nseBatchState = data.map(entry => {
+      const mc = entry.matched_company;
+      const statements = entry.error ? {} : JSON.parse(JSON.stringify((entry.parsed && entry.parsed.statements) || {}));
+      const types = Object.keys(statements);
+      return {
+        filing: entry, statements, activeTab: types.length ? types[0] : 'income_statement',
+        companyName: mc ? mc.name : '', ticker: mc ? mc.ticker : '',
+        existingCompanyId: entry.existing_company_id || null,
+        period: entry.period_guess || '',
+        include: !entry.error,
+        parseError: entry.error || null,
+        saveResult: null,
+      };
+    });
+    renderNSEBatchReview();
+  } catch (e) {
+    statusEl.classList.add('hidden');
+    alert('Batch parse failed: ' + e.message);
+  }
+}
+
+function renderNSEBatchReview(){
+  const resultsEl = document.getElementById('nse-scan-results');
+  const includedCount = nseBatchState.filter(b => b.include).length;
+
+  const cards = nseBatchState.map((b, bi) => {
+    if (b.parseError) {
+      return `
+        <div class="panel batch-card" style="background:var(--bg-panel-2);">
+          <div class="panel-head"><h2>${escapeHtml(b.filing.title)}</h2><span class="badge" style="color:var(--red);">Parse failed</span></div>
+          <div style="font-size:12px;color:var(--red);">${escapeHtml(b.parseError)}</div>
+        </div>`;
+    }
+
+    const types = Object.keys(b.statements);
+    const tabs = types.map(t =>
+      `<button class="tab-btn ${t === b.activeTab ? 'active' : ''}" onclick="switchBatchTab(${bi},'${t}')">${STATEMENT_LABELS[t] || t}</button>`
+    ).join('');
+    const activeItems = (b.statements[b.activeTab] || { line_items: [] }).line_items;
+    const rows = activeItems.length ? activeItems.map((li, i) => `
+      <tr>
+        <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateBatchLineItem(${bi},${i},'label',this.value)"></td>
+        <td><input class="nse-row-input amount" type="number" step="any" value="${li.amount ?? ''}" oninput="updateBatchLineItem(${bi},${i},'amount',this.value)"></td>
+        <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
+        <td><button class="icon-btn" onclick="removeBatchLineItem(${bi},${i})" title="Remove">✕</button></td>
+      </tr>`).join('') : '<tr><td colspan="4" class="empty">No line items on this statement.</td></tr>';
+
+    return `
+      <div class="panel batch-card" style="background:var(--bg-panel-2);">
+        <div class="panel-head">
+          <h2><label><input type="checkbox" ${b.include ? 'checked' : ''} onchange="toggleBatchInclude(${bi},this.checked)"> ${escapeHtml(b.filing.title)}</label></h2>
+        </div>
+        <div class="grid">
+          <input placeholder="Company name" value="${escapeHtml(b.companyName)}" oninput="updateBatchField(${bi},'companyName',this.value)" ${b.existingCompanyId ? 'disabled' : ''}>
+          <input placeholder="Ticker" value="${escapeHtml(b.ticker)}" oninput="updateBatchField(${bi},'ticker',this.value)" ${b.existingCompanyId ? 'disabled' : ''}>
+          <input placeholder="Period" value="${escapeHtml(b.period)}" oninput="updateBatchField(${bi},'period',this.value)">
+        </div>
+        ${types.length ? `<div class="tab-bar">${tabs}</div>` : '<div class="empty">Nothing recognizable was extracted - add lines manually.</div>'}
+        <table>
+          <thead><tr><th>Label</th><th class="amount">Amount</th><th>Page</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <button class="secondary" onclick="addBatchLineItem(${bi})">+ Add Line Item</button>
+        ${b.saveResult ? `<div style="font-size:12px;margin-top:8px;color:${b.saveResult.ok ? 'var(--green)' : 'var(--red)'};">${b.saveResult.ok ? 'Saved.' : escapeHtml(b.saveResult.error)}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  resultsEl.innerHTML = `
+    <div class="panel" style="background:var(--bg-panel-2);margin-top:10px;">
+      <div class="panel-head">
+        <h2>Review before saving</h2>
+        <div>
+          <button onclick="saveAllNSEBatch()">Save All Included (${includedCount})</button>
+          <button class="secondary" onclick="renderNSEResults(nseFilingsCache)">Cancel</button>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
+        Parsed automatically, per filing - still best-effort, so check each one before saving. Uncheck any filing to leave it out of the save.
+      </div>
+      <div id="nse-batch-save-error" class="error"></div>
+    </div>
+    ${cards}
+  `;
+}
+
+function toggleBatchInclude(bi, checked){ nseBatchState[bi].include = checked; }
+function updateBatchField(bi, field, val){ nseBatchState[bi][field] = val; }
+function switchBatchTab(bi, t){ nseBatchState[bi].activeTab = t; renderNSEBatchReview(); }
+function updateBatchLineItem(bi, i, field, val){ nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items[i][field] = val; }
+function removeBatchLineItem(bi, i){
+  nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items.splice(i, 1);
+  renderNSEBatchReview();
+}
+function addBatchLineItem(bi){
+  const b = nseBatchState[bi];
+  if (!b.statements[b.activeTab]) b.statements[b.activeTab] = { line_items: [] };
+  b.statements[b.activeTab].line_items.push({ label: '', amount: '', page: null, normalized_name: null });
+  renderNSEBatchReview();
+}
+
+async function saveAllNSEBatch(){
+  const errorEl = document.getElementById('nse-batch-save-error');
+  errorEl.textContent = '';
+
+  const items = [];
+  const includedIndexes = [];
+  for (let bi = 0; bi < nseBatchState.length; bi++) {
+    const b = nseBatchState[bi];
+    if (!b.include || b.parseError) continue;
+    if (!b.period.trim()) { errorEl.textContent = `Period is required for "${b.filing.title}".`; return; }
+
+    const statements = {};
+    for (const [stmtType, data] of Object.entries(b.statements)) {
+      const rows = (data.line_items || [])
+        .filter(li => li.label && li.amount !== '' && li.amount !== null && li.amount !== undefined)
+        .map((li, idx) => ({
+          label: li.label, normalized_name: li.normalized_name || null,
+          amount: parseFloat(li.amount), page: li.page || null,
+          confidence: li.confidence ?? null, order_index: idx
+        }));
+      if (rows.length) statements[stmtType] = { line_items: rows };
+    }
+    if (!Object.keys(statements).length) { errorEl.textContent = `Add at least one line item for "${b.filing.title}", or uncheck it.`; return; }
+
+    const payload = { period: b.period.trim(), pdf_url: b.filing.pdf_url, statements };
+    if (b.existingCompanyId) {
+      payload.company_id = b.existingCompanyId;
+    } else {
+      payload.company_name = b.companyName;
+      payload.ticker = b.ticker;
+    }
+    items.push(payload);
+    includedIndexes.push(bi);
+  }
+  if (!items.length) { errorEl.textContent = 'Nothing checked to save.'; return; }
+
+  const res = await fetch('/api/import/nse/save-batch', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ items })
+  });
+  const data = await res.json();
+  if (!res.ok) { errorEl.textContent = data.error || 'Batch save failed.'; return; }
+
+  data.results.forEach((r, idx) => { nseBatchState[includedIndexes[idx]].saveResult = r; });
+  renderNSEBatchReview();
+  if (data.failed === 0) {
+    setTimeout(() => { nseBatchState = []; renderOverview(); }, 900);
+  }
+}
+
+let coFilterText = '';
+let coSectorFilter = '';
+let coScoreFilter = '';
+let coOnlyWithData = false;
+
+async function renderCompaniesPage(filterText){
+  const res = await fetch('/api/companies');
+  allCompaniesCache = await res.json();
+  if (filterText !== undefined) coFilterText = filterText || '';
+  renderCompaniesTable(coFilterText);
+}
+
+function setCoSectorFilter(v){ coSectorFilter = v; renderCompaniesTable(coFilterText); }
+function setCoScoreFilter(v){ coScoreFilter = v; renderCompaniesTable(coFilterText); }
+function toggleCoOnlyWithData(el){
+  el.classList.toggle('on');
+  coOnlyWithData = el.classList.contains('on');
+  renderCompaniesTable(coFilterText);
+}
+function onCoSearchInput(v){ coFilterText = v; renderCompaniesTable(coFilterText); }
+
+function renderCompaniesTable(filterText){
+  const app = document.getElementById('app');
+  const q = (filterText || '').trim().toLowerCase();
+
+  if (allCompaniesCache.length === 0) {
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page, or
+      <button class="secondary" onclick="seedNSECompanies()">Seed all NSE companies</button> to pre-populate the full NSE roster.</div></div>`;
+    return;
+  }
+
+  const sectors = [...new Set(allCompaniesCache.map(c => c.sector).filter(Boolean))].sort();
+
+  let companies = allCompaniesCache.filter(c =>
+    !q || (c.name || '').toLowerCase().includes(q) ||
+    (c.ticker || '').toLowerCase().includes(q) ||
+    (c.sector || '').toLowerCase().includes(q));
+  if (coSectorFilter) companies = companies.filter(c => c.sector === coSectorFilter);
+  if (coOnlyWithData) companies = companies.filter(c => !!c.latest);
+  if (coScoreFilter) companies = companies.filter(c => c.latest && c.latest.score_band === coScoreFilter);
+
+  const withData = allCompaniesCache.filter(c => c.latest);
+  const combinedRevenue = withData.reduce((s, c) => s + (c.latest.revenue || 0), 0);
+  const combinedNetIncome = withData.reduce((s, c) => s + (c.latest.net_income || 0), 0);
+  const scored = withData.filter(c => c.latest.financial_score !== null && c.latest.financial_score !== undefined);
+  const avgScore = scored.length ? Math.round(scored.reduce((s, c) => s + c.latest.financial_score, 0) / scored.length) : null;
+  const avgBand = avgScore === null ? null : avgScore >= 70 ? 'strong' : avgScore >= 40 ? 'moderate' : 'weak';
+
+  const statCards = `
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div>
+        <div class="stat-value">${allCompaniesCache.length}</div>
+        <div class="stat-label">Total Companies</div>
+        <div class="stat-trend neutral">All companies in your portfolio</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📈</div>
+        <div class="stat-value">${withData.length}</div>
+        <div class="stat-label">Companies with Data</div>
+        <div class="stat-trend neutral">${allCompaniesCache.length ? fmt(withData.length / allCompaniesCache.length * 100, 1) : '0'}% of total companies</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">💰</div>
+        <div class="stat-value">${combinedRevenue ? fmtMoney(combinedRevenue) : '-'}</div>
+        <div class="stat-label">Combined Revenue</div>
+        <div class="stat-trend neutral">Across companies with data</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">💼</div>
+        <div class="stat-value">${combinedNetIncome ? fmtMoney(combinedNetIncome) : '-'}</div>
+        <div class="stat-label">Combined Net Income</div>
+        <div class="stat-trend neutral">Across companies with data</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🛡️</div>
+        <div class="stat-value">${avgScore !== null ? avgScore + ' /100' : '-'}</div>
+        <div class="stat-label">Avg Financial Score</div>
+        <div class="stat-trend neutral">${avgBand ? scoreBandLabel(avgBand) + ' overall health' : 'No scored companies yet'}</div>
+      </div>
+    </div>`;
+
+  const filterBar = `
+    <div class="filter-bar">
+      <div class="filter-group" style="flex:1 1 200px;">
+        <label>Search</label>
+        <input class="filter-search" placeholder="Search companies..." value="${escapeHtml(filterText || '')}" oninput="onCoSearchInput(this.value)">
+      </div>
+      <div class="filter-group">
+        <label>Sector</label>
+        <select class="filter-select" onchange="setCoSectorFilter(this.value)">
+          <option value="">All Sectors</option>
+          ${sectors.map(s => `<option value="${escapeHtml(s)}" ${s === coSectorFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Score</label>
+        <select class="filter-select" onchange="setCoScoreFilter(this.value)">
+          <option value="">All Scores</option>
+          <option value="strong" ${coScoreFilter === 'strong' ? 'selected' : ''}>Strong (70-100)</option>
+          <option value="moderate" ${coScoreFilter === 'moderate' ? 'selected' : ''}>Moderate (40-69)</option>
+          <option value="weak" ${coScoreFilter === 'weak' ? 'selected' : ''}>Weak (0-39)</option>
+        </select>
+      </div>
+      <div class="toggle-row" onclick="toggleCoOnlyWithData(document.getElementById('coOnlyWithDataToggle'))">
+        <div class="toggle-switch ${coOnlyWithData ? 'on' : ''}" id="coOnlyWithDataToggle"><div class="knob"></div></div>
+        Show only with data
+      </div>
+      <div style="flex:1"></div>
+      <button class="export-btn" onclick="window.location.href='/api/export/portfolio'">⭳ Export</button>
+      <button class="secondary" style="margin:0;" onclick="seedNSECompanies()">Seed all NSE companies</button>
+    </div>`;
+
+  if (companies.length === 0) {
+    app.innerHTML = statCards + `<div class="panel">${filterBar}<div class="empty">No companies match the current filters.</div></div>`;
+    return;
+  }
+
+  const rows = companies.map(c => {
+    const l = c.latest;
+    const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
+    return `
+      <tr class="clickable" onclick="goToCompany(${c.id})">
+        <td>
+          <div class="co-cell">
+            <div class="co-avatar" style="background:${coAvatarColor(c.name)};">${coInitials(c.name)}</div>
+            <span class="co-name">${escapeHtml(c.name)}</span>
+          </div>
+        </td>
+        <td><span class="badge">${escapeHtml(c.ticker || '-')}</span></td>
+        <td>${escapeHtml(c.exchange || '-')}</td>
+        <td>${escapeHtml(c.sector || '-')}</td>
+        <td>${escapeHtml(c.country || '-')}</td>
+        <td>${l ? escapeHtml(l.period) : '-'}</td>
+        <td>${l && l.revenue !== null && l.revenue !== undefined ? fmtAmount(l.revenue) : '-'}</td>
+        <td>${l ? fmt(l.net_margin) + '%' : '-'}</td>
+        <td>${l ? fmt(l.roe) + '%' : '-'}</td>
+        <td>${band ? `<span class="score-badge score-${band}">${l.financial_score}</span><span class="score-band-label score-${band}">${scoreBandLabel(band)}</span>` : '-'}</td>
+        <td><button class="view-btn" onclick="event.stopPropagation();goToCompany(${c.id})">View</button></td>
+        <td><button class="icon-btn" title="Delete company" onclick="event.stopPropagation();deleteCompany(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">🗑️</button></td>
+      </tr>`;
+  }).join('');
+
+  app.innerHTML = statCards + `
+    <div class="panel">
+      ${filterBar}
+      <table>
+        <thead>
+          <tr><th>Company</th><th>Ticker</th><th>Exchange</th><th>Sector</th><th>Country</th><th>Latest Period</th>
+            <th>Revenue</th><th>Net Margin</th><th>ROE</th><th>Score</th><th></th><th></th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="results-footer">
+        <span>Showing ${companies.length} of ${allCompaniesCache.length} companies</span>
+      </div>
+    </div>
+  `;
+}
+
+async function seedNSECompanies(){
+  try {
+    const res = await fetch('/api/companies/seed-nse', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(data.error || `Seeding failed (status ${res.status}).`);
+      return;
+    }
+    alert(`Added ${data.created_count} new companies (${data.skipped_count} already existed).`);
+    renderCompaniesPage('');
+  } catch (err) {
+    console.error('Seed failed:', err);
+    alert('Seeding failed — check the browser console for details.');
+  }
+}
+
+async function deleteCompany(companyId, companyName){
+  if (!confirm(`Delete ${companyName} and all of its saved financial data? This can't be undone.`)) return;
+  try {
+    const res = await fetch(`/api/companies/${companyId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || `Delete failed (status ${res.status}).`);
+      return;
+    }
+    allCompaniesCache = allCompaniesCache.filter(c => c.id !== companyId);
+    renderCompaniesTable(coFilterText);
+  } catch (err) {
+    console.error('Delete failed:', err);
+    alert('Delete failed — check the browser console for details.');
+  }
+}
+
+let rankSectorFilter = '';
+let rankMinScore = '';
+let rankOnlyWithData = false;
+let rankCategoryCache = [];
+let rankTopCategory = 'roe';
+
+function setRankSectorFilter(v){ rankSectorFilter = v; renderRankingsTable(); }
+function setRankMinScore(v){ rankMinScore = v; renderRankingsTable(); }
+function toggleRankOnlyWithData(el){
+  el.classList.toggle('on');
+  rankOnlyWithData = el.classList.contains('on');
+  renderRankingsTable();
+}
+function setRankTopCategory(v){ rankTopCategory = v; renderTopCategoryPanel(); }
+
+async function renderRankingsPage(){
+  const res = await fetch('/api/companies?sort=score');
+  rankCategoryCache = await res.json();
+  renderRankingsTable();
+}
+
+function renderRankingsTable(){
+  const app = document.getElementById('app');
+  const byScore = rankCategoryCache;
+
+  if (byScore.length === 0) {
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    return;
+  }
+
+  const sectors = [...new Set(byScore.map(c => c.sector).filter(Boolean))].sort();
+  const withData = byScore.filter(c => c.latest);
+  const scored = withData.filter(c => c.latest.financial_score !== null && c.latest.financial_score !== undefined);
+  const topPerformer = scored[0]; // already sorted by score desc from the API
+  const byRoe = [...withData].filter(c => c.latest.roe !== null && c.latest.roe !== undefined).sort((a, b) => b.latest.roe - a.latest.roe);
+  const topRoe = byRoe[0];
+  const latestPeriod = withData.length ? withData[0].latest.period : null;
+
+  let filtered = byScore;
+  if (rankSectorFilter) filtered = filtered.filter(c => c.sector === rankSectorFilter);
+  if (rankOnlyWithData) filtered = filtered.filter(c => !!c.latest);
+  if (rankMinScore) filtered = filtered.filter(c => c.latest && c.latest.financial_score !== null && c.latest.financial_score >= Number(rankMinScore));
+
+  const statCards = `
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div>
+        <div class="stat-value">${byScore.length}</div>
+        <div class="stat-label">Companies Ranked</div>
+        <div class="stat-trend neutral">Across all sectors</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">🏆</div>
+        <div class="stat-value" style="font-size:16px;">${topPerformer ? escapeHtml(topPerformer.name) : '-'}</div>
+        <div class="stat-label">Top Performer Overall</div>
+        <div class="stat-trend neutral">${topPerformer ? `Score: ${topPerformer.latest.financial_score}/100` : 'No scored companies yet'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📈</div>
+        <div class="stat-value" style="font-size:16px;">${topRoe ? escapeHtml(topRoe.name) : '-'}</div>
+        <div class="stat-label">Highest ROE</div>
+        <div class="stat-trend neutral">${topRoe ? `ROE: ${fmt(topRoe.latest.roe)}%` : 'No data yet'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">📅</div>
+        <div class="stat-value" style="font-size:16px;">${latestPeriod ? escapeHtml(latestPeriod) : '-'}</div>
+        <div class="stat-label">Data Period</div>
+        <div class="stat-trend neutral">${withData.length} of ${byScore.length} companies scored</div>
+      </div>
+    </div>`;
+
+  const filterBar = `
+    <div class="filter-bar">
+      <div class="filter-group">
+        <label>Sector</label>
+        <select class="filter-select" onchange="setRankSectorFilter(this.value)">
+          <option value="">All Sectors</option>
+          ${sectors.map(s => `<option value="${escapeHtml(s)}" ${s === rankSectorFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Min. Financial Score</label>
+        <select class="filter-select" onchange="setRankMinScore(this.value)">
+          <option value="">All</option>
+          <option value="70" ${rankMinScore === '70' ? 'selected' : ''}>70+ (Strong)</option>
+          <option value="40" ${rankMinScore === '40' ? 'selected' : ''}>40+ (Moderate or better)</option>
+        </select>
+      </div>
+      <div class="toggle-row" onclick="toggleRankOnlyWithData(document.getElementById('rankOnlyWithDataToggle'))">
+        <div class="toggle-switch ${rankOnlyWithData ? 'on' : ''}" id="rankOnlyWithDataToggle"><div class="knob"></div></div>
+        Show only companies with data
+      </div>
+      <div style="flex:1"></div>
+      <button class="export-btn" onclick="window.location.href='/api/export/comparison'">⭳ Export</button>
+    </div>`;
+
+  const rows = filtered.map((c, i) => {
+    const l = c.latest;
+    const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i + 1);
+    return `
+      <tr class="clickable" onclick="goToCompany(${c.id})">
+        <td class="rank-medal">${medal}</td>
+        <td>
+          <div class="co-cell">
+            <div class="co-avatar" style="background:${coAvatarColor(c.name)};">${coInitials(c.name)}</div>
+            <span class="co-name">${escapeHtml(c.name)}</span>
+          </div>
+        </td>
+        <td><span class="badge">${escapeHtml(c.ticker || '-')}</span></td>
+        <td>${escapeHtml(c.sector || '-')}</td>
+        <td>${band ? `<span class="score-badge score-${band}">${l.financial_score}/100</span>` : '-'}</td>
+        <td>${l && l.revenue !== null && l.revenue !== undefined ? fmtAmount(l.revenue) : '-'}</td>
+        <td>${l && l.net_income !== null && l.net_income !== undefined ? fmtAmount(l.net_income) : '-'}</td>
+        <td><button class="view-btn" onclick="event.stopPropagation();goToCompany(${c.id})">View</button></td>
+      </tr>`;
+  }).join('');
+
+  app.innerHTML = statCards + `
+    <div class="row" style="grid-template-columns:2.4fr 1fr;align-items:start;">
+      <div class="panel">
+        ${filterBar}
+        ${rows ? `
+        <table>
+          <thead>
+            <tr><th>Rank</th><th>Company</th><th>Ticker</th><th>Sector</th><th>Financial Score</th>
+              <th>Revenue</th><th>Net Income</th><th></th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="results-footer"><span>Showing ${filtered.length} of ${byScore.length} companies</span></div>
+        ` : `<div class="empty">No companies match the current filters.</div>`}
+      </div>
+      <div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="panel-head"><h2>Ranking Methodology</h2></div>
+          <div style="font-size:11.5px;color:var(--text-faint);margin-bottom:10px;line-height:1.5;">
+            Financial Score is a weighted blend of margin, profitability, and leverage. A company needs net margin, ROE, and debt/equity on record to produce a score.
+          </div>
+          <div class="methodology-weight"><span>Net Margin</span><div class="mw-bar"><div class="mw-fill" style="width:40%;background:var(--blue);"></div></div><span>40%</span></div>
+          <div class="methodology-weight"><span>ROE</span><div class="mw-bar"><div class="mw-fill" style="width:40%;background:var(--green);"></div></div><span>40%</span></div>
+          <div class="methodology-weight"><span>Leverage (inv. Debt/Equity)</span><div class="mw-bar"><div class="mw-fill" style="width:20%;background:var(--amber);"></div></div><span>20%</span></div>
+        </div>
+        <div class="panel" id="topCategoryPanel"></div>
+      </div>
+    </div>
+  `;
+  renderTopCategoryPanel();
+}
+
+function renderTopCategoryPanel(){
+  const el = document.getElementById('topCategoryPanel');
+  if (!el) return;
+  const withData = rankCategoryCache.filter(c => c.latest);
+  const metricMap = {
+    roe: { key: 'roe', label: 'ROE', suffix: '%' },
+    net_margin: { key: 'net_margin', label: 'Net Margin', suffix: '%' },
+    revenue: { key: 'revenue', label: 'Revenue', suffix: '' },
+  };
+  const m = metricMap[rankTopCategory];
+  const ranked = withData
+    .filter(c => c.latest[m.key] !== null && c.latest[m.key] !== undefined)
+    .sort((a, b) => b.latest[m.key] - a.latest[m.key])
+    .slice(0, 5);
+
+  const rows = ranked.map((c, i) => `
+    <div class="data-summary-row">
+      <div class="ds-label"><span style="width:16px;display:inline-block;">${i + 1}</span> ${escapeHtml(c.name)}</div>
+      <div class="ds-val">${m.suffix === '%' ? fmt(c.latest[m.key]) + '%' : fmtAmount(c.latest[m.key])}</div>
+    </div>`).join('');
+
+  el.innerHTML = `
+    <div class="panel-head">
+      <h2>Top 5 by Category</h2>
+      <select class="filter-select" style="min-width:110px;" onchange="setRankTopCategory(this.value)">
+        <option value="roe" ${rankTopCategory === 'roe' ? 'selected' : ''}>ROE</option>
+        <option value="net_margin" ${rankTopCategory === 'net_margin' ? 'selected' : ''}>Net Margin</option>
+        <option value="revenue" ${rankTopCategory === 'revenue' ? 'selected' : ''}>Revenue</option>
+      </select>
+    </div>
+    ${rows || `<div class="empty">Not enough data yet.</div>`}
+  `;
+}
+
+async function renderSectorsPage(){
+  const app = document.getElementById('app');
+  const res = await fetch('/api/companies');
+  const companies = await res.json();
+
+  if (companies.length === 0) {
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    return;
+  }
+
+  const groups = {};
+  for (const c of companies) {
+    const sector = c.sector && c.sector.trim() ? c.sector : 'Unclassified';
+    (groups[sector] = groups[sector] || []).push(c);
+  }
+  const sectorNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+
+  const panels = sectorNames.map(sector => {
+    const rows = groups[sector].map(c => {
+      const l = c.latest;
+      const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
+      return `
+        <tr class="clickable" onclick="goToCompany(${c.id})">
+          <td>${escapeHtml(c.name)}</td>
+          <td><span class="badge">${escapeHtml(c.ticker || '-')}</span></td>
+          <td>${l ? escapeHtml(l.period) : '-'}</td>
+          <td>${l ? fmt(l.net_margin) + '%' : '-'}</td>
+          <td>${band ? `<span class="score-badge score-${band}">${l.financial_score}/100</span>` : '-'}</td>
+        </tr>`;
+    }).join('');
+    return `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head"><h2>${escapeHtml(sector)}</h2><span class="badge">${groups[sector].length} compan${groups[sector].length === 1 ? 'y' : 'ies'}</span></div>
+        <table>
+          <thead><tr><th>Company</th><th>Ticker</th><th>Latest Period</th><th>Net Margin</th><th>Score</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }).join('');
+
+  app.innerHTML = panels;
+}
+
+function renderExportsPage(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head"><h2>Portfolio Export</h2></div>
+      <p style="color:var(--text-dim);font-size:12.5px;margin-bottom:12px;">
+        Single sheet, one row per company with latest KPIs — good for a quick watchlist snapshot.
+      </p>
+      <a href="/api/export/portfolio"><button>Download Portfolio (.xlsx)</button></a>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head"><h2>Comparison Report</h2></div>
+      <p style="color:var(--text-dim);font-size:12.5px;margin-bottom:12px;">
+        All companies with a summary ranking sheet plus one detailed sheet per company.
+      </p>
+      <a href="/api/export/comparison"><button>Download Comparison (.xlsx)</button></a>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Raw Company Data</h2></div>
+      <p style="color:var(--text-dim);font-size:12.5px;margin-bottom:12px;">
+        Pick a company to download its full underlying financials as CSV, for external modeling.
+      </p>
+      <div id="exports-company-list">${allCompaniesCache.length ? '' : '<div class="empty">Loading companies…</div>'}</div>
+    </div>
+  `;
+  populateExportsCompanyList();
+}
+
+async function populateExportsCompanyList(){
+  if (!allCompaniesCache.length) {
+    const res = await fetch('/api/companies');
+    allCompaniesCache = await res.json();
+  }
+  const el = document.getElementById('exports-company-list');
+  if (!el) return;
+  if (!allCompaniesCache.length) {
+    el.innerHTML = `<div class="empty">No companies yet. Add one from the Overview page.</div>`;
+    return;
+  }
+  el.innerHTML = allCompaniesCache.map(c => `
+    <div class="data-summary-row">
+      <div class="ds-label"><span class="ds-icon">📄</span>${escapeHtml(c.name)} <span class="badge">${escapeHtml(c.ticker || '-')}</span></div>
+      <a href="/api/companies/${c.id}/export/raw.csv"><button class="secondary">Download CSV</button></a>
+    </div>
+  `).join('');
+}
+
+// ---------- Compare Companies ----------
+
+let compareSelectedIds = [];
+
+async function renderComparePage(){
+  const app = document.getElementById('app');
+  if (!allCompaniesCache.length) {
+    const res = await fetch('/api/companies');
+    allCompaniesCache = await res.json();
+  }
+  if (!allCompaniesCache.length) {
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    return;
+  }
+  renderCompareShell();
+  if (compareSelectedIds.length >= 2) await runCompare();
+}
+
+function renderCompareShell(){
+  const app = document.getElementById('app');
+  const MAX_COMPARE = 6;
+  const selected = compareSelectedIds
+    .map(id => allCompaniesCache.find(c => c.id === id))
+    .filter(Boolean);
+  const chips = selected.map(c => `
+    <div class="compare-chip">
+      <div class="co-avatar" style="background:${coAvatarColor(c.name)};">${coInitials(c.name)}</div>
+      <div><div class="cc-name">${escapeHtml(c.name)}</div><div class="cc-ticker">${escapeHtml(c.ticker || '-')}</div></div>
+      <span class="cc-remove" onclick="toggleCompareSelect(${c.id}, false)">✕</span>
+    </div>`).join('');
+
+  const available = allCompaniesCache.filter(c => !compareSelectedIds.includes(c.id));
+  const addOptions = available.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+
+  app.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Selected Companies (${selected.length}/${MAX_COMPARE})</h2>
+        <button class="export-btn" ${selected.length < 2 ? 'disabled style="opacity:.5;"' : ''} onclick="window.location.href='/api/export/comparison'">⭳ Export</button>
+      </div>
+      <div class="compare-picker" style="flex-wrap:wrap;">${chips || '<div class="empty" style="padding:6px 0;">No companies selected yet.</div>'}</div>
+      ${selected.length < MAX_COMPARE ? `
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+        <select class="filter-select" style="min-width:220px;" id="compareAddSelect">
+          <option value="">+ Add a company to compare...</option>
+          ${addOptions}
+        </select>
+        <button class="secondary" style="margin:0;" onclick="addCompareFromSelect()">Add</button>
+      </div>` : ''}
+    </div>
+    <div id="compare-result"></div>
+  `;
+}
+
+function addCompareFromSelect(){
+  const sel = document.getElementById('compareAddSelect');
+  const id = Number(sel.value);
+  if (!id) return;
+  toggleCompareSelect(id, true);
+}
+
+function toggleCompareSelect(id, checked){
+  if (checked) { if (!compareSelectedIds.includes(id) && compareSelectedIds.length < 6) compareSelectedIds.push(id); }
+  else { compareSelectedIds = compareSelectedIds.filter(x => x !== id); }
+  renderCompareShell();
+  if (compareSelectedIds.length >= 2) runCompare();
+  else document.getElementById('compare-result').innerHTML = '';
+}
+
+function compareBarChart(title, unitLabel, companies, getter, color, isPercent){
+  const vals = companies.map(c => getter(c));
+  const maxV = Math.max(1, ...vals.map(v => v || 0));
+  const cols = companies.map((c, i) => `
+    <div class="mini-bar-col">
+      <div class="mbc-val">${vals[i] === null || vals[i] === undefined ? '-' : (isPercent ? fmt(vals[i]) + '%' : fmtAmount(vals[i]))}</div>
+      <div class="mbc-bar" style="height:${vals[i] ? Math.max(4, vals[i] / maxV * 100) : 2}%;background:${color};"></div>
+      <div class="mbc-label">${escapeHtml(c.name)}</div>
+    </div>`).join('');
+  return `
+    <div class="chart-panel mini-bar-panel">
+      <div class="mb-title">${title}${unitLabel ? ` — ${unitLabel}` : ''}</div>
+      <div class="mini-bar-chart">${cols}</div>
+    </div>`;
+}
+
+async function runCompare(){
+  if (compareSelectedIds.length < 2) return;
+  const res = await fetch(`/api/compare?ids=${compareSelectedIds.join(',')}`);
+  const companies = await res.json();
+  const resultEl = document.getElementById('compare-result');
+  if (!resultEl) return;
+
+  const withData = companies.filter(c => c.latest);
+  const totalRevenue = withData.reduce((s, c) => s + (c.latest.revenue || 0), 0);
+  const totalNetIncome = withData.reduce((s, c) => s + (c.latest.net_income || 0), 0);
+  const margins = withData.filter(c => c.latest.net_margin !== null && c.latest.net_margin !== undefined);
+  const roes = withData.filter(c => c.latest.roe !== null && c.latest.roe !== undefined);
+  const avgMargin = margins.length ? margins.reduce((s, c) => s + c.latest.net_margin, 0) / margins.length : null;
+  const avgRoe = roes.length ? roes.reduce((s, c) => s + c.latest.roe, 0) / roes.length : null;
+  const scored = withData.filter(c => c.latest.financial_score !== null && c.latest.financial_score !== undefined);
+  const highest = scored.length ? scored.reduce((a, b) => a.latest.financial_score >= b.latest.financial_score ? a : b) : null;
+  const lowest = scored.length ? scored.reduce((a, b) => a.latest.financial_score <= b.latest.financial_score ? a : b) : null;
+
+  const summary = `
+    <div class="panel">
+      <div class="panel-head"><h2>Overview</h2></div>
+      <div class="stat-grid" style="grid-template-columns:repeat(6,1fr);">
+        <div class="summary-metric"><div class="sm-val">${companies.length}</div><div class="sm-label">Companies Compared</div></div>
+        <div class="summary-metric"><div class="sm-val">${totalRevenue ? fmtMoney(totalRevenue) : '-'}</div><div class="sm-label">Total Revenue</div></div>
+        <div class="summary-metric"><div class="sm-val">${totalNetIncome ? fmtMoney(totalNetIncome) : '-'}</div><div class="sm-label">Total Net Income</div></div>
+        <div class="summary-metric"><div class="sm-val">${avgMargin !== null ? fmt(avgMargin) + '%' : '-'}</div><div class="sm-label">Average Net Margin</div></div>
+        <div class="summary-metric"><div class="sm-val" style="color:var(--green);">${highest ? escapeHtml(highest.name) : '-'}</div><div class="sm-label">Highest Score${highest ? ` (${highest.latest.financial_score})` : ''}</div></div>
+        <div class="summary-metric"><div class="sm-val" style="color:var(--red);">${lowest ? escapeHtml(lowest.name) : '-'}</div><div class="sm-label">Lowest Score${lowest ? ` (${lowest.latest.financial_score})` : ''}</div></div>
+      </div>
+    </div>`;
+
+  const charts = withData.length ? `
+    <div class="row row-4">
+      ${compareBarChart('Revenue Comparison', 'KES', withData, c => c.latest.revenue, 'var(--blue)', false)}
+      ${compareBarChart('Net Income Comparison', 'KES', withData, c => c.latest.net_income, 'var(--green)', false)}
+      ${compareBarChart('Net Margin Comparison', '%', withData, c => c.latest.net_margin, 'var(--purple)', true)}
+      ${compareBarChart('ROE Comparison', '%', withData, c => c.latest.roe, 'var(--amber)', true)}
+    </div>` : '';
+
+  const metricRows = [
+    ['Sector', c => c.sector || '-'],
+    ['Latest Period', c => c.latest ? c.latest.period : '-'],
+    ['Revenue', c => c.latest ? fmtAmount(c.latest.revenue) : '-'],
+    ['Net Income', c => c.latest ? fmtAmount(c.latest.net_income) : '-'],
+    ['Net Margin', c => c.latest && c.latest.net_margin !== null ? fmt(c.latest.net_margin) + '%' : '-'],
+    ['ROE', c => c.latest && c.latest.roe !== null ? fmt(c.latest.roe) + '%' : '-'],
+    ['Debt/Equity', c => c.latest && c.latest.debt_equity !== null ? fmt(c.latest.debt_equity, 2) : '-'],
+    ['Financial Score', c => c.latest && c.latest.financial_score !== null
+      ? `<span class="score-badge score-${c.latest.score_band}">${c.latest.financial_score}/100</span>` : '-'],
+  ];
+  const headerCols = companies.map(c => `<th>${escapeHtml(c.name)} <span class="badge">${escapeHtml(c.ticker || '-')}</span></th>`).join('');
+  const bodyRows = metricRows.map(([label, getter]) => `
+    <tr><td>${label}</td>${companies.map(c => `<td>${getter(c)}</td>`).join('')}</tr>
+  `).join('');
+
+  const insights = [];
+  if (withData.length) {
+    const byRevenue = [...withData].sort((a, b) => (b.latest.revenue || 0) - (a.latest.revenue || 0))[0];
+    if (byRevenue) insights.push(`<b>${escapeHtml(byRevenue.name)}</b> leads on scale with revenue of ${fmtAmount(byRevenue.latest.revenue)}.`);
+    if (margins.length) {
+      const byMargin = [...margins].sort((a, b) => b.latest.net_margin - a.latest.net_margin)[0];
+      insights.push(`<b>${escapeHtml(byMargin.name)}</b> shows the strongest net margin at ${fmt(byMargin.latest.net_margin)}%.`);
+    }
+    if (highest) insights.push(`<b>${escapeHtml(highest.name)}</b> has the strongest financial health score (${highest.latest.financial_score}/100).`);
+    if (lowest && lowest.id !== (highest && highest.id)) insights.push(`<b>${escapeHtml(lowest.name)}</b> has the weakest financial health score among those compared (${lowest.latest.financial_score}/100).`);
+  }
+
+  const insightsPanel = `
+    <div class="panel">
+      <div class="panel-head"><h2>Key Insights</h2></div>
+      ${insights.length ? insights.map(t => `<div class="insight-item"><span class="ii-icon">📌</span><span>${t}</span></div>`).join('')
+        : `<div class="empty">Add financials for these companies to see insights.</div>`}
+    </div>`;
+
+  resultEl.innerHTML = `
+    ${summary}
+    ${charts}
+    <div class="row" style="grid-template-columns:2.2fr 1fr;align-items:start;">
+      <div class="panel">
+        <div class="panel-head"><h2>Metric Comparison</h2></div>
+        <table>
+          <thead><tr><th></th>${headerCols}</tr></thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>
+      ${insightsPanel}
+    </div>
+  `;
+}
+
+// ---------- Financial Analytics ----------
+
+let analyticsCompanyId = null;
+let analyticsChart1 = null;
+let analyticsChart2 = null;
+let analyticsChart3 = null;
+
+async function renderAnalyticsPage(){
+  const app = document.getElementById('app');
+  if (!allCompaniesCache.length) {
+    const res = await fetch('/api/companies');
+    allCompaniesCache = await res.json();
+  }
+  if (!allCompaniesCache.length) {
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    return;
+  }
+  if (!analyticsCompanyId) analyticsCompanyId = allCompaniesCache[0].id;
+
+  const opts = allCompaniesCache.map(c =>
+    `<option value="${c.id}" ${c.id === analyticsCompanyId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
+  ).join('');
+
+  app.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Financial Analytics</h2>
+        <select class="period-select" onchange="switchAnalyticsCompany(this.value)">${opts}</select>
+      </div>
+      <div id="analytics-body"><div class="empty">Loading trend data...</div></div>
+    </div>
+  `;
+  await loadAnalyticsTrends();
+}
+
+async function switchAnalyticsCompany(id){
+  analyticsCompanyId = parseInt(id, 10);
+  await loadAnalyticsTrends();
+}
+
+async function loadAnalyticsTrends(){
+  const res = await fetch(`/api/companies/${analyticsCompanyId}/trends`);
+  const trends = await res.json();
+  const bodyEl = document.getElementById('analytics-body');
+
+  if (trends.length < 2) {
+    bodyEl.innerHTML = `<div class="empty">Need at least 2 periods of data for this company to show a trend. ${trends.length === 1 ? 'Only 1 period on record so far.' : 'No data on record yet.'}</div>`;
+    return;
+  }
+
+  bodyEl.innerHTML = `
+    <div class="subhead">Revenue &amp; Net Income</div>
+    <div class="chart-wrap"><canvas id="analytics-chart-1"></canvas></div>
+    <div class="subhead">Net Margin &amp; ROE (%)</div>
+    <div class="chart-wrap"><canvas id="analytics-chart-2"></canvas></div>
+    <div class="subhead">Financial Score</div>
+    <div class="chart-wrap" style="height:180px;"><canvas id="analytics-chart-3"></canvas></div>
+  `;
+
+  const labels = trends.map(t => t.period);
+  if (analyticsChart1) analyticsChart1.destroy();
+  if (analyticsChart2) analyticsChart2.destroy();
+  if (analyticsChart3) analyticsChart3.destroy();
+
+  const chartOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { labels: { color: '#aab4cc' } } },
+    scales: {
+      x: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+      y: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+    },
+  };
+
+  analyticsChart1 = new Chart(document.getElementById('analytics-chart-1'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Revenue', data: trends.map(t => t.revenue), borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.15)', tension: .3 },
+      { label: 'Net Income', data: trends.map(t => t.net_income), borderColor: '#3ddc84', backgroundColor: 'rgba(61,220,132,.15)', tension: .3 },
+    ]},
+    options: chartOpts,
+  });
+
+  analyticsChart2 = new Chart(document.getElementById('analytics-chart-2'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Net Margin %', data: trends.map(t => t.net_margin), borderColor: '#ffb020', backgroundColor: 'rgba(255,176,32,.15)', tension: .3 },
+      { label: 'ROE %', data: trends.map(t => t.roe), borderColor: '#b79bfc', backgroundColor: 'rgba(183,155,252,.15)', tension: .3 },
+    ]},
+    options: chartOpts,
+  });
+
+  analyticsChart3 = new Chart(document.getElementById('analytics-chart-3'), {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: 'Financial Score', data: trends.map(t => t.financial_score), backgroundColor: '#5b9bff' },
+    ]},
+    options: { ...chartOpts, scales: { ...chartOpts.scales, y: { ...chartOpts.scales.y, max: 100 } } },
+  });
+}
+
+// ---------- Alerts ----------
+
+async function renderAlertsPage(){
+  const app = document.getElementById('app');
+  const res = await fetch('/api/alerts');
+  const data = await res.json();
+
+  const riskCards = data.risks.length ? data.risks.map(a => `
+    <div class="alert-card">
+      <div class="alert-title clickable" onclick="goToCompany(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
+      <div class="alert-meta"><span class="severity-badge severity-${a.severity}">${a.severity}</span> · ${escapeHtml(a.metric)}</div>
+    </div>`).join('') : '<div class="empty">No active risk flags.</div>';
+
+  const oppCards = data.opportunities.length ? data.opportunities.map(a => `
+    <div class="alert-card">
+      <div class="alert-title clickable" onclick="goToCompany(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
+      <div class="alert-meta"><span class="severity-badge severity-Positive">Positive</span> · ${escapeHtml(a.metric)}</div>
+    </div>`).join('') : '<div class="empty">No standout opportunities detected right now.</div>';
+
+  app.innerHTML = `
+    <div class="row row-2" style="grid-template-columns:1fr 1fr;">
+      <div class="panel">
+        <div class="panel-head"><h2>Risk Alerts</h2><span class="badge">${data.risk_count}</span></div>
+        ${riskCards}
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Opportunities</h2><span class="badge">${data.opportunity_count}</span></div>
+        ${oppCards}
+      </div>
+    </div>
+  `;
+}
+
+// ---------- Reports (import job audit trail) ----------
+
+async function renderReportsPage(){
+  const app = document.getElementById('app');
+  const res = await fetch('/api/import-jobs');
+  const jobs = await res.json();
+
+  if (!jobs.length) {
+    app.innerHTML = `<div class="panel"><div class="empty">No import activity yet. Filings saved via NSE import or the report builder will show up here.</div></div>`;
+    return;
+  }
+
+  const rows = jobs.map(j => `
+    <tr>
+      <td>${j.company_name ? `<span class="clickable" onclick="goToCompany(${j.company_id})">${escapeHtml(j.company_name)}</span>` : '-'}</td>
+      <td>${escapeHtml(j.period_label || '-')}</td>
+      <td><span class="status-badge status-${escapeHtml(j.status)}">${escapeHtml(j.status)}</span></td>
+      <td>${j.source_url ? `<a href="${escapeHtml(j.source_url)}" target="_blank" rel="noopener">Source PDF</a>` : '-'}</td>
+      <td>${j.started_at ? new Date(j.started_at).toLocaleString() : '-'}</td>
+      <td>${j.error_message ? `<span style="color:var(--red);">${escapeHtml(j.error_message)}</span>` : '-'}</td>
+    </tr>`).join('');
+
+  app.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Import Activity</h2><span class="badge">${jobs.length}</span></div>
+      <table>
+        <thead><tr><th>Company</th><th>Period</th><th>Status</th><th>Source</th><th>Started</th><th>Error</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ---------- Settings ----------
+
+async function renderSettingsPage(){
+  const app = document.getElementById('app');
+  const res = await fetch('/api/system/status');
+  const status = await res.json();
+
+  const banner = status.persistent
+    ? `<div class="status-banner ok">✓ Connected to ${escapeHtml(status.database_engine)} — a persistent database. Saved data will survive restarts and redeploys.</div>`
+    : `<div class="status-banner warn">⚠ Connected to ${escapeHtml(status.database_engine)}. ${escapeHtml(status.warning || '')}</div>`;
+
+  app.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Database</h2></div>
+      ${banner}
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div><div class="stat-value">${status.counts.companies}</div><div class="stat-label">Companies</div></div>
+        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">📅</div><div class="stat-value">${status.counts.periods}</div><div class="stat-label">Financial Periods</div></div>
+        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📄</div><div class="stat-value">${status.counts.source_documents}</div><div class="stat-label">Source Documents</div></div>
+        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">📥</div><div class="stat-value">${status.counts.import_jobs}</div><div class="stat-label">Import Jobs</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Manage</h2></div>
+      <div class="data-summary-row">
+        <div class="ds-label"><span class="ds-icon">🏢</span>Companies — edit, view, or delete tracked companies</div>
+        <button class="secondary" onclick="goTo('companies')">Open</button>
+      </div>
+      <div class="data-summary-row">
+        <div class="ds-label"><span class="ds-icon">📥</span>Import Activity — full history of scan/parse/save attempts</div>
+        <button class="secondary" onclick="goTo('reports')">Open</button>
+      </div>
+    </div>
+  `;
+}
+
+async function renderCompanyDetail(companyId){
+  currentCompanyId = companyId;
+  const res = await fetch(`/api/companies/${companyId}`);
+  const c = await res.json();
+  currentCompanyName = c.name;
+  document.getElementById('pageTitle').textContent = c.name;
+  document.getElementById('pageSub').textContent = `${c.ticker || ''} · ${c.exchange || ''} · ${c.sector || ''} · ${c.country || ''}`;
+
+  const periodsRes = await fetch(`/api/companies/${companyId}/periods`);
+  currentPeriodsCache = await periodsRes.json();
+  if (!currentPeriodLabel || !currentPeriodsCache.find(p => p.period_label === currentPeriodLabel)) {
+    currentPeriodLabel = currentPeriodsCache.length ? currentPeriodsCache[0].period_label : null;
+  }
+  currentStatementTab = null;
+  builderPeriod = ''; builderTab = 'income_statement';
+  builderRows = { income_statement: [], balance_sheet: [], cash_flow: [], equity: [] };
+
+  await renderCompanyDetailBody(companyId);
+}
+
+async function deleteCurrentCompany(){
+  if (!confirm(`Delete ${currentCompanyName} and all of its saved financial data? This can't be undone.`)) return;
+  try {
+    const res = await fetch(`/api/companies/${currentCompanyId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || `Delete failed (status ${res.status}).`);
+      return;
+    }
+    goTo('companies');
+  } catch (err) {
+    console.error('Delete failed:', err);
+    alert('Delete failed — check the browser console for details.');
+  }
+}
+
+async function renderCompanyDetailBody(companyId){
+  const app = document.getElementById('app');
+  app.innerHTML = `<span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span><div class="empty">Loading full report...</div>`;
+
+  // Full report: every period this company has, fully expanded (every
+  // statement, every line item at every depth) in one continuous page -
+  // nothing sits behind a dropdown or a tab that has to be clicked
+  // through, since a real annual report review means scanning the whole
+  // thing, not one statement at a time.
+  const detailFetches = currentPeriodsCache.map(p =>
+    fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(p.period_label)}`).then(r => r.ok ? r.json() : null)
+  );
+  const allPeriodDetails = (await Promise.all(detailFetches)).filter(Boolean);
+
+  const jumpNav = allPeriodDetails.length ? `
+    <div class="period-jump-nav">
+      ${allPeriodDetails.map(p => `<a href="#period-${escapeHtml(p.period_label)}">${escapeHtml(p.period_label)}</a>`).join('')}
+    </div>` : '';
+
+  const periodSections = allPeriodDetails.length
+    ? allPeriodDetails.map(renderFullPeriodSection).join('')
+    : `<div class="empty">No report data yet for this company. Add one below, or import from NSE on the Overview page.</div>`;
+
+  app.innerHTML = `
+    <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Full Financial Report</h2>
+        <button class="secondary" onclick="deleteCurrentCompany()">🗑️ Delete Company</button>
+      </div>
+      ${jumpNav}
+      <div id="report-panel-body">${periodSections}</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Add / Edit Period Report</h2></div>
+      <div style="font-size:12px;color:var(--text-faint);margin-bottom:12px;">
+        Enter one or more line items per statement - as many or as few as you have (revenue, costs, assets, whatever the report gives you). Not limited to five fixed numbers.
+      </div>
+      ${renderReportBuilder()}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Downloads</h2></div>
+      <div class="download-grid">
+        <div class="download-card">
+          <div class="dl-title">Company Snapshot</div>
+          <div class="dl-desc">Profile + all periods + calculated KPIs (Excel)</div>
+          <button class="secondary" onclick="window.location.href='/api/companies/${companyId}/export/snapshot'">Download</button>
+        </div>
+        <div class="download-card">
+          <div class="dl-title">Raw Financials</div>
+          <div class="dl-desc">Underlying numbers, no formatting (CSV)</div>
+          <button class="secondary" onclick="window.location.href='/api/companies/${companyId}/export/raw.csv'">Download</button>
+        </div>
+        <div class="download-card">
+          <div class="dl-title">Portfolio Export</div>
+          <div class="dl-desc">This company alongside all others (Excel)</div>
+          <button class="secondary" onclick="window.location.href='/api/export/portfolio'">Download</button>
+        </div>
+        <div class="download-card">
+          <div class="dl-title">Comparison Report</div>
+          <div class="dl-desc">Multi-sheet workbook, all companies (Excel)</div>
+          <button class="secondary" onclick="window.location.href='/api/export/comparison'">Download</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderFullPeriodSection(period){
+  const present = Object.keys(STATEMENT_LABELS).filter(t => period.statements[t]);
+  const statementBlocks = present.length
+    ? present.map(t => {
+        const stmt = period.statements[t];
+        const rows = renderLineItemRows(stmt.line_items, 0);
+        return `
+          <div class="subhead">${STATEMENT_LABELS[t]}</div>
+          <table>
+            <thead><tr><th>Line Item</th><th class="amount">Amount (${escapeHtml(period.currency || 'KES')})</th><th>Page</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+      }).join('')
+    : `<div class="empty">No statement line items recorded for ${escapeHtml(period.period_label)} yet.</div>`;
+
+  return `
+    <div id="period-${escapeHtml(period.period_label)}" class="period-section">
+      <div class="period-section-head">${escapeHtml(period.period_label)}</div>
+      ${renderCalculatedMetrics(period.calculated_metrics)}
+      ${statementBlocks}
+      ${period.segments && period.segments.length ? renderSegments(period.segments) : ''}
+      ${period.operational_metrics && period.operational_metrics.length ? renderOperationalMetrics(period.operational_metrics) : ''}
+      ${period.notes && period.notes.length ? renderNotes(period.notes) : ''}
+    </div>
+  `;
+}
+
+let _liRowCounter = 0;
+
+function renderLineItemRows(items, depth, parentKey){
+  return items.map(li => {
+    const key = `li${_liRowCounter++}`;
+    const indent = 10 + depth * 20;
+    const hasChildren = !!(li.children && li.children.length);
+    const toggle = hasChildren
+      ? `<span class="li-toggle" onclick="event.stopPropagation();toggleLineItemRow('${key}')">▸</span>`
+      : `<span class="li-toggle-spacer"></span>`;
+    let row = `
+      <tr ${parentKey ? `class="li-child" data-parent-key="${parentKey}" style="display:none;"` : ''} data-li-key="${key}">
+        <td style="padding-left:${indent}px">${toggle}<span class="li-row-label">${escapeHtml(li.label)}</span>${li.normalized_name ? `<span class="badge li-normalized">${escapeHtml(li.normalized_name)}</span>` : ''}</td>
+        <td class="amount">${fmtAmount(li.amount)}</td>
+        <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
+      </tr>`;
+    if (hasChildren) row += renderLineItemRows(li.children, depth + 1, key);
+    return row;
+  }).join('');
+}
+
+function toggleLineItemRow(key){
+  const row = document.querySelector(`tr[data-li-key="${key}"]`);
+  const arrow = row ? row.querySelector('.li-toggle') : null;
+  const opening = arrow && arrow.textContent === '▸';
+
+  document.querySelectorAll(`tr[data-parent-key="${key}"]`).forEach(tr => {
+    tr.style.display = opening ? '' : 'none';
+  });
+  if (arrow) arrow.textContent = opening ? '▾' : '▸';
+
+  // Collapsing a parent also resets and hides any expanded grandchildren,
+  // so re-opening it later always starts from a clean collapsed state
+  // rather than remembering whatever was expanded before.
+  if (!opening) _collapseDescendants(key);
+}
+
+function _collapseDescendants(key){
+  document.querySelectorAll(`tr[data-parent-key="${key}"]`).forEach(tr => {
+    const childKey = tr.getAttribute('data-li-key');
+    tr.style.display = 'none';
+    const childArrow = tr.querySelector('.li-toggle');
+    if (childArrow) childArrow.textContent = '▸';
+    _collapseDescendants(childKey);
+  });
+}
+
+function renderCalculatedMetrics(metrics){
+  if (!metrics || !Object.keys(metrics).length) return '';
+  const cards = Object.entries(metrics).map(([key, val]) => `
+    <div class="stat-card">
+      <div class="stat-value" style="font-size:17px;">${fmt(val, 2)}${PCT_METRICS.has(key) ? '%' : ''}</div>
+      <div class="stat-label">${METRIC_LABELS[key] || key}</div>
+    </div>`).join('');
+  return `<div class="stat-grid" style="margin-bottom:16px;">${cards}</div>`;
+}
+
+function renderSegments(segments){
+  const rows = segments.map(s => `
+    <tr>
+      <td>${escapeHtml(s.segment_name)}</td>
+      <td class="amount">${fmtAmount(s.revenue)}</td>
+      <td class="amount">${fmtAmount(s.operating_profit)}</td>
+    </tr>`).join('');
+  return `
+    <div class="subhead">Segments</div>
+    <table>
+      <thead><tr><th>Segment</th><th class="amount">Revenue</th><th class="amount">Operating Profit</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderOperationalMetrics(metrics){
+  const rows = metrics.map(m => `
+    <tr><td>${escapeHtml(m.metric_name)}</td><td class="amount">${fmtAmount(m.value)} ${escapeHtml(m.unit || '')}</td></tr>`).join('');
+  return `<div class="subhead">Operational KPIs</div><table><tbody>${rows}</tbody></table>`;
+}
+
+function renderNotes(notes){
+  const items = notes.map(n => `
+    <div style="margin-bottom:10px;">
+      <div style="font-weight:600;font-size:12.5px;">${escapeHtml(n.title || 'Note')}${n.page ? ` <span class="badge">p.${n.page}</span>` : ''}</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:2px;">${escapeHtml(n.content || '')}</div>
+    </div>`).join('');
+  return `<div class="subhead">Notes</div>${items}`;
+}
+
+/* ---------- REPORT BUILDER (manual entry, any number of line items per statement) ---------- */
+
+function renderReportBuilder(){
+  return `<div id="report-builder-panel">${renderReportBuilderInner()}</div>`;
+}
+
+function renderReportBuilderInner(){
+  const tabs = Object.keys(STATEMENT_LABELS).map(t =>
+    `<button class="tab-btn ${t === builderTab ? 'active' : ''}" onclick="switchBuilderTab('${t}')">${STATEMENT_LABELS[t]}</button>`
+  ).join('');
+
+  return `
+    <input id="builder-period" placeholder="Period (e.g. FY2025)" value="${escapeHtml(builderPeriod)}"
+      oninput="builderPeriod=this.value" style="margin-bottom:12px;">
+    <div class="tab-bar">${tabs}</div>
+    <div id="builder-rows">${renderBuilderRows()}</div>
+    <button class="secondary" onclick="addBuilderRow()">+ Add Line Item</button>
+    <button onclick="saveBuilderReport()">Save Report</button>
+    <div id="builder-error" class="error"></div>
+  `;
+}
+
+function refreshBuilderPanel(){
+  const el = document.getElementById('report-builder-panel');
+  if (el) el.innerHTML = renderReportBuilderInner();
+}
+
+function switchBuilderTab(t){ builderTab = t; refreshBuilderPanel(); }
+
+function addBuilderRow(){
+  builderRows[builderTab].push({ label: '', amount: '' });
+  refreshBuilderPanel();
+}
+function removeBuilderRow(i){
+  builderRows[builderTab].splice(i, 1);
+  refreshBuilderPanel();
+}
+function updateBuilderRow(i, field, val){
+  builderRows[builderTab][i][field] = val;
+}
+
+function renderBuilderRows(){
+  const rows = builderRows[builderTab];
+  if (!rows.length) {
+    return `<div class="empty">No line items yet for ${STATEMENT_LABELS[builderTab]}. Click "+ Add Line Item".</div>`;
+  }
+  return rows.map((r, i) => `
+    <div class="builder-row">
+      <input placeholder="Label (e.g. Revenue, Employee costs...)" value="${escapeHtml(r.label)}"
+        oninput="updateBuilderRow(${i},'label',this.value)">
+      <input placeholder="Amount" type="number" step="any" value="${r.amount ?? ''}"
+        oninput="updateBuilderRow(${i},'amount',this.value)">
+      <button class="secondary" onclick="removeBuilderRow(${i})">Remove</button>
+    </div>`).join('');
+}
+
+async function saveBuilderReport(){
+  const errorEl = document.getElementById('builder-error');
+  errorEl.textContent = '';
+  const period = document.getElementById('builder-period').value.trim();
+  if (!period) { errorEl.textContent = 'Period is required (e.g. FY2025).'; return; }
+
+  const statements = {};
+  for (const [stmtType, rows] of Object.entries(builderRows)) {
+    const items = rows
+      .filter(r => r.label && r.amount !== '' && r.amount !== null && r.amount !== undefined)
+      .map((r, idx) => ({ label: r.label, amount: parseFloat(r.amount), order_index: idx }));
+    if (items.length) statements[stmtType] = { line_items: items };
+  }
+  if (!Object.keys(statements).length) { errorEl.textContent = 'Add at least one line item before saving.'; return; }
+
+  const res = await fetch('/api/import/nse/save', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ company_id: currentCompanyId, period, statements })
+  });
+  const data = await res.json();
+  if (!res.ok) { errorEl.textContent = data.error || 'Save failed.'; return; }
+
+  currentPeriodLabel = period;
+  await renderCompanyDetail(currentCompanyId);
+}
+
+function fmt(val, decimals = 1){
+  return (val === null || val === undefined) ? '-' : Number(val).toFixed(decimals);
+}
+function fmtAmount(val){
+  if (val === null || val === undefined || val === '') return '-';
+  const num = Number(val);
+  if (Number.isNaN(num)) return '-';
+  const formatted = Math.abs(num).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return num < 0 ? `(${formatted})` : formatted;
+}
+function fmtMoney(val){
+  if (val === null || val === undefined) return '-';
+  if (Math.abs(val) >= 1000) return (val/1000).toFixed(1) + 'T';
+  return Number(val).toFixed(1) + 'B';
+}
+function timeAgo(isoString){
+  if (!isoString) return '';
+  const then = new Date(isoString);
+  const diffMs = Date.now() - then.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min${mins===1?'':'s'} ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs===1?'':'s'} ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days===1?'':'s'} ago`;
+}
+function trendBadge(value, {suffix = '%', prefix = '', decimals = 1, invert = false} = {}){
+  if (value === null || value === undefined) return `<div class="stat-trend neutral">No prior data</div>`;
+  const num = Number(value);
+  const isUp = invert ? num < 0 : num > 0;
+  const isFlat = num === 0;
+  const dir = isFlat ? 'neutral' : (isUp ? 'up' : 'down');
+  const arrow = isFlat ? '→' : (isUp ? '↑' : '↓');
+  const shown = Math.abs(num).toFixed(decimals);
+  return `<div class="stat-trend ${dir}">${arrow} ${prefix}${shown}${suffix}</div>`;
+}
+function trendCount(value, label){
+  if (value === null || value === undefined) return `<div class="stat-trend neutral">${escapeHtml(label)}</div>`;
+  const dir = value > 0 ? 'up' : (value < 0 ? 'down' : 'neutral');
+  const arrow = value > 0 ? '↑' : (value < 0 ? '↓' : '→');
+  return `<div class="stat-trend ${dir}">${arrow} ${Math.abs(value)} ${escapeHtml(label)}</div>`;
+}
+const AVATAR_COLORS = ['#5b9bff','#3ddc84','#ffb020','#ff6161','#b79bfc','#26c6da','#f472b6','#94a3b8'];
+function coAvatarColor(name){
+  const str = name || '?';
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+function coInitials(name){
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  return parts.length > 1 ? (parts[0][0] + parts[1][0]).toUpperCase() : name.slice(0, 2).toUpperCase();
+}
+function scoreBandLabel(band){
+  return band === 'strong' ? 'Strong' : band === 'moderate' ? 'Moderate' : band === 'weak' ? 'Weak' : '';
+}
+function toggleSwitchHtml(id, on){
+  return `<div class="toggle-switch ${on ? 'on' : ''}" id="${id}" onclick="this.classList.toggle('on'); window['${id}_cb'] && window['${id}_cb'](this.classList.contains('on'))"><div class="knob"></div></div>`;
+}
+function escapeHtml(str){
+  const div = document.createElement('div');
+  div.textContent = str == null ? '' : str;
+  return div.innerHTML;
+}
+
+renderNav();
+render();
+</script>
+</body>
+</html>
