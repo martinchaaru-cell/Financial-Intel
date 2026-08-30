@@ -76,6 +76,8 @@ CANONICAL_LINE_ITEMS = {
         r"income\s+tax\s+expense": 'tax_expense',
         r"profit\s+for\s+the\s+(period|year)": 'net_income',
         r"profit\s+after\s+tax": 'net_income',
+        r"net\s+profit": 'net_income',
+        r"net\s+income": 'net_income',
         r"earnings\s+per\s+share": 'eps',
     },
     'balance_sheet': {
@@ -162,6 +164,16 @@ def _classify_statement(line: str):
             if rx.search(line):
                 return stmt
     return None
+
+
+def match_canonical_label(statement_type, label):
+    """Public entry point so callers outside this module (e.g. the manual
+    report builder / NSE-review save path in app.py) can resolve a
+    hand-typed label like "Revenue" or "Net income" to the same
+    normalized_name the PDF parser would assign - so ratios.py can find it
+    regardless of whether the figure came from a parsed PDF or was typed
+    in by hand."""
+    return _match_canonical(statement_type, label)
 
 
 def _match_canonical(stmt_type, label):

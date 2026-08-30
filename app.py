@@ -11,7 +11,7 @@ from models import (
 )
 from ratios import calculate_ratios
 from nse_import import fetch_nse_filings, fetch_nse_page, NSE_FINANCIAL_RESULTS_URL
-from nse_pdf_parse import fetch_and_parse_pdf
+from nse_pdf_parse import fetch_and_parse_pdf, match_canonical_label
 
 # ---------- SCORING ----------
 # Simple, transparent financial health score (0-100).
@@ -388,6 +388,12 @@ def nse_save():
                 except (TypeError, ValueError):
                     continue
                 normalized = (li.get('normalized_name') or '').strip() or None
+                if not normalized:
+                    # Manual entry (report builder, or a hand-added NSE
+                    # review row) won't have this set by the parser -
+                    # try to resolve it from the label text itself so
+                    # ratios.py and the legacy dual-write below still work.
+                    normalized = match_canonical_label(statement_type, li.get('label') or '')
                 db.session.add(FinancialLineItem(
                     statement_id=stmt.id,
                     label=(li.get('label') or '').strip() or 'Unlabeled',
@@ -441,6 +447,25 @@ def nse_save():
         'period': period.to_dict(),
         'financials': f.to_dict(),   # legacy shape, for any frontend code still reading it
     }), 201
+
+@app.route('/api/companies/<int:company_id>/periods')
+def list_periods(company_id):
+    """Lightweight list of periods for a company - just enough to build a
+    period selector. Full statement/line-item detail is fetched separately
+    via /periods/<period_label> to avoid over-fetching every time."""
+    Company.query.get_or_404(company_id)
+    periods = FinancialPeriod.query.filter_by(company_id=company_id) \
+        .order_by(FinancialPeriod.period_label.desc()).all()
+    return jsonify([
+        {
+            'period_label': p.period_label,
+            'period_type': p.period_type,
+            'currency': p.currency,
+            'statement_types': [s.statement_type for s in p.statements],
+            'calculated_metrics': {m.metric_name: m.value for m in p.calculated_metrics},
+        }
+        for p in periods
+    ])
 
 @app.route('/api/companies/<int:company_id>/periods/<period_label>')
 def get_period_detail(company_id, period_label):

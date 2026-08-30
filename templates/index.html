@@ -108,7 +108,29 @@ button.secondary{background:var(--bg-hover);color:var(--text);border:1px solid v
 .download-card button{margin-top:auto;}
 
 .hidden{display:none;}
-@media(max-width:900px){.stat-grid{grid-template-columns:repeat(2,1fr);} .row-3{grid-template-columns:1fr;}}
+
+.tab-bar{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:14px;flex-wrap:wrap;}
+.tab-btn{padding:8px 14px;background:transparent;border:none;color:var(--text-dim);cursor:pointer;
+  font-size:12.5px;border-bottom:2px solid transparent;font-weight:600;}
+.tab-btn:hover{color:var(--text);}
+.tab-btn.active{color:#fff;border-bottom-color:var(--blue);}
+.period-select{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
+  padding:7px 10px;border-radius:var(--radius-sm);font-size:12.5px;}
+td.amount,th.amount{text-align:right;}
+.li-normalized{margin-left:6px;opacity:.7;}
+.builder-row{display:grid;grid-template-columns:2fr 1fr auto;gap:8px;margin-bottom:8px;align-items:center;}
+.builder-row input{margin:0;}
+.builder-row button{margin:0;padding:9px 12px;}
+.subhead{font-size:13px;font-weight:600;margin:18px 0 10px;}
+.subhead:first-child{margin-top:0;}
+.nse-row-input{background:transparent;border:1px solid transparent;color:var(--text);
+  padding:6px 4px;font-size:12.5px;width:100%;border-radius:6px;}
+.nse-row-input:hover,.nse-row-input:focus{border-color:var(--border);background:var(--bg-panel-2);outline:none;}
+.nse-row-input.amount{text-align:right;}
+.icon-btn{background:transparent;border:none;color:var(--text-faint);cursor:pointer;padding:4px 8px;
+  font-size:13px;margin:0;}
+.icon-btn:hover{color:var(--red);opacity:1;}
+@media(max-width:900px){.stat-grid{grid-template-columns:repeat(2,1fr);} .row-3{grid-template-columns:1fr;} .builder-row{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -150,6 +172,30 @@ const COMING_SOON = [
 let currentPage = 'overview';
 let currentCompanyId = null;
 let allCompaniesCache = [];
+
+// ---- full FY report state (company detail page) ----
+let currentPeriodsCache = [];
+let currentPeriodLabel = null;
+let currentPeriodDetail = null;
+let currentStatementTab = null;
+
+// ---- manual report builder state (replaces the old flat "Add Financials" form) ----
+let builderPeriod = '';
+let builderTab = 'income_statement';
+let builderRows = { income_statement: [], balance_sheet: [], cash_flow: [], equity: [] };
+
+// ---- NSE import review state (replaces the old flat preview form) ----
+let nsePreviewState = null; // {filing, statements, tab}
+
+const STATEMENT_LABELS = {
+  income_statement: 'Income Statement', balance_sheet: 'Balance Sheet',
+  cash_flow: 'Cash Flow', equity: 'Equity'
+};
+const METRIC_LABELS = {
+  net_margin: 'Net Margin', roe: 'ROE', roa: 'ROA',
+  debt_equity: 'Debt/Equity', debt_assets: 'Debt/Assets'
+};
+const PCT_METRICS = new Set(['net_margin', 'roe', 'roa']);
 
 function renderNav(){
   const active = PAGES.map(p => `
@@ -440,8 +486,30 @@ async function previewNSEFiling(index){
 }
 
 function renderNSEPreview(filing, parsed){
-  const mc = filing.matched_company;
+  nsePreviewState = {
+    filing,
+    statements: JSON.parse(JSON.stringify((parsed && parsed.statements) || {})),
+    tab: null
+  };
+  const types = Object.keys(nsePreviewState.statements);
+  nsePreviewState.tab = types.length ? types[0] : 'income_statement';
+  renderNSEPreviewPanel();
+}
+
+function renderNSEPreviewPanel(){
   const resultsEl = document.getElementById('nse-scan-results');
+  const filing = nsePreviewState.filing;
+  const mc = filing.matched_company;
+  const types = Object.keys(nsePreviewState.statements);
+
+  const tabs = types.map(t =>
+    `<button class="tab-btn ${t === nsePreviewState.tab ? 'active' : ''}" onclick="switchNSETab('${t}')">${STATEMENT_LABELS[t] || t}</button>`
+  ).join('');
+
+  const activeItems = (nsePreviewState.statements[nsePreviewState.tab] || { line_items: [] }).line_items;
+  const rows = activeItems.length ? renderNSEEditableRows(activeItems)
+    : '<tr><td colspan="4" class="empty">No line items yet on this statement.</td></tr>';
+
   resultsEl.innerHTML = `
     <div class="panel" style="background:var(--bg-panel-2);margin-top:10px;">
       <div class="panel-head"><h2>Review before saving</h2></div>
@@ -450,15 +518,16 @@ function renderNSEPreview(filing, parsed){
         <input id="nse-company-name" placeholder="Company name" value="${mc ? escapeHtml(mc.name) : ''}">
         <input id="nse-ticker" placeholder="Ticker" value="${mc ? escapeHtml(mc.ticker) : ''}">
         <input id="nse-period" placeholder="Period" value="${escapeHtml(filing.period_guess || '')}">
-        <input id="nse-revenue" placeholder="Revenue" type="number" step="any" value="${parsed.revenue ?? ''}">
-        <input id="nse-net-income" placeholder="Net Income" type="number" step="any" value="${parsed.net_income ?? ''}">
-        <input id="nse-total-assets" placeholder="Total Assets" type="number" step="any" value="${parsed.total_assets ?? ''}">
-        <input id="nse-total-liabilities" placeholder="Total Liabilities" type="number" step="any" value="${parsed.total_liabilities ?? ''}">
-        <input id="nse-total-equity" placeholder="Total Equity" type="number" step="any" value="${parsed.total_equity ?? ''}">
       </div>
-      <div style="font-size:11px;color:var(--text-faint);margin-top:8px;">
-        Parsed automatically from the PDF — a blank field means it wasn't found; double-check every number before saving.
+      <div style="font-size:11px;color:var(--text-faint);margin:10px 0;">
+        Parsed automatically from the PDF - a page badge shows where a figure came from in the filing so you can double-check it. Edit any label or amount, remove anything wrong, or add lines by hand.
       </div>
+      ${types.length ? `<div class="tab-bar">${tabs}</div>` : '<div class="empty">Nothing recognizable was extracted from this PDF - add lines manually below.</div>'}
+      <table>
+        <thead><tr><th>Label</th><th class="amount">Amount</th><th>Page</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <button class="secondary" onclick="addNSELineItem()">+ Add Line Item</button>
       <button onclick="confirmNSESave(${filing.existing_company_id ?? 'null'})">Confirm &amp; Save</button>
       <button class="secondary" onclick="renderNSEResults(nseFilingsCache)">Cancel</button>
       <div id="nse-save-error" class="error"></div>
@@ -466,17 +535,53 @@ function renderNSEPreview(filing, parsed){
   `;
 }
 
+function switchNSETab(t){ nsePreviewState.tab = t; renderNSEPreviewPanel(); }
+
+function renderNSEEditableRows(items){
+  return items.map((li, i) => `
+    <tr>
+      <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateNSELineItem(${i},'label',this.value)"></td>
+      <td><input class="nse-row-input amount" type="number" step="any" value="${li.amount ?? ''}" oninput="updateNSELineItem(${i},'amount',this.value)"></td>
+      <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
+      <td><button class="icon-btn" onclick="removeNSELineItem(${i})" title="Remove">✕</button></td>
+    </tr>`).join('');
+}
+
+function updateNSELineItem(i, field, val){
+  nsePreviewState.statements[nsePreviewState.tab].line_items[i][field] = val;
+}
+function removeNSELineItem(i){
+  nsePreviewState.statements[nsePreviewState.tab].line_items.splice(i, 1);
+  renderNSEPreviewPanel();
+}
+function addNSELineItem(){
+  if (!nsePreviewState.statements[nsePreviewState.tab]) {
+    nsePreviewState.statements[nsePreviewState.tab] = { line_items: [] };
+  }
+  nsePreviewState.statements[nsePreviewState.tab].line_items.push({ label: '', amount: '', page: null, normalized_name: null });
+  renderNSEPreviewPanel();
+}
+
 async function confirmNSESave(existingCompanyId){
   const errorEl = document.getElementById('nse-save-error');
   errorEl.textContent = '';
-  const payload = {
-    period: document.getElementById('nse-period').value,
-    revenue: document.getElementById('nse-revenue').value,
-    net_income: document.getElementById('nse-net-income').value,
-    total_assets: document.getElementById('nse-total-assets').value,
-    total_liabilities: document.getElementById('nse-total-liabilities').value,
-    total_equity: document.getElementById('nse-total-equity').value
-  };
+  const period = document.getElementById('nse-period').value.trim();
+  if (!period) { errorEl.textContent = 'Period is required.'; return; }
+
+  const statements = {};
+  for (const [stmtType, data] of Object.entries(nsePreviewState.statements)) {
+    const items = (data.line_items || [])
+      .filter(li => li.label && li.amount !== '' && li.amount !== null && li.amount !== undefined)
+      .map((li, idx) => ({
+        label: li.label, normalized_name: li.normalized_name || null,
+        amount: parseFloat(li.amount), page: li.page || null,
+        confidence: li.confidence ?? null, order_index: idx
+      }));
+    if (items.length) statements[stmtType] = { line_items: items };
+  }
+  if (!Object.keys(statements).length) { errorEl.textContent = 'Add at least one line item before saving.'; return; }
+
+  const payload = { period, pdf_url: nsePreviewState.filing.pdf_url, statements };
   if (existingCompanyId) {
     payload.company_id = existingCompanyId;
   } else {
@@ -488,6 +593,7 @@ async function confirmNSESave(existingCompanyId){
   });
   const data = await res.json();
   if (!res.ok) { errorEl.textContent = data.error || 'Save failed.'; return; }
+  nsePreviewState = null;
   renderOverview();
 }
 
@@ -545,49 +651,51 @@ function renderCompaniesTable(filterText){
 }
 
 async function renderCompanyDetail(companyId){
+  currentCompanyId = companyId;
   const res = await fetch(`/api/companies/${companyId}`);
   const c = await res.json();
-  const app = document.getElementById('app');
   document.getElementById('pageTitle').textContent = c.name;
   document.getElementById('pageSub').textContent = `${c.ticker || ''} · ${c.exchange || ''} · ${c.sector || ''} · ${c.country || ''}`;
 
-  const kpiRows = (c.financials || []).map(f => {
-    const band = f.financial_score !== null ? (f.financial_score >= 70 ? 'strong' : f.financial_score >= 40 ? 'moderate' : 'weak') : null;
-    return `
-    <tr>
-      <td>${escapeHtml(f.period)}</td>
-      <td>${fmt(f.net_margin)}%</td>
-      <td>${fmt(f.roe)}%</td>
-      <td>${fmt(f.debt_equity, 2)}</td>
-      <td>${band ? `<span class="score-badge score-${band}">${f.financial_score}/100</span>` : '-'}</td>
-    </tr>`;
-  }).join('');
+  const periodsRes = await fetch(`/api/companies/${companyId}/periods`);
+  currentPeriodsCache = await periodsRes.json();
+  if (!currentPeriodLabel || !currentPeriodsCache.find(p => p.period_label === currentPeriodLabel)) {
+    currentPeriodLabel = currentPeriodsCache.length ? currentPeriodsCache[0].period_label : null;
+  }
+  currentStatementTab = null;
+  builderPeriod = ''; builderTab = 'income_statement';
+  builderRows = { income_statement: [], balance_sheet: [], cash_flow: [], equity: [] };
+
+  await renderCompanyDetailBody(companyId);
+}
+
+async function renderCompanyDetailBody(companyId){
+  const app = document.getElementById('app');
+
+  if (currentPeriodLabel) {
+    const detRes = await fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(currentPeriodLabel)}`);
+    currentPeriodDetail = detRes.ok ? await detRes.json() : null;
+  } else {
+    currentPeriodDetail = null;
+  }
 
   app.innerHTML = `
     <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
 
     <div class="panel">
-      <div class="panel-head"><h2>Add Financials</h2></div>
-      <div class="grid">
-        <input id="ff-period" placeholder="Period (e.g. FY2025)">
-        <input id="ff-currency" placeholder="Currency" value="KES">
-        <input id="ff-revenue" placeholder="Revenue" type="number" step="any">
-        <input id="ff-net-income" placeholder="Net Income" type="number" step="any">
-        <input id="ff-total-assets" placeholder="Total Assets" type="number" step="any">
-        <input id="ff-total-liabilities" placeholder="Total Liabilities" type="number" step="any">
-        <input id="ff-total-equity" placeholder="Total Equity" type="number" step="any">
+      <div class="panel-head">
+        <h2>FY Report</h2>
+        ${renderPeriodSelector()}
       </div>
-      <button onclick="addFinancials(${companyId})">Save Financials</button>
-      <div id="add-financials-error" class="error"></div>
+      <div id="report-panel-body">${renderPeriodReport()}</div>
     </div>
 
     <div class="panel">
-      <div class="panel-head"><h2>KPIs</h2></div>
-      ${ (c.financials && c.financials.length) ? `
-      <table>
-        <thead><tr><th>Period</th><th>Net Margin</th><th>ROE</th><th>Debt/Equity</th><th>Score</th></tr></thead>
-        <tbody>${kpiRows}</tbody>
-      </table>` : `<div class="empty">No financials yet. Add a period above.</div>` }
+      <div class="panel-head"><h2>Add / Edit Period Report</h2></div>
+      <div style="font-size:12px;color:var(--text-faint);margin-bottom:12px;">
+        Enter one or more line items per statement - as many or as few as you have (revenue, costs, assets, whatever the report gives you). Not limited to five fixed numbers.
+      </div>
+      ${renderReportBuilder()}
     </div>
 
     <div class="panel">
@@ -618,28 +726,201 @@ async function renderCompanyDetail(companyId){
   `;
 }
 
-async function addFinancials(companyId){
-  const errorEl = document.getElementById('add-financials-error');
+function renderPeriodSelector(){
+  if (!currentPeriodsCache.length) return '';
+  const opts = currentPeriodsCache.map(p =>
+    `<option value="${escapeHtml(p.period_label)}" ${p.period_label === currentPeriodLabel ? 'selected' : ''}>${escapeHtml(p.period_label)}</option>`
+  ).join('');
+  return `<select class="period-select" onchange="selectPeriod(this.value)">${opts}</select>`;
+}
+
+async function selectPeriod(label){
+  currentPeriodLabel = label;
+  currentStatementTab = null;
+  await renderCompanyDetailBody(currentCompanyId);
+}
+
+function renderPeriodReport(){
+  if (!currentPeriodDetail) {
+    return `<div class="empty">No report data yet for this company. Add one below, or import from NSE on the Overview page.</div>`;
+  }
+  const period = currentPeriodDetail;
+  const present = Object.keys(STATEMENT_LABELS).filter(t => period.statements[t]);
+  if (!present.length) {
+    return `<div class="empty">No statement line items recorded for ${escapeHtml(period.period_label)} yet.</div>`;
+  }
+  if (!currentStatementTab || !present.includes(currentStatementTab)) currentStatementTab = present[0];
+
+  const tabs = present.map(t =>
+    `<button class="tab-btn ${t === currentStatementTab ? 'active' : ''}" onclick="switchStatementTab('${t}')">${STATEMENT_LABELS[t]}</button>`
+  ).join('');
+
+  const stmt = period.statements[currentStatementTab];
+  const rows = renderLineItemRows(stmt.line_items, 0);
+
+  return `
+    ${renderCalculatedMetrics(period.calculated_metrics)}
+    <div class="tab-bar">${tabs}</div>
+    <table>
+      <thead><tr><th>Line Item</th><th class="amount">Amount (${escapeHtml(period.currency || 'KES')})</th><th>Page</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${period.segments && period.segments.length ? renderSegments(period.segments) : ''}
+    ${period.operational_metrics && period.operational_metrics.length ? renderOperationalMetrics(period.operational_metrics) : ''}
+    ${period.notes && period.notes.length ? renderNotes(period.notes) : ''}
+  `;
+}
+
+function switchStatementTab(t){
+  currentStatementTab = t;
+  document.getElementById('report-panel-body').innerHTML = renderPeriodReport();
+}
+
+function renderLineItemRows(items, depth){
+  return items.map(li => {
+    const indent = 10 + depth * 20;
+    let row = `
+      <tr>
+        <td style="padding-left:${indent}px">${escapeHtml(li.label)}${li.normalized_name ? `<span class="badge li-normalized">${escapeHtml(li.normalized_name)}</span>` : ''}</td>
+        <td class="amount">${fmtAmount(li.amount)}</td>
+        <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
+      </tr>`;
+    if (li.children && li.children.length) row += renderLineItemRows(li.children, depth + 1);
+    return row;
+  }).join('');
+}
+
+function renderCalculatedMetrics(metrics){
+  if (!metrics || !Object.keys(metrics).length) return '';
+  const cards = Object.entries(metrics).map(([key, val]) => `
+    <div class="stat-card">
+      <div class="stat-value" style="font-size:17px;">${fmt(val, 2)}${PCT_METRICS.has(key) ? '%' : ''}</div>
+      <div class="stat-label">${METRIC_LABELS[key] || key}</div>
+    </div>`).join('');
+  return `<div class="stat-grid" style="margin-bottom:16px;">${cards}</div>`;
+}
+
+function renderSegments(segments){
+  const rows = segments.map(s => `
+    <tr>
+      <td>${escapeHtml(s.segment_name)}</td>
+      <td class="amount">${fmtAmount(s.revenue)}</td>
+      <td class="amount">${fmtAmount(s.operating_profit)}</td>
+    </tr>`).join('');
+  return `
+    <div class="subhead">Segments</div>
+    <table>
+      <thead><tr><th>Segment</th><th class="amount">Revenue</th><th class="amount">Operating Profit</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderOperationalMetrics(metrics){
+  const rows = metrics.map(m => `
+    <tr><td>${escapeHtml(m.metric_name)}</td><td class="amount">${fmtAmount(m.value)} ${escapeHtml(m.unit || '')}</td></tr>`).join('');
+  return `<div class="subhead">Operational KPIs</div><table><tbody>${rows}</tbody></table>`;
+}
+
+function renderNotes(notes){
+  const items = notes.map(n => `
+    <div style="margin-bottom:10px;">
+      <div style="font-weight:600;font-size:12.5px;">${escapeHtml(n.title || 'Note')}${n.page ? ` <span class="badge">p.${n.page}</span>` : ''}</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:2px;">${escapeHtml(n.content || '')}</div>
+    </div>`).join('');
+  return `<div class="subhead">Notes</div>${items}`;
+}
+
+/* ---------- REPORT BUILDER (manual entry, any number of line items per statement) ---------- */
+
+function renderReportBuilder(){
+  return `<div id="report-builder-panel">${renderReportBuilderInner()}</div>`;
+}
+
+function renderReportBuilderInner(){
+  const tabs = Object.keys(STATEMENT_LABELS).map(t =>
+    `<button class="tab-btn ${t === builderTab ? 'active' : ''}" onclick="switchBuilderTab('${t}')">${STATEMENT_LABELS[t]}</button>`
+  ).join('');
+
+  return `
+    <input id="builder-period" placeholder="Period (e.g. FY2025)" value="${escapeHtml(builderPeriod)}"
+      oninput="builderPeriod=this.value" style="margin-bottom:12px;">
+    <div class="tab-bar">${tabs}</div>
+    <div id="builder-rows">${renderBuilderRows()}</div>
+    <button class="secondary" onclick="addBuilderRow()">+ Add Line Item</button>
+    <button onclick="saveBuilderReport()">Save Report</button>
+    <div id="builder-error" class="error"></div>
+  `;
+}
+
+function refreshBuilderPanel(){
+  const el = document.getElementById('report-builder-panel');
+  if (el) el.innerHTML = renderReportBuilderInner();
+}
+
+function switchBuilderTab(t){ builderTab = t; refreshBuilderPanel(); }
+
+function addBuilderRow(){
+  builderRows[builderTab].push({ label: '', amount: '' });
+  refreshBuilderPanel();
+}
+function removeBuilderRow(i){
+  builderRows[builderTab].splice(i, 1);
+  refreshBuilderPanel();
+}
+function updateBuilderRow(i, field, val){
+  builderRows[builderTab][i][field] = val;
+}
+
+function renderBuilderRows(){
+  const rows = builderRows[builderTab];
+  if (!rows.length) {
+    return `<div class="empty">No line items yet for ${STATEMENT_LABELS[builderTab]}. Click "+ Add Line Item".</div>`;
+  }
+  return rows.map((r, i) => `
+    <div class="builder-row">
+      <input placeholder="Label (e.g. Revenue, Employee costs...)" value="${escapeHtml(r.label)}"
+        oninput="updateBuilderRow(${i},'label',this.value)">
+      <input placeholder="Amount" type="number" step="any" value="${r.amount ?? ''}"
+        oninput="updateBuilderRow(${i},'amount',this.value)">
+      <button class="secondary" onclick="removeBuilderRow(${i})">Remove</button>
+    </div>`).join('');
+}
+
+async function saveBuilderReport(){
+  const errorEl = document.getElementById('builder-error');
   errorEl.textContent = '';
-  const payload = {
-    period: document.getElementById('ff-period').value,
-    currency: document.getElementById('ff-currency').value,
-    revenue: document.getElementById('ff-revenue').value,
-    net_income: document.getElementById('ff-net-income').value,
-    total_assets: document.getElementById('ff-total-assets').value,
-    total_liabilities: document.getElementById('ff-total-liabilities').value,
-    total_equity: document.getElementById('ff-total-equity').value
-  };
-  const res = await fetch(`/api/companies/${companyId}/financials`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  const period = document.getElementById('builder-period').value.trim();
+  if (!period) { errorEl.textContent = 'Period is required (e.g. FY2025).'; return; }
+
+  const statements = {};
+  for (const [stmtType, rows] of Object.entries(builderRows)) {
+    const items = rows
+      .filter(r => r.label && r.amount !== '' && r.amount !== null && r.amount !== undefined)
+      .map((r, idx) => ({ label: r.label, amount: parseFloat(r.amount), order_index: idx }));
+    if (items.length) statements[stmtType] = { line_items: items };
+  }
+  if (!Object.keys(statements).length) { errorEl.textContent = 'Add at least one line item before saving.'; return; }
+
+  const res = await fetch('/api/import/nse/save', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ company_id: currentCompanyId, period, statements })
   });
   const data = await res.json();
-  if (!res.ok) { errorEl.textContent = data.error || 'Failed to save financials'; return; }
-  renderCompanyDetail(companyId);
+  if (!res.ok) { errorEl.textContent = data.error || 'Save failed.'; return; }
+
+  currentPeriodLabel = period;
+  await renderCompanyDetail(currentCompanyId);
 }
 
 function fmt(val, decimals = 1){
   return (val === null || val === undefined) ? '-' : Number(val).toFixed(decimals);
+}
+function fmtAmount(val){
+  if (val === null || val === undefined || val === '') return '-';
+  const num = Number(val);
+  if (Number.isNaN(num)) return '-';
+  const formatted = Math.abs(num).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return num < 0 ? `(${formatted})` : formatted;
 }
 function fmtMoney(val){
   if (val === null || val === undefined) return '-';
