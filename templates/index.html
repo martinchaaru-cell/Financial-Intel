@@ -424,21 +424,20 @@ tr.li-child td:first-child{color:var(--text-dim);}
 const PAGES = [
   {id:'overview', label:'Overview', icon:'🏠'},
   {id:'companies', label:'Companies', icon:'🏢'},
-  {id:'compare', label:'Comparisons', icon:'⚖️'},
+  {id:'compare', label:'Compare Companies', icon:'⚖️'},
   {id:'rankings', label:'Rankings', icon:'🏆'},
-  {id:'reports', label:'Reports', icon:'📄'},
-  {id:'presentations', label:'Presentations', icon:'🖥️', soon:true},
-  {id:'data-extractor', label:'Data Extractor', icon:'🔎', soon:true},
-  {id:'documents', label:'Documents', icon:'📁', soon:true},
-  {id:'watchlist', label:'Watchlist', icon:'⭐', soon:true},
-  {id:'alerts', label:'Alerts', icon:'🔔'},
-  {id:'settings', label:'Settings', icon:'⚙️'},
-  // Kept below the new nav's 11 items so nothing that worked before this
-  // redesign becomes unreachable - not part of the reference design, but
-  // still real, working pages.
   {id:'sectors', label:'Sectors', icon:'🏭'},
-  {id:'analytics', label:'Financial Analytics', icon:'📈'},
-  {id:'exports', label:'Exports', icon:'📤'},
+  {id:'alerts', label:'Alerts', icon:'🔔'},
+  {id:'reports', label:'Reports', icon:'📄'},
+  {id:'watchlist', label:'Watchlist', icon:'⭐', soon:true},
+  {id:'saved-views', label:'Saved Views', icon:'🔖', soon:true},
+  {id:'data-explorer', label:'Data Explorer', icon:'🗄️', soon:true},
+  {id:'settings', label:'Settings', icon:'⚙️'},
+  // Not part of the reference nav (dropped from the visible tab list),
+  // but the render functions still exist below - kept in case a later
+  // pass folds Financial Analytics / Exports / Presentations / Data
+  // Extractor / Documents content into one of the 11 nav pages above
+  // instead of deleting the work outright.
 ];
 let currentPage = 'overview';
 let currentCompanyId = null;
@@ -559,31 +558,14 @@ async function render(){
   }
 }
 
-async function safeJson(res, fallback){
-  // Never blindly call res.json() on a fetch result: a 500 (or any
-  // non-2xx) response can come back as an HTML error page, and parsing
-  // that as JSON throws "Unexpected token '<'" and kills the caller.
-  // Returning a fallback instead lets the rest of the page still render.
-  if (!res.ok) {
-    console.error('Request failed:', res.status, res.url);
-    return fallback;
-  }
-  try {
-    return await res.json();
-  } catch (err) {
-    console.error('Invalid JSON from', res.url, err);
-    return fallback;
-  }
-}
-
 async function renderOverview(){
   const [res, chartsRes, attnRes, alertsRes] = await Promise.all([
     fetch('/api/overview'), fetch('/api/overview/charts'), fetch('/api/overview/attention'), fetch('/api/overview/alerts')
   ]);
-  const s = await safeJson(res, {});
-  const charts = await safeJson(chartsRes, {});
-  const attn = await safeJson(attnRes, {});
-  const alerts = await safeJson(alertsRes, { alerts: [] });
+  const s = await res.json();
+  const charts = await chartsRes.json();
+  const attn = await attnRes.json();
+  const alerts = await alertsRes.json();
   const app = document.getElementById('app');
 
   const sub = document.getElementById('pageSub');
