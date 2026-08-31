@@ -130,7 +130,6 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 
 .date-badge{display:inline-flex;align-items:center;gap:5px;color:var(--text-faint);font-size:11px;margin-top:2px;}
 
-.topbar-actions{display:flex;align-items:center;gap:8px;flex-shrink:0;}
 .icon-btn{position:relative;width:32px;height:32px;border-radius:9px;background:var(--bg-panel-2);
   border:1px solid var(--border);color:var(--text-dim);display:flex;align-items:center;justify-content:center;
   font-size:13px;cursor:pointer;}
@@ -318,7 +317,8 @@ tr.li-child td:first-child{color:var(--text-dim);}
 .period-jump-nav a:hover{text-decoration:underline;}
 .period-section{padding:20px 0;border-bottom:1px solid var(--border);}
 .period-section:last-child{border-bottom:none;padding-bottom:0;}
-.period-section-head{font-size:17px;font-weight:700;color:var(--text);margin-bottom:6px;scroll-margin-top:16px;}
+.period-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  font-size:17px;font-weight:700;color:var(--text);margin-bottom:6px;scroll-margin-top:16px;}
 .subhead:first-child{margin-top:0;}
 .nse-row-input{background:transparent;border:1px solid transparent;color:var(--text);
   padding:6px 4px;font-size:12.5px;width:100%;border-radius:6px;}
@@ -346,7 +346,6 @@ tr.li-child td:first-child{color:var(--text-dim);}
   .topbar-title{min-width:0;}
   .page-title{font-size:16px;}
   .search-box{order:3;flex-basis:100%;max-width:none;}
-  .topbar-actions{flex-shrink:0;}
   .content{padding:14px;}
   .stat-grid{grid-template-columns:1fr 1fr;gap:8px;}
   .row-3,.row-4,.row-2{grid-template-columns:1fr;}
@@ -397,12 +396,6 @@ tr.li-child td:first-child{color:var(--text-dim);}
       <div class="search-box">
         <input id="global-search" placeholder="Search any company (e.g. Apple, Microsoft, Safaricom...)" oninput="handleGlobalSearch(this.value)">
         <span class="search-kbd">Ctrl+K</span>
-      </div>
-      <div class="topbar-actions">
-        <div class="icon-btn" id="bellBtn" onclick="goTo('alerts')" title="View alerts">
-          🔔<span class="badge-dot hidden" id="bellBadge">0</span>
-        </div>
-        <div class="header-actions" id="headerActions"></div>
       </div>
     </div>
     <div class="content" id="app"></div>
@@ -515,19 +508,10 @@ async function handleGlobalSearch(query){
   await renderCompaniesPage(query);
 }
 
-function updateHeaderActions(){
-  const el = document.getElementById('headerActions');
-  if (!el) return;
-  el.innerHTML = (currentPage === 'overview' || currentPage === 'companies')
-    ? `<button class="btn-primary-cta" onclick="openAddCompanyModal()">+ Add Company</button>`
-    : '';
-}
-
 async function render(){
   const app = document.getElementById('app');
   const title = document.getElementById('pageTitle');
   const sub = document.getElementById('pageSub');
-  updateHeaderActions();
   app.innerHTML = '<div class="empty">Loading...</div>';
 
   if (currentPage === 'overview') {
@@ -575,14 +559,31 @@ async function render(){
   }
 }
 
+async function safeJson(res, fallback){
+  // Never blindly call res.json() on a fetch result: a 500 (or any
+  // non-2xx) response can come back as an HTML error page, and parsing
+  // that as JSON throws "Unexpected token '<'" and kills the caller.
+  // Returning a fallback instead lets the rest of the page still render.
+  if (!res.ok) {
+    console.error('Request failed:', res.status, res.url);
+    return fallback;
+  }
+  try {
+    return await res.json();
+  } catch (err) {
+    console.error('Invalid JSON from', res.url, err);
+    return fallback;
+  }
+}
+
 async function renderOverview(){
   const [res, chartsRes, attnRes, alertsRes] = await Promise.all([
     fetch('/api/overview'), fetch('/api/overview/charts'), fetch('/api/overview/attention'), fetch('/api/overview/alerts')
   ]);
-  const s = await res.json();
-  const charts = await chartsRes.json();
-  const attn = await attnRes.json();
-  const alerts = await alertsRes.json();
+  const s = await safeJson(res, {});
+  const charts = await safeJson(chartsRes, {});
+  const attn = await safeJson(attnRes, {});
+  const alerts = await safeJson(alertsRes, { alerts: [] });
   const app = document.getElementById('app');
 
   const sub = document.getElementById('pageSub');
@@ -591,12 +592,6 @@ async function renderOverview(){
       ? new Date(s.last_updated).toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'})
       : 'no data yet';
     sub.innerHTML = `Portfolio Overview · All Companies <span class="date-badge">📅 Data as of: ${dateLabel}</span>`;
-  }
-  const bellBadge = document.getElementById('bellBadge');
-  if (bellBadge) {
-    const riskCount = (s.health_distribution && s.health_distribution.weak) || 0;
-    bellBadge.textContent = riskCount;
-    bellBadge.classList.toggle('hidden', riskCount === 0);
   }
 
   const hd = s.health_distribution || {strong:0, moderate:0, weak:0};
@@ -1331,7 +1326,8 @@ function renderCompaniesTable(filterText){
   const q = (filterText || '').trim().toLowerCase();
 
   if (allCompaniesCache.length === 0) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page, or
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet.
+      <button class="btn-primary-cta" style="margin:0 6px;" onclick="openAddCompanyModal()">+ Add Company</button> or
       <button class="secondary" onclick="seedNSECompanies()">Seed all NSE companies</button> to pre-populate the full NSE roster.</div></div>`;
     return;
   }
@@ -1416,6 +1412,7 @@ function renderCompaniesTable(filterText){
       <div style="flex:1"></div>
       <button class="export-btn" onclick="window.location.href='/api/export/portfolio'">⭳ Export</button>
       <button class="secondary" style="margin:0;" onclick="seedNSECompanies()">Seed all NSE companies</button>
+      <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
     </div>`;
 
   if (companies.length === 0) {
@@ -1524,7 +1521,7 @@ function renderRankingsTable(){
   const byScore = rankCategoryCache;
 
   if (byScore.length === 0) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
     return;
   }
 
@@ -1688,7 +1685,7 @@ async function renderSectorsPage(){
   const companies = await res.json();
 
   if (companies.length === 0) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
     return;
   }
 
@@ -1761,7 +1758,7 @@ async function populateExportsCompanyList(){
   const el = document.getElementById('exports-company-list');
   if (!el) return;
   if (!allCompaniesCache.length) {
-    el.innerHTML = `<div class="empty">No companies yet. Add one from the Overview page.</div>`;
+    el.innerHTML = `<div class="empty">No companies yet. Add one from the Companies page.</div>`;
     return;
   }
   el.innerHTML = allCompaniesCache.map(c => `
@@ -1783,7 +1780,7 @@ async function renderComparePage(){
     allCompaniesCache = await res.json();
   }
   if (!allCompaniesCache.length) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
     return;
   }
   renderCompareShell();
@@ -1961,7 +1958,7 @@ async function renderAnalyticsPage(){
     allCompaniesCache = await res.json();
   }
   if (!allCompaniesCache.length) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Overview page.</div></div>`;
+    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
     return;
   }
   if (!analyticsCompanyId) analyticsCompanyId = allCompaniesCache[0].id;
@@ -2205,7 +2202,7 @@ async function renderCompanyDetailBody(companyId){
     </div>` : '';
 
   const periodSections = allPeriodDetails.length
-    ? allPeriodDetails.map(renderFullPeriodSection).join('')
+    ? allPeriodDetails.map(p => renderFullPeriodSection(p, companyId)).join('')
     : `<div class="empty">No report data yet for this company. Add one below, or import from NSE on the Overview page.</div>`;
 
   app.innerHTML = `
@@ -2232,6 +2229,11 @@ async function renderCompanyDetailBody(companyId){
       <div class="panel-head"><h2>Downloads</h2></div>
       <div class="download-grid">
         <div class="download-card">
+          <div class="dl-title">Full FY Report</div>
+          <div class="dl-desc">${currentPeriodLabel ? `${escapeHtml(currentPeriodLabel)} write-up with page-cited figures (Word)` : 'Add a period below first'}</div>
+          <button class="secondary" ${currentPeriodLabel ? '' : 'disabled style="opacity:.5;"'} onclick="window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(currentPeriodLabel || '')}/report.docx'">Download</button>
+        </div>
+        <div class="download-card">
           <div class="dl-title">Company Snapshot</div>
           <div class="dl-desc">Profile + all periods + calculated KPIs (Excel)</div>
           <button class="secondary" onclick="window.location.href='/api/companies/${companyId}/export/snapshot'">Download</button>
@@ -2256,7 +2258,7 @@ async function renderCompanyDetailBody(companyId){
   `;
 }
 
-function renderFullPeriodSection(period){
+function renderFullPeriodSection(period, companyId){
   const present = Object.keys(STATEMENT_LABELS).filter(t => period.statements[t]);
   const statementBlocks = present.length
     ? present.map(t => {
@@ -2271,9 +2273,19 @@ function renderFullPeriodSection(period){
       }).join('')
     : `<div class="empty">No statement line items recorded for ${escapeHtml(period.period_label)} yet.</div>`;
 
+  const reportBtn = present.length
+    ? `<div style="display:flex;gap:6px;">
+        <button class="secondary" style="margin:0;" onclick="window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(period.period_label)}/report.docx'">📄 Generate Report (.docx)</button>
+        <button class="secondary" style="margin:0;" title="Executive Summary and Key Findings drafted by AI from the same verified figures - falls back to the plain version automatically if that's unavailable" onclick="window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(period.period_label)}/report.docx?narrative=ai'">✨ with AI summary</button>
+      </div>`
+    : `<button class="secondary" style="margin:0;opacity:.5;" disabled title="Add at least one statement line item first">📄 Generate Report (.docx)</button>`;
+
   return `
     <div id="period-${escapeHtml(period.period_label)}" class="period-section">
-      <div class="period-section-head">${escapeHtml(period.period_label)}</div>
+      <div class="period-section-head">
+        <span>${escapeHtml(period.period_label)}</span>
+        ${reportBtn}
+      </div>
       ${renderCalculatedMetrics(period.calculated_metrics)}
       ${statementBlocks}
       ${period.segments && period.segments.length ? renderSegments(period.segments) : ''}

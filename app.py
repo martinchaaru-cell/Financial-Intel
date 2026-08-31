@@ -14,6 +14,9 @@ from models import (
 from ratios import calculate_ratios
 from nse_import import fetch_nse_filings, fetch_nse_page, NSE_FINANCIAL_RESULTS_URL, NSE_COMPANIES
 from nse_pdf_parse import fetch_and_parse_pdf, match_canonical_label
+from report_context import build_report_context
+from report_docx import generate_docx
+from report_narrative import generate_narrative
 
 # ---------- SCORING ----------
 # Simple, transparent financial health score (0-100).
@@ -48,6 +51,17 @@ if database_url.startswith('postgres://'):
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Replit's hosted Postgres (and most managed Postgres/PgBouncer setups)
+# silently drops idle connections. Without these options, SQLAlchemy's
+# pool will hand out a dead connection and every request on it fails with
+# "psycopg2.OperationalError: SSL connection has been closed unexpectedly".
+# pool_pre_ping does a cheap "is this connection still alive" check before
+# each checkout and transparently reconnects if not. pool_recycle forces
+# connections to be recycled before the server-side idle timeout hits.
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 280,
+}
 db.init_app(app)
 
 # ---------- MODELS ----------
@@ -122,6 +136,18 @@ def extract_year(period_label):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+# All API routes return JSON. If one raises (DB hiccup, bad data, etc.),
+# make sure the client still gets JSON back instead of Flask's default
+# HTML error page — that HTML is what was breaking res.json() calls on
+# the frontend and hanging pages on "Loading...".
+@app.errorhandler(Exception)
+def handle_uncaught_error(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return jsonify({'error': e.description}), e.code
+    app.logger.exception('Unhandled error')
+    return jsonify({'error': 'Internal server error'}), 500
 
 # ---------- API: OVERVIEW ----------
 
@@ -980,6 +1006,39 @@ def get_period_detail(company_id, period_label):
         company_id=company_id, period_label=period_label
     ).first_or_404()
     return jsonify(period.to_dict())
+
+@app.route('/api/companies/<int:company_id>/periods/<period_label>/report.docx')
+def generate_period_report(company_id, period_label):
+    """Word report for one FY, built off the same verified line items and
+    calculated metrics as the rest of the app - build_report_context()
+    is the only thing that reads the ORM here, report_docx.py just lays
+    out what it's handed. Runs synchronously; revisit with a background
+    job only if this starts taking long enough to matter.
+
+    Pass ?narrative=ai to have the Executive Summary and Key Findings
+    sections drafted by Claude from the same computed metrics the
+    numbers-only template uses (see report_narrative.py) - every other
+    number in the report is unaffected either way. Falls back to the
+    numbers-only template automatically if no ANTHROPIC_API_KEY is set
+    or the call fails, so this flag is always safe to pass."""
+    Company.query.get_or_404(company_id)
+    period = FinancialPeriod.query.filter_by(
+        company_id=company_id, period_label=period_label
+    ).first_or_404()
+
+    ctx = build_report_context(period)
+    narrative = generate_narrative(ctx) if request.args.get('narrative') == 'ai' else None
+
+    export_dir = '/tmp/exports'
+    os.makedirs(export_dir, exist_ok=True)
+    filename = f"{_safe_filename(ctx['company']['name'])}_{period.period_label}_report.docx"
+    filepath = os.path.join(export_dir, filename)
+    generate_docx(ctx, filepath, narrative=narrative)
+
+    return send_file(
+        filepath, as_attachment=True, download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    )
 
 # ---------- EXPORTS ----------
 

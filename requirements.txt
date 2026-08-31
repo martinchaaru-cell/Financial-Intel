@@ -6,3 +6,5 @@ openpyxl
 psycopg2-binary
 beautifulsoup4
 pdfplumber
+python-docx
+docx
