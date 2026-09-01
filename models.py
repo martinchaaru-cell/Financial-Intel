@@ -296,3 +296,136 @@ class ImportJob(db.Model):
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'finished_at': self.finished_at.isoformat() if self.finished_at else None,
         }
+
+# ---------- MARKET SURVEYS (NSE-wide benchmark reports, not tied to one company) ----------
+# A document like the "Executive and Non-Executive Directors' Remuneration
+# Survey" covers dozens of companies at once and reports aggregate figures
+# (percentiles, sector averages, benefit prevalence) rather than one
+# company's own numbers. Kept in its own set of tables, separate from
+# Company/FinancialPeriod, since it's benchmark context a company gets
+# compared against - never a substitute for that company's own reported
+# figures.
+
+class MarketSurvey(db.Model):
+    """One uploaded survey document, e.g. 'Board Remuneration Report 2021,
+    4th Edition'. Everything else in this section hangs off survey_id."""
+    __tablename__ = 'market_surveys'
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    edition = db.Column(db.String(60))
+    report_year = db.Column(db.String(20))            # e.g. "2021" - the report's own cover-page year
+    period_covered = db.Column(db.String(120))         # e.g. "FY ending Dec 2020, Mar 2021 or Jun 2021"
+    companies_surveyed = db.Column(db.Integer)
+    currency = db.Column(db.String(10), default='KES')
+    source_filename = db.Column(db.String(255))
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    market_metrics = db.relationship('SurveyMarketMetric', backref='survey', lazy=True, cascade='all, delete-orphan')
+    sector_companies = db.relationship('SurveySectorCompany', backref='survey', lazy=True, cascade='all, delete-orphan')
+    remuneration_stats = db.relationship('SurveyRemunerationStat', backref='survey', lazy=True, cascade='all, delete-orphan')
+    sector_allowances = db.relationship('SurveySectorAllowance', backref='survey', lazy=True, cascade='all, delete-orphan')
+    benefits = db.relationship('SurveyBenefit', backref='survey', lazy=True, cascade='all, delete-orphan')
+    ceo_comp = db.relationship('SurveyCEOComp', backref='survey', lazy=True, cascade='all, delete-orphan')
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'title': self.title, 'edition': self.edition,
+            'report_year': self.report_year, 'period_covered': self.period_covered,
+            'companies_surveyed': self.companies_surveyed, 'currency': self.currency,
+            'source_filename': self.source_filename,
+            'uploaded_at': self.uploaded_at.isoformat() if self.uploaded_at else None,
+        }
+
+
+class SurveyMarketMetric(db.Model):
+    """Market-wide figures that move period-to-period: NSE capitalisation
+    by year, average turnover/net profit/profit margin by period. One row
+    per (metric_name, period_label)."""
+    __tablename__ = 'survey_market_metrics'
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('market_surveys.id'), nullable=False)
+    metric_name = db.Column(db.String(60), nullable=False)   # nse_capitalisation, avg_turnover, avg_net_profit, avg_profit_margin
+    period_label = db.Column(db.String(20), nullable=False)  # "2017", "2019/2020", "2020/2021"
+    value = db.Column(db.Float)
+
+    def to_dict(self):
+        return {'metric_name': self.metric_name, 'period_label': self.period_label, 'value': self.value}
+
+
+class SurveySectorCompany(db.Model):
+    """One row per (sector, company) from the survey's sector
+    categorisation table - lets a company look up which sector the survey
+    placed it in, for sector-average comparisons."""
+    __tablename__ = 'survey_sector_companies'
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('market_surveys.id'), nullable=False)
+    sector = db.Column(db.String(80), nullable=False)
+    company_name = db.Column(db.String(150), nullable=False)
+
+    def to_dict(self):
+        return {'sector': self.sector, 'company_name': self.company_name}
+
+
+class SurveyRemunerationStat(db.Model):
+    """Percentile/average pay figures - annual retainer fees, sitting
+    allowances, committee allowances - broken out by role (chairperson vs
+    other NEDs, committee chair vs member)."""
+    __tablename__ = 'survey_remuneration_stats'
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('market_surveys.id'), nullable=False)
+    category = db.Column(db.String(40), nullable=False)   # annual_fee, sitting_allowance, committee_allowance
+    role = db.Column(db.String(40), nullable=False)       # chairperson, other_neds, committee_chairperson, committee_member
+    p25 = db.Column(db.Float)
+    p50 = db.Column(db.Float)
+    p75 = db.Column(db.Float)
+    average = db.Column(db.Float)
+
+    def to_dict(self):
+        return {'category': self.category, 'role': self.role,
+                'p25': self.p25, 'p50': self.p50, 'p75': self.p75, 'average': self.average}
+
+
+class SurveySectorAllowance(db.Model):
+    """Average meeting allowance by sector, split chairperson vs other
+    NEDs (the "by sector" breakout chart)."""
+    __tablename__ = 'survey_sector_allowances'
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('market_surveys.id'), nullable=False)
+    sector = db.Column(db.String(80), nullable=False)
+    role = db.Column(db.String(40), nullable=False)   # chairperson, other_neds
+    avg_meeting_allowance = db.Column(db.Float)
+
+    def to_dict(self):
+        return {'sector': self.sector, 'role': self.role, 'avg_meeting_allowance': self.avg_meeting_allowance}
+
+
+class SurveyBenefit(db.Model):
+    """Board benefits and how common they are among surveyed companies
+    (medical cover, travel, transport, etc.)."""
+    __tablename__ = 'survey_benefits'
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('market_surveys.id'), nullable=False)
+    benefit_name = db.Column(db.String(100), nullable=False)
+    prevalence_pct = db.Column(db.Float)
+    notes = db.Column(db.Text)
+
+    def to_dict(self):
+        return {'benefit_name': self.benefit_name, 'prevalence_pct': self.prevalence_pct, 'notes': self.notes}
+
+
+class SurveyCEOComp(db.Model):
+    """CEO/MD compensation benchmark, one row per component (salary,
+    allowances, bonus, deferred incentive, non-cash benefits, pension,
+    gratuity, share value, total monthly cost of employment)."""
+    __tablename__ = 'survey_ceo_comp'
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('market_surveys.id'), nullable=False)
+    component_name = db.Column(db.String(60), nullable=False)
+    p25 = db.Column(db.Float)
+    p50 = db.Column(db.Float)
+    p75 = db.Column(db.Float)
+    average = db.Column(db.Float)
+
+    def to_dict(self):
+        return {'component_name': self.component_name,
+                'p25': self.p25, 'p50': self.p50, 'p75': self.p75, 'average': self.average}

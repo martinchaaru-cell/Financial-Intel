@@ -10,10 +10,13 @@ from models import (
     db, Company, FinancialPeriod, FinancialStatement, FinancialLineItem,
     SourceDocument, ImportJob, CalculatedMetric, FinancialSegment,
     OperationalMetric, FinancialNote,
+    MarketSurvey, SurveyMarketMetric, SurveySectorCompany,
+    SurveyRemunerationStat, SurveySectorAllowance, SurveyBenefit, SurveyCEOComp,
 )
 from ratios import calculate_ratios
 from nse_import import fetch_nse_filings, fetch_nse_page, NSE_FINANCIAL_RESULTS_URL, NSE_COMPANIES
 from nse_pdf_parse import fetch_and_parse_pdf, match_canonical_label
+from survey_pdf_parse import parse_survey_pdf
 from report_context import build_report_context
 from report_docx import generate_docx
 from report_narrative import generate_narrative
@@ -366,71 +369,6 @@ def overview_charts():
         'sector_performance': sector_performance,
     })
 
-@app.route('/api/sectors')
-def sectors_overview():
-    """Companies grouped by sector, for the Sectors page. Mirrors the
-    per-sector aggregation already done inline for the overview's
-    'Sector Performance' mini-chart (see sector_performance above), but
-    exposed as its own endpoint with the fuller set of fields the
-    Sectors page renders (company_count, total_revenue, weight_pct,
-    avg_revenue_growth, avg_net_margin, avg_financial_score)."""
-    companies = Company.query.all()
-
-    # sector -> accumulators
-    buckets = {}
-
-    def bucket(sector_name):
-        return buckets.setdefault(sector_name, {
-            'sector': sector_name, 'company_count': 0,
-            'revenues': [], 'margins': [], 'scores': [], 'growth_pcts': [],
-        })
-
-    for c in companies:
-        sector = c.sector or 'Unclassified'
-        b = bucket(sector)
-        b['company_count'] += 1
-
-        latest, prior = latest_two_financials(c.id)
-        if not latest:
-            continue
-        d = latest.to_dict()
-        if d['revenue']:
-            b['revenues'].append(d['revenue'])
-        if d['net_margin'] is not None:
-            b['margins'].append(d['net_margin'])
-        if d['financial_score'] is not None:
-            b['scores'].append(d['financial_score'])
-        if prior:
-            pd = prior.to_dict()
-            g = pct_change(d['revenue'], pd['revenue'])
-            if g is not None:
-                b['growth_pcts'].append(g)
-
-    grand_total_revenue = sum(sum(b['revenues']) for b in buckets.values())
-
-    sectors = []
-    for b in buckets.values():
-        total_revenue = sum(b['revenues']) if b['revenues'] else 0
-        sectors.append({
-            'sector': b['sector'],
-            'company_count': b['company_count'],
-            'total_revenue': total_revenue,
-            'weight_pct': round(total_revenue / grand_total_revenue * 100) if grand_total_revenue else None,
-            'avg_revenue_growth': (sum(b['growth_pcts']) / len(b['growth_pcts'])) if b['growth_pcts'] else None,
-            'avg_net_margin': (sum(b['margins']) / len(b['margins'])) if b['margins'] else None,
-            'avg_financial_score': round(sum(b['scores']) / len(b['scores'])) if b['scores'] else None,
-        })
-
-    # Sectors with reported revenue first (largest first), unscored/no-data
-    # sectors after that, alphabetically - keeps the table stable instead
-    # of jumping around as data is added.
-    sectors.sort(key=lambda s: (-(s['total_revenue'] or 0), s['sector'].lower()))
-
-    return jsonify({
-        'sectors': sectors,
-        'total_revenue': grand_total_revenue,
-    })
-
 @app.route('/api/overview/attention')
 def overview_attention():
     companies = Company.query.all()
@@ -561,25 +499,8 @@ def list_companies():
     result = []
     for c in companies:
         d = c.to_dict()
-        latest, prior = latest_two_financials(c.id)
-        if latest:
-            ld = latest.to_dict()
-            pd = prior.to_dict() if prior else None
-            # Period-over-period deltas the Companies table shows next to
-            # each metric - revenue/net income as % change, margin/ROE as
-            # a straight percentage-point difference (not a % change of a
-            # % change, which reads confusingly at small values).
-            ld['revenue_yoy'] = pct_change(ld['revenue'], pd['revenue']) if pd else None
-            ld['net_income_yoy'] = pct_change(ld['net_income'], pd['net_income']) if pd else None
-            ld['net_margin_delta'] = (ld['net_margin'] - pd['net_margin']) if pd and ld['net_margin'] is not None and pd['net_margin'] is not None else None
-            ld['roe_delta'] = (ld['roe'] - pd['roe']) if pd and ld['roe'] is not None and pd['roe'] is not None else None
-            # Up to 5 most recent financial scores, oldest first, for the
-            # sparkline in the Score Trend column.
-            history_rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.period.desc()).limit(5).all()
-            ld['score_trend'] = [h.to_dict()['financial_score'] for h in reversed(history_rows) if h.to_dict()['financial_score'] is not None]
-            d['latest'] = ld
-        else:
-            d['latest'] = None
+        f = latest_financials(c.id)
+        d['latest'] = f.to_dict() if f else None
         result.append(d)
 
     if sort == 'score':
@@ -1036,6 +957,134 @@ def nse_save_batch():
             results.append({'ok': False, 'error': result.get('error', 'Unknown error')})
 
     return jsonify({'results': results, 'saved': saved, 'failed': len(items) - saved}), 200
+
+
+# ---------- MARKET SURVEYS ----------
+# Separate from the NSE per-company import above: a survey document covers
+# the whole market at once (percentiles, sector averages, benefit
+# prevalence), never one company's own reported figures. See
+# survey_pdf_parse.py's module docstring for why this has its own parser.
+
+@app.route('/api/surveys', methods=['GET'])
+def list_surveys():
+    surveys = MarketSurvey.query.order_by(MarketSurvey.uploaded_at.desc()).all()
+    return jsonify([s.to_dict() for s in surveys])
+
+
+@app.route('/api/surveys/import', methods=['POST'])
+def import_survey():
+    """Accepts an uploaded PDF (multipart/form-data, field name 'file'),
+    parses it with survey_pdf_parse, and stores everything it recognized.
+    Returns a preview of what was found so the caller can show the person
+    what got imported before they treat it as reliable."""
+    if 'file' not in request.files:
+        return jsonify({'error': "No file uploaded (expected form field 'file')."}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'No file selected.'}), 400
+
+    try:
+        parsed = parse_survey_pdf(file.read())
+    except Exception as e:
+        return jsonify({'error': f'Could not parse this PDF: {e}'}), 400
+
+    meta = parsed.get('meta', {})
+    if not meta.get('title'):
+        return jsonify({'error': 'Could not recognize this document as a remuneration survey.'}), 422
+
+    survey = MarketSurvey(
+        title=meta.get('title') or file.filename,
+        edition=meta.get('edition'),
+        report_year=meta.get('report_year'),
+        period_covered=meta.get('period_covered'),
+        companies_surveyed=meta.get('companies_surveyed'),
+        currency='KES',
+        source_filename=file.filename,
+    )
+    db.session.add(survey)
+    db.session.flush()  # get survey.id
+
+    for m in parsed.get('market_metrics', []):
+        db.session.add(SurveyMarketMetric(survey_id=survey.id, **m))
+    for sc in parsed.get('sector_companies', []):
+        db.session.add(SurveySectorCompany(survey_id=survey.id, **sc))
+    for rs in parsed.get('remuneration_stats', []):
+        db.session.add(SurveyRemunerationStat(survey_id=survey.id, **rs))
+    for sa in parsed.get('sector_allowances', []):
+        db.session.add(SurveySectorAllowance(survey_id=survey.id, **sa))
+    for b in parsed.get('benefits', []):
+        db.session.add(SurveyBenefit(survey_id=survey.id, **b))
+    for cc in parsed.get('ceo_comp', []):
+        db.session.add(SurveyCEOComp(survey_id=survey.id, **cc))
+
+    db.session.commit()
+
+    return jsonify({
+        'survey': survey.to_dict(),
+        'counts': {
+            'market_metrics': len(parsed.get('market_metrics', [])),
+            'sector_companies': len(parsed.get('sector_companies', [])),
+            'remuneration_stats': len(parsed.get('remuneration_stats', [])),
+            'sector_allowances': len(parsed.get('sector_allowances', [])),
+            'benefits': len(parsed.get('benefits', [])),
+            'ceo_comp': len(parsed.get('ceo_comp', [])),
+        },
+    }), 201
+
+
+@app.route('/api/surveys/<int:survey_id>', methods=['GET'])
+def get_survey(survey_id):
+    """Full structured payload for one survey - everything the Intelligence
+    Report page's benchmark panels need, keyed the same way the parser
+    produced it so the frontend doesn't have to reshape anything."""
+    survey = MarketSurvey.query.get_or_404(survey_id)
+
+    market_metrics = {}
+    for m in survey.market_metrics:
+        market_metrics.setdefault(m.metric_name, []).append({'period': m.period_label, 'value': m.value})
+
+    sector_companies = {}
+    for sc in survey.sector_companies:
+        sector_companies.setdefault(sc.sector, []).append(sc.company_name)
+
+    remuneration_stats = {}
+    for rs in survey.remuneration_stats:
+        remuneration_stats.setdefault(rs.category, {})[rs.role] = rs.to_dict()
+
+    return jsonify({
+        **survey.to_dict(),
+        'market_metrics': market_metrics,
+        'sector_companies': sector_companies,
+        'remuneration_stats': remuneration_stats,
+        'benefits': [b.to_dict() for b in survey.benefits],
+        'ceo_comp': [c.to_dict() for c in survey.ceo_comp],
+        'sector_allowances': [sa.to_dict() for sa in survey.sector_allowances],
+    })
+
+
+@app.route('/api/surveys/<int:survey_id>/sector-for-company', methods=['GET'])
+def survey_sector_for_company(survey_id):
+    """?name=<company name> -> the sector the survey placed that company
+    in, using a loose (case/punctuation-insensitive) name match, since a
+    company's name in FinSight and in the survey's own company list won't
+    always be typed identically."""
+    name = (request.args.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name query param is required'}), 400
+    norm = re.sub(r'[^a-z0-9]', '', name.lower())
+    for sc in SurveySectorCompany.query.filter_by(survey_id=survey_id).all():
+        if re.sub(r'[^a-z0-9]', '', sc.company_name.lower()) == norm:
+            return jsonify({'sector': sc.sector, 'matched_name': sc.company_name})
+    return jsonify({'sector': None, 'matched_name': None})
+
+
+@app.route('/api/surveys/<int:survey_id>', methods=['DELETE'])
+def delete_survey(survey_id):
+    survey = MarketSurvey.query.get_or_404(survey_id)
+    db.session.delete(survey)
+    db.session.commit()
+    return jsonify({'deleted': True}), 200
+
 
 @app.route('/api/companies/<int:company_id>/periods')
 def list_periods(company_id):
