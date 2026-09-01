@@ -60,9 +60,9 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 
 .header-actions{display:flex;align-items:center;gap:8px;flex-shrink:0;}
 
-/* ---------- shared: icon-circle stat cards, filter bars, avatars, view buttons ---------- */
-.stat-icon-circle{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  font-size:18px;margin-bottom:10px;}
+/* ---------- shared: icon-square stat cards, filter bars, avatars, view buttons ---------- */
+.stat-icon-square{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:17px;flex-shrink:0;}
 .filter-bar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin-bottom:14px;}
 .filter-group{display:flex;flex-direction:column;gap:4px;}
 .filter-group label{font-size:9.5px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.04em;}
@@ -87,7 +87,18 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .view-btn:hover{background:var(--bg-hover);color:var(--text);}
 .score-band-label{font-size:10px;margin-left:5px;font-weight:600;}
 .results-footer{display:flex;align-items:center;justify-content:space-between;margin-top:14px;
-  font-size:11.5px;color:var(--text-faint);flex-wrap:wrap;gap:8px;}
+  font-size:11.5px;color:var(--text-faint);flex-wrap:wrap;gap:10px;}
+.pagination{display:flex;align-items:center;gap:4px;}
+.page-btn{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text-dim);
+  width:26px;height:26px;border-radius:7px;font-size:11.5px;cursor:pointer;display:flex;
+  align-items:center;justify-content:center;}
+.page-btn:hover{background:var(--bg-hover);color:var(--text);}
+.page-btn.active{background:var(--blue);border-color:var(--blue);color:#fff;}
+.page-btn:disabled{opacity:.4;cursor:default;}
+.page-btn:disabled:hover{background:var(--bg-panel-2);color:var(--text-dim);}
+.rows-per-page{display:flex;align-items:center;gap:6px;}
+.rows-per-page select{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
+  padding:5px 8px;border-radius:7px;font-size:11.5px;}
 .export-btn{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text-dim);
   padding:8px 13px;border-radius:9px;font-size:12.5px;font-weight:600;cursor:pointer;margin:0;
   display:inline-flex;align-items:center;gap:6px;}
@@ -122,13 +133,6 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .topbar-title{flex:1;min-width:0;}
 .page-title{font-size:22px;font-weight:700;}
 .page-sub{color:var(--text-faint);font-size:11.5px;margin-top:2px;}
-.search-box{flex:1 1 auto;max-width:420px;position:relative;}
-.search-box input{width:100%;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
-  padding:8px 56px 8px 32px;border-radius:9px;font-size:12.5px;}
-.search-box input::placeholder{color:var(--text-faint);}
-.search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-faint);pointer-events:none;}
-.search-kbd{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:9.5px;color:var(--text-faint);
-  background:var(--bg-panel);border:1px solid var(--border);border-radius:5px;padding:1px 5px;pointer-events:none;}
 
 .topbar-right{display:flex;align-items:center;gap:12px;flex:0 0 auto;margin-left:auto;position:relative;}
 .notif-btn{position:relative;width:34px;height:34px;border-radius:9px;background:var(--bg-panel-2);
@@ -181,15 +185,15 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .content{padding:24px 28px;flex:1;}
 
 .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
-.stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
-.stat-card .stat-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px;background:transparent;}
-.stat-value{font-size:22px;font-weight:700;line-height:1;}
-.stat-label{color:var(--text-dim);font-size:11.5px;margin-top:5px;}
-.stat-trend{font-size:11px;margin-top:7px;display:flex;align-items:center;gap:4px;}
+.stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;
+  display:flex;align-items:flex-start;gap:12px;}
+.stat-card-body{min-width:0;flex:1;}
+.stat-value{font-size:20px;font-weight:700;line-height:1.2;}
+.stat-label{color:var(--text-dim);font-size:11.5px;order:-1;margin-bottom:2px;}
+.stat-trend{font-size:11px;margin-top:6px;display:flex;align-items:center;gap:4px;}
 .stat-trend.up{color:var(--green);}
 .stat-trend.down{color:var(--red);}
 .stat-trend.neutral{color:var(--text-faint);}
-.purple-soft{background:transparent;}
 
 .row{display:grid;gap:14px;margin-bottom:14px;}
 .row-3{grid-template-columns:1fr 1.3fr 1fr;}
@@ -207,6 +211,10 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .linechart-svg .trend-dot{fill:var(--blue);}
 .linechart-svg .trend-label{fill:var(--text-dim);font-size:9px;}
 .linechart-svg .axis-label{fill:var(--text-faint);font-size:8.5px;}
+
+.sparkline-svg{width:64px;height:26px;display:block;}
+.sparkline-svg .spark-line{fill:none;stroke-width:1.6;}
+.sparkline-svg .spark-dot{r:1.6;}
 
 .vbar-chart{display:flex;align-items:flex-end;justify-content:space-between;gap:8px;height:130px;padding-top:16px;}
 .vbar-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
@@ -284,13 +292,21 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 table{width:100%;border-collapse:collapse;}
 th,td{padding:9px 8px;text-align:left;border-bottom:1px solid var(--border);font-size:12.5px;}
 th{color:var(--text-faint);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;}
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap;}
+th.sortable:hover{color:var(--text-dim);}
+th.sortable .sort-ic{opacity:.5;font-size:9px;margin-left:2px;}
+th.sortable.active .sort-ic{opacity:1;color:var(--blue);}
 tr.clickable{cursor:pointer;}
 tr.clickable:hover{background:var(--bg-hover);}
 .rank-medal{font-size:14px;}
-.score-badge{padding:0;background:transparent;font-weight:700;font-size:12.5px;display:inline-block;}
-.score-strong{color:var(--green);}
-.score-moderate{color:var(--amber);}
-.score-weak{color:var(--red);}
+.score-badge{padding:2px 8px;border-radius:6px;font-weight:700;font-size:12px;display:inline-block;}
+.score-strong{background:var(--green-soft);color:var(--green);}
+.score-moderate{background:var(--amber-soft);color:var(--amber);}
+.score-weak{background:var(--red-soft);color:var(--red);}
+.delta{font-size:10.5px;display:block;margin-top:2px;}
+.delta.up{color:var(--green);}
+.delta.down{color:var(--red);}
+.delta.flat{color:var(--text-faint);}
 
 .activity-item{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);}
 .activity-item:last-child{border-bottom:none;}
@@ -375,7 +391,6 @@ tr.li-child td:first-child{color:var(--text-dim);}
   .topbar{padding:12px 14px;gap:10px;flex-wrap:wrap;}
   .topbar-title{min-width:0;}
   .page-title{font-size:16px;}
-  .search-box{order:3;flex-basis:100%;max-width:none;}
   .content{padding:14px;}
   .stat-grid{grid-template-columns:1fr 1fr;gap:8px;}
   .row-3,.row-4,.row-2{grid-template-columns:1fr;}
@@ -396,6 +411,17 @@ tr.li-child td:first-child{color:var(--text-dim);}
 .columns-menu-item{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:5px 6px;border-radius:6px;cursor:pointer;white-space:nowrap;}
 .columns-menu-item:hover{background:var(--bg-hover);}
 .columns-menu-item input{margin:0;}
+.row-actions{display:flex;align-items:center;gap:6px;position:relative;}
+.row-menu-btn{background:transparent;border:1px solid var(--border);color:var(--text-dim);width:28px;height:28px;
+  border-radius:7px;font-size:13px;cursor:pointer;margin:0;display:flex;align-items:center;justify-content:center;}
+.row-menu-btn:hover{background:var(--bg-hover);color:var(--text);}
+.row-menu{position:absolute;right:0;top:calc(100% + 4px);background:var(--bg-panel);border:1px solid var(--border);
+  border-radius:8px;padding:5px;z-index:40;min-width:120px;box-shadow:0 8px 24px rgba(0,0,0,.4);}
+.row-menu.hidden{display:none;}
+.row-menu button{width:100%;background:none;border:none;color:var(--text-dim);font-size:12px;text-align:left;
+  padding:7px 9px;border-radius:6px;cursor:pointer;margin:0;font-weight:500;}
+.row-menu button:hover{background:var(--bg-hover);color:var(--text);}
+.row-menu button.danger:hover{color:var(--red);}
 .trend-up{color:var(--green);}
 .trend-down{color:var(--red);}
 </style>
@@ -425,11 +451,6 @@ tr.li-child td:first-child{color:var(--text-dim);}
       <div class="topbar-title">
         <div class="page-title" id="pageTitle">Overview</div>
         <div class="page-sub" id="pageSub"></div>
-      </div>
-      <div class="search-box">
-        <span class="search-icon">🔍</span>
-        <input id="global-search" placeholder="Search any company (e.g. Apple, Microsoft, Safaricom...)" oninput="handleGlobalSearch(this.value)">
-        <span class="search-kbd">Ctrl+K</span>
       </div>
       <div class="topbar-right">
         <button class="notif-btn" id="notifBtn" onclick="goTo('alerts')" aria-label="Alerts" title="Alerts">
@@ -548,11 +569,6 @@ function closeSidebar(){
   document.getElementById('sidebarBackdrop').classList.remove('open');
 }
 
-async function handleGlobalSearch(query){
-  if (currentPage !== 'companies') { goTo('companies'); }
-  await renderCompaniesPage(query);
-}
-
 function toggleUserMenu(e){
   e.stopPropagation();
   document.getElementById('userDropdown').classList.toggle('open');
@@ -560,6 +576,9 @@ function toggleUserMenu(e){
 document.addEventListener('click', () => {
   const dd = document.getElementById('userDropdown');
   if (dd) dd.classList.remove('open');
+  const cm = document.getElementById('coColumnsMenu');
+  if (cm) cm.classList.add('hidden');
+  document.querySelectorAll('.row-menu').forEach(m => m.classList.add('hidden'));
 });
 
 async function refreshNotifBadge(){
@@ -584,20 +603,6 @@ function goToCompany(companyId){
   renderNav();
   render();
   closeSidebar();
-}
-
-function toggleSidebar(){
-  document.querySelector('.sidebar').classList.toggle('open');
-  document.getElementById('sidebarBackdrop').classList.toggle('open');
-}
-function closeSidebar(){
-  document.querySelector('.sidebar').classList.remove('open');
-  document.getElementById('sidebarBackdrop').classList.remove('open');
-}
-
-async function handleGlobalSearch(query){
-  if (currentPage !== 'companies') { goTo('companies'); }
-  await renderCompaniesPage(query);
 }
 
 async function render(){
@@ -718,57 +723,17 @@ async function renderOverview(){
 
   app.innerHTML = `
     <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div>
-        <div class="stat-value">${s.total_companies}</div>
-        <div class="stat-label">Total Companies</div>
-        ${trendCount(t.companies_added_this_month, 'this month')}
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📊</div>
-        <div class="stat-value">${s.companies_with_data}</div>
-        <div class="stat-label">Companies Updated</div>
-        <div class="stat-trend neutral">${t.companies_updated_pct_of_total != null ? fmt(t.companies_updated_pct_of_total, 1) + '% of total' : 'No data yet'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">💰</div>
-        <div class="stat-value">${s.combined_revenue ? fmtMoney(s.combined_revenue) : '-'}</div>
-        <div class="stat-label">Combined Revenue</div>
-        ${trendBadge(t.combined_revenue_yoy, {suffix: '% YoY'})}
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">💼</div>
-        <div class="stat-value">${s.combined_net_income ? fmtMoney(s.combined_net_income) : '-'}</div>
-        <div class="stat-label">Combined Net Income</div>
-        ${trendBadge(t.combined_income_yoy, {suffix: '% YoY'})}
-      </div>
+      ${statCard('blue', '🏢', s.total_companies, 'Total Companies', trendCount(t.companies_added_this_month, 'this month'))}
+      ${statCard('green', '📊', s.companies_with_data, 'Companies Updated', `<div class="stat-trend neutral">${t.companies_updated_pct_of_total != null ? fmt(t.companies_updated_pct_of_total, 1) + '% of total' : 'No data yet'}</div>`)}
+      ${statCard('purple', '💰', s.combined_revenue ? fmtMoney(s.combined_revenue) : '-', 'Combined Revenue', trendBadge(t.combined_revenue_yoy, {suffix: '% YoY'}))}
+      ${statCard('amber', '💼', s.combined_net_income ? fmtMoney(s.combined_net_income) : '-', 'Combined Net Income', trendBadge(t.combined_income_yoy, {suffix: '% YoY'}))}
     </div>
 
     <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">📈</div>
-        <div class="stat-value">${fmt(s.avg_revenue_growth)}%</div>
-        <div class="stat-label">Avg. Revenue Growth</div>
-        ${trendBadge(t.revenue_growth_delta, {suffix: '% vs prior'})}
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📊</div>
-        <div class="stat-value">${fmt(s.avg_net_margin)}%</div>
-        <div class="stat-label">Avg. Net Margin</div>
-        ${trendBadge(t.net_margin_delta, {suffix: '% vs prior'})}
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">🎯</div>
-        <div class="stat-value">${fmt(s.avg_roe)}%</div>
-        <div class="stat-label">Avg. ROE</div>
-        ${trendBadge(t.roe_delta, {suffix: '% vs prior'})}
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--red-soft);color:var(--red);">⚠️</div>
-        <div class="stat-value">${hd.weak}</div>
-        <div class="stat-label">High Risk Companies</div>
-        ${trendCount(t.high_risk_added_this_month, 'this month')}
-      </div>
+      ${statCard('blue', '📈', fmt(s.avg_revenue_growth) + '%', 'Avg. Revenue Growth', trendBadge(t.revenue_growth_delta, {suffix: '% vs prior'}))}
+      ${statCard('green', '📊', fmt(s.avg_net_margin) + '%', 'Avg. Net Margin', trendBadge(t.net_margin_delta, {suffix: '% vs prior'}))}
+      ${statCard('purple', '🎯', fmt(s.avg_roe) + '%', 'Avg. ROE', trendBadge(t.roe_delta, {suffix: '% vs prior'}))}
+      ${statCard('red', '⚠️', hd.weak, 'High Risk Companies', trendCount(t.high_risk_added_this_month, 'this month'))}
     </div>
 
     <div class="row row-3">
@@ -846,6 +811,26 @@ async function renderOverview(){
       <div id="nse-scan-results"></div>
     </div>
   `;
+}
+
+// Shared stat-card markup: icon square on the left, label/value/trend
+// stacked to the right - used by every stat-grid across the app.
+function statCard(color, icon, value, label, trendHtml){
+  const colorMap = {
+    blue: ['var(--blue-soft)', 'var(--blue)'], green: ['var(--green-soft)', 'var(--green)'],
+    purple: ['var(--purple-soft)', 'var(--purple)'], amber: ['var(--amber-soft)', 'var(--amber)'],
+    red: ['var(--red-soft)', 'var(--red)'],
+  };
+  const [bg, fg] = colorMap[color] || colorMap.blue;
+  return `
+    <div class="stat-card">
+      <div class="stat-icon-square" style="background:${bg};color:${fg};">${icon}</div>
+      <div class="stat-card-body">
+        <div class="stat-label">${escapeHtml(label)}</div>
+        <div class="stat-value">${value}</div>
+        ${trendHtml || ''}
+      </div>
+    </div>`;
 }
 
 function buildRevenueTrendChart(trend){
@@ -1416,26 +1401,96 @@ async function saveAllNSEBatch(){
   }
 }
 
+// ---------- Companies page ----------
+
 let coFilterText = '';
 let coSectorFilter = '';
+let coExchangeFilter = '';
+let coCountryFilter = '';
 let coScoreFilter = '';
 let coOnlyWithData = false;
+let coSortKey = null;
+let coSortDir = 'desc';
+let coPage = 1;
+let coRowsPerPage = 10;
+const CO_ALL_COLUMNS = [
+  {key:'ticker', label:'Ticker', default:true},
+  {key:'exchange', label:'Exchange', default:true},
+  {key:'sector', label:'Sector', default:true},
+  {key:'country', label:'Country', default:true},
+  {key:'period', label:'Latest Period', default:true},
+  {key:'net_income', label:'Net Income', default:true},
+  {key:'net_margin', label:'Net Margin', default:true},
+  {key:'roe', label:'ROE', default:true},
+];
+let coVisibleColumns = new Set(CO_ALL_COLUMNS.filter(c => c.default).map(c => c.key));
 
 async function renderCompaniesPage(filterText){
   const res = await fetch('/api/companies');
   allCompaniesCache = await res.json();
   if (filterText !== undefined) coFilterText = filterText || '';
+  coPage = 1;
   renderCompaniesTable(coFilterText);
 }
 
-function setCoSectorFilter(v){ coSectorFilter = v; renderCompaniesTable(coFilterText); }
-function setCoScoreFilter(v){ coScoreFilter = v; renderCompaniesTable(coFilterText); }
+function setCoSectorFilter(v){ coSectorFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
+function setCoExchangeFilter(v){ coExchangeFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
+function setCoCountryFilter(v){ coCountryFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
+function setCoScoreFilter(v){ coScoreFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
 function toggleCoOnlyWithData(el){
   el.classList.toggle('on');
   coOnlyWithData = el.classList.contains('on');
+  coPage = 1;
   renderCompaniesTable(coFilterText);
 }
-function onCoSearchInput(v){ coFilterText = v; renderCompaniesTable(coFilterText); }
+function onCoSearchInput(v){ coFilterText = v; coPage = 1; renderCompaniesTable(coFilterText); }
+function setCoSort(key){
+  if (coSortKey === key) { coSortDir = coSortDir === 'asc' ? 'desc' : 'asc'; }
+  else { coSortKey = key; coSortDir = 'desc'; }
+  renderCompaniesTable(coFilterText);
+}
+function setCoPage(p){ coPage = p; renderCompaniesTable(coFilterText); }
+function setCoRowsPerPage(v){ coRowsPerPage = parseInt(v, 10); coPage = 1; renderCompaniesTable(coFilterText); }
+function toggleCoColumnsMenu(e){
+  e.stopPropagation();
+  document.getElementById('coColumnsMenu').classList.toggle('hidden');
+}
+function toggleCoColumn(key, checked){
+  if (checked) coVisibleColumns.add(key); else coVisibleColumns.delete(key);
+  renderCompaniesTable(coFilterText);
+}
+function toggleRowMenu(id, e){
+  e.stopPropagation();
+  document.querySelectorAll('.row-menu').forEach(m => { if (m.id !== `rowMenu${id}`) m.classList.add('hidden'); });
+  document.getElementById(`rowMenu${id}`).classList.toggle('hidden');
+}
+
+function sparklineSvg(scores){
+  if (!scores || scores.length < 2) return `<span class="empty" style="padding:0;">-</span>`;
+  const w = 64, h = 26, pad = 3;
+  const minV = Math.min(...scores), maxV = Math.max(...scores);
+  const stepX = (w - pad*2) / (scores.length - 1);
+  const yFor = v => h - pad - ((v - minV) / (maxV - minV || 1)) * (h - pad*2);
+  const pts = scores.map((v, i) => ({x: pad + i*stepX, y: yFor(v)}));
+  const line = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
+  const up = scores[scores.length - 1] >= scores[0];
+  const color = up ? 'var(--green)' : 'var(--red)';
+  const last = pts[pts.length - 1];
+  return `<svg class="sparkline-svg" viewBox="0 0 ${w} ${h}">
+    <path class="spark-line" d="${line}" stroke="${color}"></path>
+    <circle class="spark-dot" cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" fill="${color}"></circle>
+  </svg>`;
+}
+
+function deltaSpan(value, {suffix = '%', decimals = 1, invert = false} = {}){
+  if (value === null || value === undefined) return '';
+  const num = Number(value);
+  const isUp = invert ? num < 0 : num > 0;
+  const isFlat = num === 0;
+  const dir = isFlat ? 'flat' : (isUp ? 'up' : 'down');
+  const arrow = isFlat ? '→' : (isUp ? '▲' : '▼');
+  return `<span class="delta ${dir}">${arrow} ${Math.abs(num).toFixed(decimals)}${suffix}</span>`;
+}
 
 function renderCompaniesTable(filterText){
   const app = document.getElementById('app');
@@ -1449,14 +1504,29 @@ function renderCompaniesTable(filterText){
   }
 
   const sectors = [...new Set(allCompaniesCache.map(c => c.sector).filter(Boolean))].sort();
+  const exchanges = [...new Set(allCompaniesCache.map(c => c.exchange).filter(Boolean))].sort();
+  const countries = [...new Set(allCompaniesCache.map(c => c.country).filter(Boolean))].sort();
 
   let companies = allCompaniesCache.filter(c =>
     !q || (c.name || '').toLowerCase().includes(q) ||
     (c.ticker || '').toLowerCase().includes(q) ||
     (c.sector || '').toLowerCase().includes(q));
   if (coSectorFilter) companies = companies.filter(c => c.sector === coSectorFilter);
+  if (coExchangeFilter) companies = companies.filter(c => c.exchange === coExchangeFilter);
+  if (coCountryFilter) companies = companies.filter(c => c.country === coCountryFilter);
   if (coOnlyWithData) companies = companies.filter(c => !!c.latest);
   if (coScoreFilter) companies = companies.filter(c => c.latest && c.latest.score_band === coScoreFilter);
+
+  if (coSortKey) {
+    const dir = coSortDir === 'asc' ? 1 : -1;
+    companies = [...companies].sort((a, b) => {
+      const av = coSortValue(a, coSortKey), bv = coSortValue(b, coSortKey);
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      if (typeof av === 'string') return av.localeCompare(bv) * dir;
+      return (av - bv) * dir;
+    });
+  }
 
   const withData = allCompaniesCache.filter(c => c.latest);
   const combinedRevenue = withData.reduce((s, c) => s + (c.latest.revenue || 0), 0);
@@ -1467,62 +1537,49 @@ function renderCompaniesTable(filterText){
 
   const statCards = `
     <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div>
-        <div class="stat-value">${allCompaniesCache.length}</div>
-        <div class="stat-label">Total Companies</div>
-        <div class="stat-trend neutral">All companies in your portfolio</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📈</div>
-        <div class="stat-value">${withData.length}</div>
-        <div class="stat-label">Companies with Data</div>
-        <div class="stat-trend neutral">${allCompaniesCache.length ? fmt(withData.length / allCompaniesCache.length * 100, 1) : '0'}% of total companies</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">💰</div>
-        <div class="stat-value">${combinedRevenue ? fmtMoney(combinedRevenue) : '-'}</div>
-        <div class="stat-label">Combined Revenue</div>
-        <div class="stat-trend neutral">Across companies with data</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">💼</div>
-        <div class="stat-value">${combinedNetIncome ? fmtMoney(combinedNetIncome) : '-'}</div>
-        <div class="stat-label">Combined Net Income</div>
-        <div class="stat-trend neutral">Across companies with data</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🛡️</div>
-        <div class="stat-value">${avgScore !== null ? avgScore + ' /100' : '-'}</div>
-        <div class="stat-label">Avg Financial Score</div>
-        <div class="stat-trend neutral">${avgBand ? scoreBandLabel(avgBand) + ' overall health' : 'No scored companies yet'}</div>
-      </div>
+      ${statCard('blue', '🏢', allCompaniesCache.length, 'Total Companies', `<div class="stat-trend neutral">All companies in your portfolio</div>`)}
+      ${statCard('green', '📈', withData.length, 'Companies with Data', `<div class="stat-trend neutral">${allCompaniesCache.length ? fmt(withData.length / allCompaniesCache.length * 100, 1) : '0'}% of total companies</div>`)}
+      ${statCard('purple', '💰', combinedRevenue ? fmtMoney(combinedRevenue) : '-', 'Combined Revenue', `<div class="stat-trend neutral">Across companies with data</div>`)}
+      ${statCard('amber', '💼', combinedNetIncome ? fmtMoney(combinedNetIncome) : '-', 'Combined Net Income', `<div class="stat-trend neutral">Across companies with data</div>`)}
+      ${statCard('blue', '🛡️', avgScore !== null ? avgScore + ' /100' : '-', 'Avg Financial Score', `<div class="stat-trend neutral">${avgBand ? scoreBandLabel(avgBand) + ' overall health' : 'No scored companies yet'}</div>`)}
     </div>`;
 
   const filterBar = `
-    <div class="filter-bar">
-      <div class="filter-group">
-        <label>Sector</label>
-        <select class="filter-select" onchange="setCoSectorFilter(this.value)">
-          <option value="">All Sectors</option>
-          ${sectors.map(s => `<option value="${escapeHtml(s)}" ${s === coSectorFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="filter-group">
-        <label>Score</label>
-        <select class="filter-select" onchange="setCoScoreFilter(this.value)">
-          <option value="">All Scores</option>
-          <option value="strong" ${coScoreFilter === 'strong' ? 'selected' : ''}>Strong (70-100)</option>
-          <option value="moderate" ${coScoreFilter === 'moderate' ? 'selected' : ''}>Moderate (40-69)</option>
-          <option value="weak" ${coScoreFilter === 'weak' ? 'selected' : ''}>Weak (0-39)</option>
-        </select>
-      </div>
+    <div class="filter-bar" style="position:relative;">
+      <input class="filter-search-compact" style="order:0;" placeholder="Search companies..." value="${escapeHtml(filterText || '')}" oninput="onCoSearchInput(this.value)">
+      <select class="filter-select" onchange="setCoSectorFilter(this.value)">
+        <option value="">All Sectors</option>
+        ${sectors.map(s => `<option value="${escapeHtml(s)}" ${s === coSectorFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+      </select>
+      <select class="filter-select" onchange="setCoExchangeFilter(this.value)">
+        <option value="">All Exchanges</option>
+        ${exchanges.map(x => `<option value="${escapeHtml(x)}" ${x === coExchangeFilter ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('')}
+      </select>
+      <select class="filter-select" onchange="setCoCountryFilter(this.value)">
+        <option value="">All Countries</option>
+        ${countries.map(c => `<option value="${escapeHtml(c)}" ${c === coCountryFilter ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+      </select>
+      <select class="filter-select" onchange="setCoScoreFilter(this.value)">
+        <option value="">All Scores</option>
+        <option value="strong" ${coScoreFilter === 'strong' ? 'selected' : ''}>Strong (70-100)</option>
+        <option value="moderate" ${coScoreFilter === 'moderate' ? 'selected' : ''}>Moderate (40-69)</option>
+        <option value="weak" ${coScoreFilter === 'weak' ? 'selected' : ''}>Weak (0-39)</option>
+      </select>
       <div class="toggle-row" onclick="toggleCoOnlyWithData(document.getElementById('coOnlyWithDataToggle'))">
         <div class="toggle-switch ${coOnlyWithData ? 'on' : ''}" id="coOnlyWithDataToggle"><div class="knob"></div></div>
         Show only with data
       </div>
       <div style="flex:1"></div>
-      <input class="filter-search-compact" placeholder="Search companies..." value="${escapeHtml(filterText || '')}" oninput="onCoSearchInput(this.value)">
+      <div style="position:relative;">
+        <button class="export-btn" onclick="toggleCoColumnsMenu(event)">☰ Columns</button>
+        <div class="columns-menu hidden" id="coColumnsMenu" onclick="event.stopPropagation()">
+          ${CO_ALL_COLUMNS.map(c => `
+            <label class="columns-menu-item">
+              <input type="checkbox" ${coVisibleColumns.has(c.key) ? 'checked' : ''} onchange="toggleCoColumn('${c.key}', this.checked)">
+              ${escapeHtml(c.label)}
+            </label>`).join('')}
+        </div>
+      </div>
       <button class="export-btn" onclick="window.location.href='/api/export/portfolio'">⭳ Export</button>
       <button class="secondary" style="margin:0;" onclick="seedNSECompanies()">Seed all NSE companies</button>
       <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
@@ -1533,46 +1590,104 @@ function renderCompaniesTable(filterText){
     return;
   }
 
-  const rows = companies.map(c => {
+  const totalFiltered = companies.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / coRowsPerPage));
+  if (coPage > totalPages) coPage = totalPages;
+  const pageStart = (coPage - 1) * coRowsPerPage;
+  const pageCompanies = companies.slice(pageStart, pageStart + coRowsPerPage);
+
+  const col = key => coVisibleColumns.has(key);
+  const sortTh = (key, label) => `<th class="sortable ${coSortKey===key?'active':''}" onclick="setCoSort('${key}')">${label}<span class="sort-ic">${coSortKey===key ? (coSortDir==='asc'?'▲':'▼') : '↕'}</span></th>`;
+
+  const headerCols = [
+    sortTh('name', 'Company'),
+    col('ticker') ? sortTh('ticker', 'Ticker') : '',
+    col('exchange') ? '<th>Exchange</th>' : '',
+    col('sector') ? sortTh('sector', 'Sector') : '',
+    col('country') ? '<th>Country</th>' : '',
+    col('period') ? '<th>Latest Period</th>' : '',
+    sortTh('revenue', 'Revenue'),
+    col('net_income') ? sortTh('net_income', 'Net Income') : '',
+    col('net_margin') ? sortTh('net_margin', 'Net Margin') : '',
+    col('roe') ? sortTh('roe', 'ROE') : '',
+    sortTh('financial_score', 'Financial Score'),
+    '<th>Score Trend</th>',
+    '<th></th>',
+  ].join('');
+
+  const rows = pageCompanies.map(c => {
     const l = c.latest;
     const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
-    return `
-      <tr class="clickable" onclick="goToCompany(${c.id})">
-        <td>
-          <div class="co-cell">
-            <div class="co-avatar" style="background:${coAvatarColor(c.name)};">${coInitials(c.name)}</div>
-            <span class="co-name">${escapeHtml(c.name)}</span>
+    const cells = [
+      `<td>
+        <div class="co-cell">
+          <div class="co-avatar" style="background:${coAvatarColor(c.name)};">${coInitials(c.name)}</div>
+          <span class="co-name">${escapeHtml(c.name)}</span>
+        </div>
+      </td>`,
+      col('ticker') ? `<td><span class="badge">${escapeHtml(c.ticker || '-')}</span></td>` : '',
+      col('exchange') ? `<td>${escapeHtml(c.exchange || '-')}</td>` : '',
+      col('sector') ? `<td>${escapeHtml(c.sector || '-')}</td>` : '',
+      col('country') ? `<td>${escapeHtml(c.country || '-')}</td>` : '',
+      col('period') ? `<td>${l ? escapeHtml(l.period) : '-'}</td>` : '',
+      `<td>${l && l.revenue !== null && l.revenue !== undefined ? fmtAmount(l.revenue) : '-'}${l ? deltaSpan(l.revenue_yoy) : ''}</td>`,
+      col('net_income') ? `<td>${l && l.net_income !== null && l.net_income !== undefined ? fmtAmount(l.net_income) : '-'}${l ? deltaSpan(l.net_income_yoy) : ''}</td>` : '',
+      col('net_margin') ? `<td>${l ? fmt(l.net_margin) + '%' : '-'}${l ? deltaSpan(l.net_margin_delta, {suffix:'pp'}) : ''}</td>` : '',
+      col('roe') ? `<td>${l ? fmt(l.roe) + '%' : '-'}${l ? deltaSpan(l.roe_delta, {suffix:'pp'}) : ''}</td>` : '',
+      `<td>${band ? `<span class="score-badge score-${band}">${l.financial_score}</span>` : '-'}</td>`,
+      `<td>${sparklineSvg(l ? l.score_trend : null)}</td>`,
+      `<td>
+        <div class="row-actions">
+          <button class="view-btn" onclick="event.stopPropagation();goToCompany(${c.id})">View</button>
+          <button class="row-menu-btn" onclick="event.stopPropagation();toggleRowMenu(${c.id}, event)" title="More">⋮</button>
+          <div class="row-menu hidden" id="rowMenu${c.id}">
+            <button onclick="event.stopPropagation();goToCompany(${c.id})">View details</button>
+            <button class="danger" onclick="event.stopPropagation();deleteCompany(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
           </div>
-        </td>
-        <td><span class="badge">${escapeHtml(c.ticker || '-')}</span></td>
-        <td>${escapeHtml(c.exchange || '-')}</td>
-        <td>${escapeHtml(c.sector || '-')}</td>
-        <td>${escapeHtml(c.country || '-')}</td>
-        <td>${l ? escapeHtml(l.period) : '-'}</td>
-        <td>${l && l.revenue !== null && l.revenue !== undefined ? fmtAmount(l.revenue) : '-'}</td>
-        <td>${l ? fmt(l.net_margin) + '%' : '-'}</td>
-        <td>${l ? fmt(l.roe) + '%' : '-'}</td>
-        <td>${band ? `<span class="score-badge score-${band}">${l.financial_score}</span><span class="score-band-label score-${band}">${scoreBandLabel(band)}</span>` : '-'}</td>
-        <td><button class="view-btn" onclick="event.stopPropagation();goToCompany(${c.id})">View</button></td>
-        <td><button class="icon-btn" title="Delete company" onclick="event.stopPropagation();deleteCompany(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">🗑️</button></td>
-      </tr>`;
+        </div>
+      </td>`,
+    ].join('');
+    return `<tr class="clickable" onclick="goToCompany(${c.id})">${cells}</tr>`;
   }).join('');
+
+  const pageNumbers = [];
+  for (let p = 1; p <= totalPages; p++) pageNumbers.push(p);
+  const pagerBtns = pageNumbers.map(p =>
+    `<button class="page-btn ${p===coPage?'active':''}" onclick="setCoPage(${p})">${p}</button>`
+  ).join('');
 
   app.innerHTML = statCards + `
     <div class="panel">
       ${filterBar}
       <table>
-        <thead>
-          <tr><th>Company</th><th>Ticker</th><th>Exchange</th><th>Sector</th><th>Country</th><th>Latest Period</th>
-            <th>Revenue</th><th>Net Margin</th><th>ROE</th><th>Score</th><th></th><th></th></tr>
-        </thead>
+        <thead><tr>${headerCols}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
       <div class="results-footer">
-        <span>Showing ${companies.length} of ${allCompaniesCache.length} companies</span>
+        <span>Showing ${pageStart + 1} to ${Math.min(pageStart + coRowsPerPage, totalFiltered)} of ${totalFiltered} companies</span>
+        <div class="pagination">
+          <button class="page-btn" ${coPage<=1?'disabled':''} onclick="setCoPage(${coPage-1})">‹</button>
+          ${pagerBtns}
+          <button class="page-btn" ${coPage>=totalPages?'disabled':''} onclick="setCoPage(${coPage+1})">›</button>
+        </div>
+        <div class="rows-per-page">
+          Rows per page
+          <select onchange="setCoRowsPerPage(this.value)">
+            ${[10,25,50].map(n => `<option value="${n}" ${n===coRowsPerPage?'selected':''}>${n}</option>`).join('')}
+          </select>
+        </div>
       </div>
     </div>
   `;
+}
+
+function coSortValue(c, key){
+  if (key === 'name') return (c.name || '').toLowerCase();
+  if (key === 'ticker') return (c.ticker || '').toLowerCase();
+  if (key === 'sector') return (c.sector || '').toLowerCase();
+  const l = c.latest;
+  if (!l) return null;
+  return l[key];
 }
 
 async function seedNSECompanies(){
@@ -1653,30 +1768,10 @@ function renderRankingsTable(){
 
   const statCards = `
     <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div>
-        <div class="stat-value">${byScore.length}</div>
-        <div class="stat-label">Companies Ranked</div>
-        <div class="stat-trend neutral">Across all sectors</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">🏆</div>
-        <div class="stat-value" style="font-size:16px;">${topPerformer ? escapeHtml(topPerformer.name) : '-'}</div>
-        <div class="stat-label">Top Performer Overall</div>
-        <div class="stat-trend neutral">${topPerformer ? `Score: ${topPerformer.latest.financial_score}/100` : 'No scored companies yet'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📈</div>
-        <div class="stat-value" style="font-size:16px;">${topRoe ? escapeHtml(topRoe.name) : '-'}</div>
-        <div class="stat-label">Highest ROE</div>
-        <div class="stat-trend neutral">${topRoe ? `ROE: ${fmt(topRoe.latest.roe)}%` : 'No data yet'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">📅</div>
-        <div class="stat-value" style="font-size:16px;">${latestPeriod ? escapeHtml(latestPeriod) : '-'}</div>
-        <div class="stat-label">Data Period</div>
-        <div class="stat-trend neutral">${withData.length} of ${byScore.length} companies scored</div>
-      </div>
+      ${statCard('blue', '🏢', byScore.length, 'Companies Ranked', `<div class="stat-trend neutral">Across all sectors</div>`)}
+      ${statCard('amber', '🏆', topPerformer ? escapeHtml(topPerformer.name) : '-', 'Top Performer Overall', `<div class="stat-trend neutral">${topPerformer ? `Score: ${topPerformer.latest.financial_score}/100` : 'No scored companies yet'}</div>`)}
+      ${statCard('green', '📈', topRoe ? escapeHtml(topRoe.name) : '-', 'Highest ROE', `<div class="stat-trend neutral">${topRoe ? `ROE: ${fmt(topRoe.latest.roe)}%` : 'No data yet'}</div>`)}
+      ${statCard('purple', '📅', latestPeriod ? escapeHtml(latestPeriod) : '-', 'Data Period', `<div class="stat-trend neutral">${withData.length} of ${byScore.length} companies scored</div>`)}
     </div>`;
 
   const filterBar = `
@@ -1815,36 +1910,11 @@ async function renderSectorsPage(){
 
   const highlightCards = `
     <div class="stat-grid" style="margin-bottom:18px;">
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📈</div>
-        <div class="stat-label">Top Sector by Revenue Growth</div>
-        <div class="stat-value" style="font-size:18px;">${topGrowth ? escapeHtml(topGrowth.sector) : '-'}</div>
-        <div class="stat-trend up">${topGrowth ? fmt(topGrowth.avg_revenue_growth) + '% YoY' : 'No YoY data yet'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🛡️</div>
-        <div class="stat-label">Best Financial Health</div>
-        <div class="stat-value" style="font-size:18px;">${topHealth ? escapeHtml(topHealth.sector) : '-'}</div>
-        <div class="stat-trend">${topHealth ? topHealth.avg_financial_score + ' / 100' : '-'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">💰</div>
-        <div class="stat-label">Highest Profit Margin</div>
-        <div class="stat-value" style="font-size:18px;">${topMargin ? escapeHtml(topMargin.sector) : '-'}</div>
-        <div class="stat-trend">${topMargin ? fmt(topMargin.avg_net_margin) + '% net margin' : '-'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">📊</div>
-        <div class="stat-label">Largest Sector by Revenue</div>
-        <div class="stat-value" style="font-size:18px;">${topSize ? escapeHtml(topSize.sector) : '-'}</div>
-        <div class="stat-trend">${topSize ? topSize.weight_pct + '% of tracked revenue' : '-'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon-circle" style="background:var(--red-soft);color:var(--red);">🏢</div>
-        <div class="stat-label">Total Reported Revenue</div>
-        <div class="stat-value" style="font-size:18px;">${fmtAmount(data.total_revenue)}</div>
-        <div class="stat-trend">${sectors.reduce((s, x) => s + x.company_count, 0)} companies across ${sectors.length} sectors</div>
-      </div>
+      ${statCard('green', '📈', topGrowth ? escapeHtml(topGrowth.sector) : '-', 'Top Sector by Revenue Growth', `<div class="stat-trend up">${topGrowth ? fmt(topGrowth.avg_revenue_growth) + '% YoY' : 'No YoY data yet'}</div>`)}
+      ${statCard('blue', '🛡️', topHealth ? escapeHtml(topHealth.sector) : '-', 'Best Financial Health', `<div class="stat-trend">${topHealth ? topHealth.avg_financial_score + ' / 100' : '-'}</div>`)}
+      ${statCard('purple', '💰', topMargin ? escapeHtml(topMargin.sector) : '-', 'Highest Profit Margin', `<div class="stat-trend">${topMargin ? fmt(topMargin.avg_net_margin) + '% net margin' : '-'}</div>`)}
+      ${statCard('amber', '📊', topSize ? escapeHtml(topSize.sector) : '-', 'Largest Sector by Revenue', `<div class="stat-trend">${topSize ? topSize.weight_pct + '% of tracked revenue' : '-'}</div>`)}
+      ${statCard('red', '🏢', fmtAmount(data.total_revenue), 'Total Reported Revenue', `<div class="stat-trend">${sectors.reduce((s, x) => s + x.company_count, 0)} companies across ${sectors.length} sectors</div>`)}
     </div>`;
 
   const insights = [];
@@ -2353,10 +2423,10 @@ async function renderSettingsPage(){
       <div class="panel-head"><h2>Database</h2></div>
       ${banner}
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🏢</div><div class="stat-value">${status.counts.companies}</div><div class="stat-label">Companies</div></div>
-        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">📅</div><div class="stat-value">${status.counts.periods}</div><div class="stat-label">Financial Periods</div></div>
-        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📄</div><div class="stat-value">${status.counts.source_documents}</div><div class="stat-label">Source Documents</div></div>
-        <div class="stat-card"><div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">📥</div><div class="stat-value">${status.counts.import_jobs}</div><div class="stat-label">Import Jobs</div></div>
+        ${statCard('blue', '🏢', status.counts.companies, 'Companies')}
+        ${statCard('purple', '📅', status.counts.periods, 'Financial Periods')}
+        ${statCard('green', '📄', status.counts.source_documents, 'Source Documents')}
+        ${statCard('amber', '📥', status.counts.import_jobs, 'Import Jobs')}
       </div>
     </div>
     ${manageRows}
@@ -2563,8 +2633,10 @@ function renderCalculatedMetrics(metrics){
   if (!metrics || !Object.keys(metrics).length) return '';
   const cards = Object.entries(metrics).map(([key, val]) => `
     <div class="stat-card">
-      <div class="stat-value" style="font-size:17px;">${fmt(val, 2)}${PCT_METRICS.has(key) ? '%' : ''}</div>
-      <div class="stat-label">${METRIC_LABELS[key] || key}</div>
+      <div class="stat-card-body">
+        <div class="stat-label">${METRIC_LABELS[key] || key}</div>
+        <div class="stat-value" style="font-size:17px;">${fmt(val, 2)}${PCT_METRICS.has(key) ? '%' : ''}</div>
+      </div>
     </div>`).join('');
   return `<div class="stat-grid" style="margin-bottom:16px;">${cards}</div>`;
 }
@@ -2738,9 +2810,6 @@ function coInitials(name){
 }
 function scoreBandLabel(band){
   return band === 'strong' ? 'Strong' : band === 'moderate' ? 'Moderate' : band === 'weak' ? 'Weak' : '';
-}
-function toggleSwitchHtml(id, on){
-  return `<div class="toggle-switch ${on ? 'on' : ''}" id="${id}" onclick="this.classList.toggle('on'); window['${id}_cb'] && window['${id}_cb'](this.classList.contains('on'))"><div class="knob"></div></div>`;
 }
 function escapeHtml(str){
   const div = document.createElement('div');

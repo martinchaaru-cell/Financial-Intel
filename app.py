@@ -51,17 +51,6 @@ if database_url.startswith('postgres://'):
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-# Replit's hosted Postgres (and most managed Postgres/PgBouncer setups)
-# silently drops idle connections. Without these options, SQLAlchemy's
-# pool will hand out a dead connection and every request on it fails with
-# "psycopg2.OperationalError: SSL connection has been closed unexpectedly".
-# pool_pre_ping does a cheap "is this connection still alive" check before
-# each checkout and transparently reconnects if not. pool_recycle forces
-# connections to be recycled before the server-side idle timeout hits.
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,
-    'pool_recycle': 280,
-}
 db.init_app(app)
 
 # ---------- MODELS ----------
@@ -136,18 +125,6 @@ def extract_year(period_label):
 @app.route('/')
 def index():
     return render_template('index.html')
-
-# All API routes return JSON. If one raises (DB hiccup, bad data, etc.),
-# make sure the client still gets JSON back instead of Flask's default
-# HTML error page — that HTML is what was breaking res.json() calls on
-# the frontend and hanging pages on "Loading...".
-@app.errorhandler(Exception)
-def handle_uncaught_error(e):
-    from werkzeug.exceptions import HTTPException
-    if isinstance(e, HTTPException):
-        return jsonify({'error': e.description}), e.code
-    app.logger.exception('Unhandled error')
-    return jsonify({'error': 'Internal server error'}), 500
 
 # ---------- API: OVERVIEW ----------
 
@@ -389,6 +366,71 @@ def overview_charts():
         'sector_performance': sector_performance,
     })
 
+@app.route('/api/sectors')
+def sectors_overview():
+    """Companies grouped by sector, for the Sectors page. Mirrors the
+    per-sector aggregation already done inline for the overview's
+    'Sector Performance' mini-chart (see sector_performance above), but
+    exposed as its own endpoint with the fuller set of fields the
+    Sectors page renders (company_count, total_revenue, weight_pct,
+    avg_revenue_growth, avg_net_margin, avg_financial_score)."""
+    companies = Company.query.all()
+
+    # sector -> accumulators
+    buckets = {}
+
+    def bucket(sector_name):
+        return buckets.setdefault(sector_name, {
+            'sector': sector_name, 'company_count': 0,
+            'revenues': [], 'margins': [], 'scores': [], 'growth_pcts': [],
+        })
+
+    for c in companies:
+        sector = c.sector or 'Unclassified'
+        b = bucket(sector)
+        b['company_count'] += 1
+
+        latest, prior = latest_two_financials(c.id)
+        if not latest:
+            continue
+        d = latest.to_dict()
+        if d['revenue']:
+            b['revenues'].append(d['revenue'])
+        if d['net_margin'] is not None:
+            b['margins'].append(d['net_margin'])
+        if d['financial_score'] is not None:
+            b['scores'].append(d['financial_score'])
+        if prior:
+            pd = prior.to_dict()
+            g = pct_change(d['revenue'], pd['revenue'])
+            if g is not None:
+                b['growth_pcts'].append(g)
+
+    grand_total_revenue = sum(sum(b['revenues']) for b in buckets.values())
+
+    sectors = []
+    for b in buckets.values():
+        total_revenue = sum(b['revenues']) if b['revenues'] else 0
+        sectors.append({
+            'sector': b['sector'],
+            'company_count': b['company_count'],
+            'total_revenue': total_revenue,
+            'weight_pct': round(total_revenue / grand_total_revenue * 100) if grand_total_revenue else None,
+            'avg_revenue_growth': (sum(b['growth_pcts']) / len(b['growth_pcts'])) if b['growth_pcts'] else None,
+            'avg_net_margin': (sum(b['margins']) / len(b['margins'])) if b['margins'] else None,
+            'avg_financial_score': round(sum(b['scores']) / len(b['scores'])) if b['scores'] else None,
+        })
+
+    # Sectors with reported revenue first (largest first), unscored/no-data
+    # sectors after that, alphabetically - keeps the table stable instead
+    # of jumping around as data is added.
+    sectors.sort(key=lambda s: (-(s['total_revenue'] or 0), s['sector'].lower()))
+
+    return jsonify({
+        'sectors': sectors,
+        'total_revenue': grand_total_revenue,
+    })
+
 @app.route('/api/overview/attention')
 def overview_attention():
     companies = Company.query.all()
@@ -519,8 +561,25 @@ def list_companies():
     result = []
     for c in companies:
         d = c.to_dict()
-        f = latest_financials(c.id)
-        d['latest'] = f.to_dict() if f else None
+        latest, prior = latest_two_financials(c.id)
+        if latest:
+            ld = latest.to_dict()
+            pd = prior.to_dict() if prior else None
+            # Period-over-period deltas the Companies table shows next to
+            # each metric - revenue/net income as % change, margin/ROE as
+            # a straight percentage-point difference (not a % change of a
+            # % change, which reads confusingly at small values).
+            ld['revenue_yoy'] = pct_change(ld['revenue'], pd['revenue']) if pd else None
+            ld['net_income_yoy'] = pct_change(ld['net_income'], pd['net_income']) if pd else None
+            ld['net_margin_delta'] = (ld['net_margin'] - pd['net_margin']) if pd and ld['net_margin'] is not None and pd['net_margin'] is not None else None
+            ld['roe_delta'] = (ld['roe'] - pd['roe']) if pd and ld['roe'] is not None and pd['roe'] is not None else None
+            # Up to 5 most recent financial scores, oldest first, for the
+            # sparkline in the Score Trend column.
+            history_rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.period.desc()).limit(5).all()
+            ld['score_trend'] = [h.to_dict()['financial_score'] for h in reversed(history_rows) if h.to_dict()['financial_score'] is not None]
+            d['latest'] = ld
+        else:
+            d['latest'] = None
         result.append(d)
 
     if sort == 'score':
