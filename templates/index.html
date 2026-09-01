@@ -68,7 +68,8 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .filter-group label{font-size:9.5px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.04em;}
 .filter-select{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);
   padding:8px 10px;border-radius:9px;font-size:12.5px;min-width:130px;}
-.filter-search{min-width:200px;flex:1 1 200px;}
+.filter-search-compact{width:200px;flex:0 0 200px;order:10;}
+@media (max-width:600px){.filter-search-compact{flex:1 1 100%;width:100%;order:0;}}
 .toggle-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);cursor:pointer;
   padding-bottom:1px;}
 .toggle-switch{position:relative;width:32px;height:18px;background:var(--bg-panel-2);border:1px solid var(--border);
@@ -228,6 +229,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .status-saved{color:var(--green);}
 .status-failed{color:var(--red);}
 .status-pending,.status-parsed,.status-reviewed{color:var(--amber);}
+.status-saved_needs_review{color:var(--red);font-weight:800;}
 .alert-card{padding:12px 0;border-bottom:1px solid var(--border);}
 .alert-card:last-child{border-bottom:none;}
 .alert-card .alert-title{font-weight:700;font-size:13px;margin-bottom:2px;}
@@ -327,6 +329,8 @@ button.secondary{background:var(--bg-hover);color:var(--text);border:1px solid v
   padding:7px 10px;border-radius:var(--radius-sm);font-size:12.5px;}
 td.amount,th.amount{text-align:right;}
 .li-normalized{margin-left:6px;opacity:.7;}
+.dup-row td{background:var(--red-soft) !important;}
+.dup-badge{background:transparent;color:var(--red);font-size:10px;font-weight:700;margin-left:6px;border:1px solid var(--red);border-radius:4px;padding:1px 5px;}
 .li-toggle{display:inline-block;width:14px;cursor:pointer;color:var(--text-dim);user-select:none;}
 .li-toggle-spacer{display:inline-block;width:14px;}
 .li-row-label{cursor:default;}
@@ -384,15 +388,25 @@ tr.li-child td:first-child{color:var(--text-dim);}
 @media(max-width:420px){
   .stat-grid{grid-template-columns:1fr;}
 }
+
+
+.columns-menu{position:absolute;right:0;top:calc(100% + 6px);background:var(--bg-panel);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:8px;z-index:50;min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,.4);}
+.columns-menu.hidden{display:none;}
+.columns-menu-item{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:5px 6px;border-radius:6px;cursor:pointer;white-space:nowrap;}
+.columns-menu-item:hover{background:var(--bg-hover);}
+.columns-menu-item input{margin:0;}
+.trend-up{color:var(--green);}
+.trend-down{color:var(--red);}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 </head>
 <body>
-<div class="shell">
+<div class="shell" id="shell">
   <aside class="sidebar">
     <div class="brand">
       <div class="mark">📈</div>
-      <div><div class="name">FinSight</div><div class="sub">Financial Intelligence</div></div>
+      <div><div class="name">Financial Intel</div><div class="sub">Financial Intelligence</div></div>
     </div>
     <div class="nav-list" id="navList"></div>
     <div class="sidebar-footer">
@@ -400,13 +414,6 @@ tr.li-child td:first-child{color:var(--text-dim);}
         <div class="hc-title">Need Help?</div>
         <div class="hc-desc">Check our documentation or contact support.</div>
         <button type="button" class="hc-btn" onclick="alert('Financial Intel — track NSE-listed and comparator companies, their filings, and computed financial-health scores. Use Add Company to get started, then add financials from a company\'s detail page.')">View Help Center</button>
-      </div>
-      <div class="sidebar-account" title="Account management isn't set up yet — this is a placeholder">
-        <div class="acc-avatar">A</div>
-        <div class="acc-info">
-          <div class="acc-name">Admin</div>
-          <div class="acc-role">No auth configured</div>
-        </div>
       </div>
     </div>
   </aside>
@@ -444,6 +451,7 @@ tr.li-child td:first-child{color:var(--text-dim);}
       </div>
     </div>
     <div class="content" id="app"></div>
+
   </div>
 </div>
 
@@ -476,13 +484,13 @@ const PAGES = [
   {id:'reports', label:'Reports', icon:'📄'},
   {id:'watchlist', label:'Watchlist', icon:'⭐', soon:true},
   {id:'saved-views', label:'Saved Views', icon:'🔖', soon:true},
-  {id:'data-explorer', label:'Data Explorer', icon:'🗄️', soon:true},
+  {id:'data-explorer', label:'Data Explorer', icon:'🔎', soon:true},
   {id:'settings', label:'Settings', icon:'⚙️'},
-  // Not part of the reference nav (dropped from the visible tab list),
-  // but the render functions still exist below - kept in case a later
-  // pass folds Financial Analytics / Exports / Presentations / Data
-  // Extractor / Documents content into one of the 11 nav pages above
-  // instead of deleting the work outright.
+  // Kept below the reference nav's 11 items so nothing that worked before
+  // becomes unreachable - not part of the reference design, but still
+  // real, working pages.
+  {id:'analytics', label:'Financial Analytics', icon:'📈'},
+  {id:'exports', label:'Exports', icon:'📤'},
 ];
 let currentPage = 'overview';
 let currentCompanyId = null;
@@ -530,13 +538,6 @@ function goTo(pageId){
   render();
   closeSidebar();
 }
-function goToCompany(companyId){
-  currentPage = 'company-detail';
-  currentCompanyId = companyId;
-  renderNav();
-  render();
-  closeSidebar();
-}
 
 function toggleSidebar(){
   document.querySelector('.sidebar').classList.toggle('open');
@@ -565,7 +566,7 @@ async function refreshNotifBadge(){
   try {
     const res = await fetch('/api/alerts');
     const data = await res.json();
-    const count = (data.risk_count || 0) + (data.opportunity_count || 0);
+    const count = Array.isArray(data) ? data.length : ((data.risk_count || 0) + (data.opportunity_count || 0));
     const badge = document.getElementById('notifBadge');
     if (!badge) return;
     if (count > 0) {
@@ -575,6 +576,28 @@ async function refreshNotifBadge(){
       badge.style.display = 'none';
     }
   } catch (e) { /* badge is cosmetic - fail silently */ }
+}
+
+function goToCompany(companyId){
+  currentPage = 'company-detail';
+  currentCompanyId = companyId;
+  renderNav();
+  render();
+  closeSidebar();
+}
+
+function toggleSidebar(){
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.getElementById('sidebarBackdrop').classList.toggle('open');
+}
+function closeSidebar(){
+  document.querySelector('.sidebar').classList.remove('open');
+  document.getElementById('sidebarBackdrop').classList.remove('open');
+}
+
+async function handleGlobalSearch(query){
+  if (currentPage !== 'companies') { goTo('companies'); }
+  await renderCompaniesPage(query);
 }
 
 async function render(){
@@ -628,14 +651,31 @@ async function render(){
   }
 }
 
+async function safeJson(res, fallback){
+  // Never blindly call res.json() on a fetch result: a 500 (or any
+  // non-2xx) response can come back as an HTML error page, and parsing
+  // that as JSON throws "Unexpected token '<'" and kills the caller.
+  // Returning a fallback instead lets the rest of the page still render.
+  if (!res.ok) {
+    console.error('Request failed:', res.status, res.url);
+    return fallback;
+  }
+  try {
+    return await res.json();
+  } catch (err) {
+    console.error('Invalid JSON from', res.url, err);
+    return fallback;
+  }
+}
+
 async function renderOverview(){
   const [res, chartsRes, attnRes, alertsRes] = await Promise.all([
     fetch('/api/overview'), fetch('/api/overview/charts'), fetch('/api/overview/attention'), fetch('/api/overview/alerts')
   ]);
-  const s = await res.json();
-  const charts = await chartsRes.json();
-  const attn = await attnRes.json();
-  const alerts = await alertsRes.json();
+  const s = await safeJson(res, {});
+  const charts = await safeJson(chartsRes, {});
+  const attn = await safeJson(attnRes, {});
+  const alerts = await safeJson(alertsRes, { alerts: [] });
   const app = document.getElementById('app');
 
   const sub = document.getElementById('pageSub');
@@ -1075,6 +1115,18 @@ function renderNSEPreview(filing, parsed){
   renderNSEPreviewPanel();
 }
 
+function _duplicateLineItemIndexes(items){
+  const seen = new Set();
+  const dupIndexes = new Set();
+  items.forEach((li, i) => {
+    const key = `${(li.label || '').trim().toLowerCase()}|${li.amount}`;
+    if (!key.trim()) return;
+    if (seen.has(key)) dupIndexes.add(i);
+    else seen.add(key);
+  });
+  return dupIndexes;
+}
+
 function renderNSEPreviewPanel(){
   const resultsEl = document.getElementById('nse-scan-results');
   const filing = nsePreviewState.filing;
@@ -1086,6 +1138,7 @@ function renderNSEPreviewPanel(){
   ).join('');
 
   const activeItems = (nsePreviewState.statements[nsePreviewState.tab] || { line_items: [] }).line_items;
+  const dupCount = _duplicateLineItemIndexes(activeItems).size;
   const rows = activeItems.length ? renderNSEEditableRows(activeItems)
     : '<tr><td colspan="4" class="empty">No line items yet on this statement.</td></tr>';
 
@@ -1102,6 +1155,7 @@ function renderNSEPreviewPanel(){
         Parsed automatically from the PDF - a page badge shows where a figure came from in the filing so you can double-check it. Edit any label or amount, remove anything wrong, or add lines by hand.
       </div>
       ${types.length ? `<div class="tab-bar">${tabs}</div>` : '<div class="empty">Nothing recognizable was extracted from this PDF - add lines manually below.</div>'}
+      ${dupCount ? `<div style="font-size:12px;color:var(--red);margin-bottom:8px;">${dupCount} duplicate row${dupCount > 1 ? 's' : ''} highlighted below. <button class="secondary" style="padding:4px 10px;font-size:11.5px;" onclick="removeNSEDuplicates()">Remove duplicates</button></div>` : ''}
       <table>
         <thead><tr><th>Label</th><th class="amount">Amount</th><th>Page</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
@@ -1117,9 +1171,10 @@ function renderNSEPreviewPanel(){
 function switchNSETab(t){ nsePreviewState.tab = t; renderNSEPreviewPanel(); }
 
 function renderNSEEditableRows(items){
+  const dupIndexes = _duplicateLineItemIndexes(items);
   return items.map((li, i) => `
-    <tr>
-      <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateNSELineItem(${i},'label',this.value)"></td>
+    <tr class="${dupIndexes.has(i) ? 'dup-row' : ''}">
+      <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateNSELineItem(${i},'label',this.value)">${dupIndexes.has(i) ? '<span class="dup-badge">dup</span>' : ''}</td>
       <td><input class="nse-row-input amount" type="number" step="any" value="${li.amount ?? ''}" oninput="updateNSELineItem(${i},'amount',this.value)"></td>
       <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
       <td><button class="icon-btn" onclick="removeNSELineItem(${i})" title="Remove">✕</button></td>
@@ -1239,12 +1294,14 @@ function renderNSEBatchReview(){
 
     const types = Object.keys(b.statements);
     const tabs = types.map(t =>
-      `<button class="tab-btn ${t === b.activeTab ? 'active' : ''}" onclick="switchBatchTab(${bi},'${t}')">${STATEMENT_LABELS[t] || t}</button>`
+      `<button class="tab-btn ${t === b.activeTab ? 'active' : ''}" onclick="switchBatchTab(${bi},'${t}')">${STATEMENT_LABELS[t] || t}${_duplicateLineItemIndexes((b.statements[t].line_items || [])).size ? ' ⚠' : ''}</button>`
     ).join('');
     const activeItems = (b.statements[b.activeTab] || { line_items: [] }).line_items;
+    const dupIndexes = _duplicateLineItemIndexes(activeItems);
+    const totalDupCount = types.reduce((sum, t) => sum + _duplicateLineItemIndexes(b.statements[t].line_items || []).size, 0);
     const rows = activeItems.length ? activeItems.map((li, i) => `
-      <tr>
-        <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateBatchLineItem(${bi},${i},'label',this.value)"></td>
+      <tr class="${dupIndexes.has(i) ? 'dup-row' : ''}">
+        <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateBatchLineItem(${bi},${i},'label',this.value)">${dupIndexes.has(i) ? '<span class="dup-badge">dup</span>' : ''}</td>
         <td><input class="nse-row-input amount" type="number" step="any" value="${li.amount ?? ''}" oninput="updateBatchLineItem(${bi},${i},'amount',this.value)"></td>
         <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
         <td><button class="icon-btn" onclick="removeBatchLineItem(${bi},${i})" title="Remove">✕</button></td>
@@ -1253,7 +1310,7 @@ function renderNSEBatchReview(){
     return `
       <div class="panel batch-card" style="background:var(--bg-panel-2);">
         <div class="panel-head">
-          <h2><label><input type="checkbox" ${b.include ? 'checked' : ''} onchange="toggleBatchInclude(${bi},this.checked)"> ${escapeHtml(b.filing.title)}</label></h2>
+          <h2><label><input type="checkbox" ${b.include ? 'checked' : ''} onchange="toggleBatchInclude(${bi},this.checked)"> ${escapeHtml(b.filing.title)}</label>${totalDupCount ? `<span class="dup-badge" style="margin-left:8px;">${totalDupCount} duplicate${totalDupCount > 1 ? 's' : ''}</span>` : ''}</h2>
         </div>
         <div class="grid">
           <input placeholder="Company name" value="${escapeHtml(b.companyName)}" oninput="updateBatchField(${bi},'companyName',this.value)" ${b.existingCompanyId ? 'disabled' : ''}>
@@ -1261,6 +1318,7 @@ function renderNSEBatchReview(){
           <input placeholder="Period" value="${escapeHtml(b.period)}" oninput="updateBatchField(${bi},'period',this.value)">
         </div>
         ${types.length ? `<div class="tab-bar">${tabs}</div>` : '<div class="empty">Nothing recognizable was extracted - add lines manually.</div>'}
+        ${dupIndexes.size ? `<div style="font-size:12px;color:var(--red);margin-bottom:8px;">${dupIndexes.size} duplicate row${dupIndexes.size > 1 ? 's' : ''} on this statement. <button class="secondary" style="padding:4px 10px;font-size:11.5px;" onclick="removeBatchDuplicates(${bi})">Remove duplicates</button></div>` : ''}
         <table>
           <thead><tr><th>Label</th><th class="amount">Amount</th><th>Page</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
@@ -1294,6 +1352,12 @@ function switchBatchTab(bi, t){ nseBatchState[bi].activeTab = t; renderNSEBatchR
 function updateBatchLineItem(bi, i, field, val){ nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items[i][field] = val; }
 function removeBatchLineItem(bi, i){
   nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items.splice(i, 1);
+  renderNSEBatchReview();
+}
+function removeBatchDuplicates(bi){
+  const items = nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items;
+  const dupIndexes = [..._duplicateLineItemIndexes(items)].sort((a, b) => b - a);
+  dupIndexes.forEach(i => items.splice(i, 1));
   renderNSEBatchReview();
 }
 function addBatchLineItem(bi){
@@ -1437,10 +1501,6 @@ function renderCompaniesTable(filterText){
 
   const filterBar = `
     <div class="filter-bar">
-      <div class="filter-group" style="flex:1 1 200px;">
-        <label>Search</label>
-        <input class="filter-search" placeholder="Search companies..." value="${escapeHtml(filterText || '')}" oninput="onCoSearchInput(this.value)">
-      </div>
       <div class="filter-group">
         <label>Sector</label>
         <select class="filter-select" onchange="setCoSectorFilter(this.value)">
@@ -1462,6 +1522,7 @@ function renderCompaniesTable(filterText){
         Show only with data
       </div>
       <div style="flex:1"></div>
+      <input class="filter-search-compact" placeholder="Search companies..." value="${escapeHtml(filterText || '')}" oninput="onCoSearchInput(this.value)">
       <button class="export-btn" onclick="window.location.href='/api/export/portfolio'">⭳ Export</button>
       <button class="secondary" style="margin:0;" onclick="seedNSECompanies()">Seed all NSE companies</button>
       <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
@@ -1733,45 +1794,144 @@ function renderTopCategoryPanel(){
 
 async function renderSectorsPage(){
   const app = document.getElementById('app');
-  const res = await fetch('/api/companies');
-  const companies = await res.json();
+  app.innerHTML = `<div class="empty">Loading sectors…</div>`;
 
-  if (companies.length === 0) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
+  const res = await fetch('/api/sectors');
+  const data = await res.json();
+  const sectors = data.sectors || [];
+
+  if (sectors.length === 0) {
+    app.innerHTML = `<div class="panel"><div class="empty">No companies with financial data yet. Add some from the Companies page.</div></div>`;
     return;
   }
 
-  const groups = {};
-  for (const c of companies) {
-    const sector = c.sector && c.sector.trim() ? c.sector : 'Unclassified';
-    (groups[sector] = groups[sector] || []).push(c);
-  }
-  const sectorNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  // Highlight cards - each picks the sector that leads on that metric.
+  // Only sectors with a non-null value for that metric are eligible.
+  const by = (key) => sectors.filter(s => s[key] !== null).sort((a, b) => b[key] - a[key]);
+  const topGrowth = by('avg_revenue_growth')[0];
+  const topHealth = by('avg_financial_score')[0];
+  const topMargin = by('avg_net_margin')[0];
+  const topSize = by('total_revenue')[0];
 
-  const panels = sectorNames.map(sector => {
-    const rows = groups[sector].map(c => {
-      const l = c.latest;
-      const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
-      return `
-        <tr class="clickable" onclick="goToCompany(${c.id})">
-          <td>${escapeHtml(c.name)}</td>
-          <td><span class="badge">${escapeHtml(c.ticker || '-')}</span></td>
-          <td>${l ? escapeHtml(l.period) : '-'}</td>
-          <td>${l ? fmt(l.net_margin) + '%' : '-'}</td>
-          <td>${band ? `<span class="score-badge score-${band}">${l.financial_score}/100</span>` : '-'}</td>
-        </tr>`;
-    }).join('');
-    return `
-      <div class="panel" style="margin-bottom:14px;">
-        <div class="panel-head"><h2>${escapeHtml(sector)}</h2><span class="badge">${groups[sector].length} compan${groups[sector].length === 1 ? 'y' : 'ies'}</span></div>
-        <table>
-          <thead><tr><th>Company</th><th>Ticker</th><th>Latest Period</th><th>Net Margin</th><th>Score</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-  }).join('');
+  const highlightCards = `
+    <div class="stat-grid" style="margin-bottom:18px;">
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--green-soft);color:var(--green);">📈</div>
+        <div class="stat-label">Top Sector by Revenue Growth</div>
+        <div class="stat-value" style="font-size:18px;">${topGrowth ? escapeHtml(topGrowth.sector) : '-'}</div>
+        <div class="stat-trend up">${topGrowth ? fmt(topGrowth.avg_revenue_growth) + '% YoY' : 'No YoY data yet'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--blue-soft);color:var(--blue);">🛡️</div>
+        <div class="stat-label">Best Financial Health</div>
+        <div class="stat-value" style="font-size:18px;">${topHealth ? escapeHtml(topHealth.sector) : '-'}</div>
+        <div class="stat-trend">${topHealth ? topHealth.avg_financial_score + ' / 100' : '-'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--purple-soft);color:var(--purple);">💰</div>
+        <div class="stat-label">Highest Profit Margin</div>
+        <div class="stat-value" style="font-size:18px;">${topMargin ? escapeHtml(topMargin.sector) : '-'}</div>
+        <div class="stat-trend">${topMargin ? fmt(topMargin.avg_net_margin) + '% net margin' : '-'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">📊</div>
+        <div class="stat-label">Largest Sector by Revenue</div>
+        <div class="stat-value" style="font-size:18px;">${topSize ? escapeHtml(topSize.sector) : '-'}</div>
+        <div class="stat-trend">${topSize ? topSize.weight_pct + '% of tracked revenue' : '-'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon-circle" style="background:var(--red-soft);color:var(--red);">🏢</div>
+        <div class="stat-label">Total Reported Revenue</div>
+        <div class="stat-value" style="font-size:18px;">${fmtAmount(data.total_revenue)}</div>
+        <div class="stat-trend">${sectors.reduce((s, x) => s + x.company_count, 0)} companies across ${sectors.length} sectors</div>
+      </div>
+    </div>`;
 
-  app.innerHTML = panels;
+  const insights = [];
+  if (topGrowth) insights.push({ icon: '📈', color: 'green', title: `${topGrowth.sector} sector led on growth`, body: `Average reported revenue growth of ${fmt(topGrowth.avg_revenue_growth)}% year over year, the highest of any tracked sector.` });
+  if (topHealth) insights.push({ icon: '🛡️', color: 'blue', title: `${topHealth.sector} sector is the most financially sound`, body: `Highest average financial health score at ${topHealth.avg_financial_score}/100.` });
+  if (topMargin && topMargin.sector !== topHealth?.sector) insights.push({ icon: '💰', color: 'purple', title: `${topMargin.sector} shows the strongest margins`, body: `Average net margin of ${fmt(topMargin.avg_net_margin)}%, ahead of every other sector tracked.` });
+
+  const rows = sectors.map(s => `
+    <tr class="clickable" onclick="filterCompaniesBySector('${escapeHtml(s.sector).replace(/'/g, "\\'")}')">
+      <td>${escapeHtml(s.sector)}</td>
+      <td>${s.company_count}</td>
+      <td>${fmtAmount(s.total_revenue)}</td>
+      <td>${s.weight_pct !== null ? s.weight_pct + '%' : '-'}</td>
+      <td class="${s.avg_revenue_growth > 0 ? 'trend-up' : s.avg_revenue_growth < 0 ? 'trend-down' : ''}">${s.avg_revenue_growth !== null ? fmt(s.avg_revenue_growth) + '%' : '-'}</td>
+      <td>${s.avg_net_margin !== null ? fmt(s.avg_net_margin) + '%' : '-'}</td>
+      <td>${s.avg_financial_score !== null ? `<span class="score-badge score-${s.avg_financial_score >= 70 ? 'strong' : s.avg_financial_score >= 40 ? 'moderate' : 'weak'}">${s.avg_financial_score} / 100</span>` : '-'}</td>
+    </tr>`).join('');
+
+  app.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:14px;">
+      <button class="export-btn" onclick="window.location.href='/api/export/portfolio'">⭳ Export</button>
+    </div>
+    ${highlightCards}
+    <div class="grid-3col" style="display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:14px;margin-bottom:14px;">
+      <div class="panel">
+        <div class="panel-head"><h2>Revenue Growth by Sector (YoY)</h2></div>
+        <div style="font-size:11px;color:var(--text-faint);margin-bottom:8px;">Based on the two most recent saved periods per company - not stock-market return, which this app doesn't track.</div>
+        <div class="chart-wrap"><canvas id="sectors-bar-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Revenue by Sector</h2></div>
+        <div class="chart-wrap"><canvas id="sectors-donut-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>💡 Insights</h2></div>
+        ${insights.map(i => `
+          <div style="margin-bottom:14px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:3px;">${i.icon} ${escapeHtml(i.title)}</div>
+            <div style="font-size:12px;color:var(--text-dim);">${escapeHtml(i.body)}</div>
+          </div>`).join('') || '<div class="empty">Not enough data yet for insights.</div>'}
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Sector Overview</h2></div>
+      <table>
+        <thead><tr><th>Sector</th><th>Companies</th><th>Total Revenue</th><th>Weight</th><th>Revenue Growth (YoY)</th><th>Avg Net Margin</th><th>Financial Health</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+
+  const labels = sectors.map(s => s.sector);
+  if (sectorsBarChart) sectorsBarChart.destroy();
+  if (sectorsDonutChart) sectorsDonutChart.destroy();
+
+  const chartOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+      y: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+    },
+  };
+
+  sectorsBarChart = new Chart(document.getElementById('sectors-bar-chart'), {
+    type: 'bar',
+    data: { labels, datasets: [{
+      data: sectors.map(s => s.avg_revenue_growth),
+      backgroundColor: sectors.map(s => (s.avg_revenue_growth || 0) >= 0 ? '#3ddc84' : '#ff6161'),
+    }] },
+    options: chartOpts,
+  });
+
+  const donutColors = ['#5b9bff','#3ddc84','#ffb020','#b79bfc','#ff6161','#22d3ee','#f472b6','#a3a3a3'];
+  sectorsDonutChart = new Chart(document.getElementById('sectors-donut-chart'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: sectors.map(s => s.total_revenue), backgroundColor: donutColors }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { color: '#aab4cc', boxWidth: 10, font: { size: 10.5 } } } },
+    },
+  });
+}
+
+function filterCompaniesBySector(sector){
+  coSectorFilter = sector;
+  goTo('companies');
 }
 
 function renderExportsPage(){
@@ -2002,6 +2162,8 @@ let analyticsCompanyId = null;
 let analyticsChart1 = null;
 let analyticsChart2 = null;
 let analyticsChart3 = null;
+let sectorsBarChart = null;
+let sectorsDonutChart = null;
 
 async function renderAnalyticsPage(){
   const app = document.getElementById('app');
@@ -2173,6 +2335,19 @@ async function renderSettingsPage(){
     ? `<div class="status-banner ok">✓ Connected to ${escapeHtml(status.database_engine)} — a persistent database. Saved data will survive restarts and redeploys.</div>`
     : `<div class="status-banner warn">⚠ Connected to ${escapeHtml(status.database_engine)}. ${escapeHtml(status.warning || '')}</div>`;
 
+  const manageRows = `
+    <div class="panel">
+      <div class="panel-head"><h2>Manage</h2></div>
+      <div class="data-summary-row">
+        <div class="ds-label"><span class="ds-icon">🏢</span>Companies — edit, view, or delete tracked companies</div>
+        <button class="secondary" onclick="goTo('companies')">Open</button>
+      </div>
+      <div class="data-summary-row">
+        <div class="ds-label"><span class="ds-icon">📥</span>Import Activity — full history of scan/parse/save attempts</div>
+        <button class="secondary" onclick="goTo('reports')">Open</button>
+      </div>
+    </div>`;
+
   app.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h2>Database</h2></div>
@@ -2184,17 +2359,7 @@ async function renderSettingsPage(){
         <div class="stat-card"><div class="stat-icon-circle" style="background:var(--amber-soft);color:var(--amber);">📥</div><div class="stat-value">${status.counts.import_jobs}</div><div class="stat-label">Import Jobs</div></div>
       </div>
     </div>
-    <div class="panel">
-      <div class="panel-head"><h2>Manage</h2></div>
-      <div class="data-summary-row">
-        <div class="ds-label"><span class="ds-icon">🏢</span>Companies — edit, view, or delete tracked companies</div>
-        <button class="secondary" onclick="goTo('companies')">Open</button>
-      </div>
-      <div class="data-summary-row">
-        <div class="ds-label"><span class="ds-icon">📥</span>Import Activity — full history of scan/parse/save attempts</div>
-        <button class="secondary" onclick="goTo('reports')">Open</button>
-      </div>
-    </div>
+    ${manageRows}
   `;
 }
 
@@ -2586,6 +2751,52 @@ function escapeHtml(str){
 renderNav();
 render();
 refreshNotifBadge();
+
+// ---- live updates (SSE) ----
+// One persistent connection to the backend. The moment a filing is
+// auto-imported (or anything else is saved), the server pushes a small
+// "data changed" message and we quietly re-render the current page -
+// no manual refresh, no polling timer.
+let _lastLiveRefresh = 0;
+function connectLiveUpdates(){
+  const es = new EventSource('/api/events');
+  es.onmessage = (evt) => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch { return; }
+    if (msg.type !== 'data_changed') return;
+
+    // Don't yank the page out from under someone mid-review/edit.
+    if (nsePreviewState || (nseBatchState && nseBatchState.length)) return;
+
+    // A batch auto-import can fire several events in a row - no need to
+    // re-render on every single one.
+    const now = Date.now();
+    if (now - _lastLiveRefresh < 2000) return;
+    _lastLiveRefresh = now;
+
+    showToast(msg.data && msg.data.needs_review
+      ? `New filing imported for ${escapeHtml(msg.data.period || 'a period')} — some figures look unusual, check Reports.`
+      : 'Dashboard updated with new data.');
+    render();
+  };
+  // EventSource reconnects on its own after a drop; nothing to do here.
+}
+
+function showToast(text){
+  let el = document.getElementById('liveToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'liveToast';
+    el.style.cssText = 'position:fixed;bottom:20px;right:20px;background:var(--bg-panel-2,#1f2937);color:#fff;padding:10px 16px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.35);z-index:9999;font-size:13px;max-width:320px;transition:opacity .3s;opacity:0;';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.style.opacity = '1';
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(() => { el.style.opacity = '0'; }, 4500);
+}
+
+connectLiveUpdates();
 </script>
 </body>
 </html>
