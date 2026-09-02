@@ -5,6 +5,7 @@ import re
 from flask import Flask, render_template, request, jsonify, send_file
 from datetime import datetime
 import openpyxl
+import pdfplumber
 
 from models import (
     db, Company, FinancialPeriod, FinancialStatement, FinancialLineItem,
@@ -14,8 +15,11 @@ from models import (
     SurveyRemunerationStat, SurveySectorAllowance, SurveyBenefit, SurveyCEOComp,
 )
 from ratios import calculate_ratios
-from nse_import import fetch_nse_filings, fetch_nse_page, NSE_FINANCIAL_RESULTS_URL, NSE_COMPANIES
-from nse_pdf_parse import fetch_and_parse_pdf, match_canonical_label
+from nse_import import fetch_nse_filings, fetch_nse_page, NSE_FINANCIAL_RESULTS_URL, NSE_COMPANIES, match_company
+from nse_pdf_parse import (
+    fetch_and_parse_pdf, match_canonical_label, parse_financials_pdf,
+    detect_period_label, detect_company_name,
+)
 from survey_pdf_parse import parse_survey_pdf
 from report_context import build_report_context
 from report_docx import generate_docx
@@ -54,6 +58,18 @@ if database_url.startswith('postgres://'):
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Default pool_size is 5. The Overview page fires 4 API calls in parallel,
+# and Replit's Postgres can drop idle connections - pool_pre_ping avoids
+# "server closed the connection unexpectedly" errors on the first query
+# after a period of inactivity, and a slightly larger pool with overflow
+# gives headroom for concurrent page loads instead of requests queuing
+# for a free connection.
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_size': 10,
+    'max_overflow': 10,
+    'pool_recycle': 280,
+}
 db.init_app(app)
 
 # ---------- MODELS ----------
@@ -123,6 +139,38 @@ def extract_year(period_label):
     m = re.search(r'(19|20)\d{2}', period_label)
     return int(m.group(0)) if m else None
 
+# ---------- BULK FINANCIALS LOADING ----------
+# Overview/Companies-list endpoints used to call latest_financials() /
+# latest_two_financials() / latest_three_financials() once PER COMPANY,
+# each of which is its own SQL round-trip. On a remote Postgres host
+# (Replit) that's dozens of network round-trips per request, and the
+# Overview page fires four of these endpoints in parallel - easily
+# exhausting the default connection pool and causing the long/failed
+# loads. These helpers fetch every Financials row for every company in
+# ONE query and group them in Python, so a full-portfolio page costs a
+# single query instead of N (or 3N).
+
+def all_financials_by_company():
+    """{company_id: [Financials rows, newest period first]} for every
+    company, built from a single query instead of one query per company."""
+    rows = Financials.query.order_by(Financials.company_id, Financials.period.desc()).all()
+    grouped = {}
+    for f in rows:
+        grouped.setdefault(f.company_id, []).append(f)
+    return grouped
+
+def latest_from_group(rows):
+    return rows[0] if rows else None
+
+def latest_two_from_group(rows):
+    latest = rows[0] if len(rows) > 0 else None
+    prior = rows[1] if len(rows) > 1 else None
+    return latest, prior
+
+def latest_three_from_group(rows):
+    rows = list(rows) + [None] * (3 - len(rows))
+    return rows[0], rows[1], rows[2]
+
 # ---------- PAGE ----------
 
 @app.route('/')
@@ -134,6 +182,7 @@ def index():
 @app.route('/api/overview')
 def overview_stats():
     companies = Company.query.all()
+    fin_by_company = all_financials_by_company()  # 1 query for all companies
     total_companies = len(companies)
 
     now = datetime.utcnow()
@@ -158,7 +207,7 @@ def overview_stats():
         if c.created_at and c.created_at >= month_start:
             companies_added_this_month += 1
 
-        latest, prior, two_back = latest_three_financials(c.id)
+        latest, prior, two_back = latest_three_from_group(fin_by_company.get(c.id, []))
         if latest:
             d = latest.to_dict()
             companies_with_data += 1
@@ -214,13 +263,14 @@ def overview_stats():
         key=lambda p: p['financial_score'], reverse=True
     )[:5]
 
+    companies_by_id = {c.id: c for c in companies}
     activity = []
     for c in companies:
         if c.created_at:
             activity.append({'type': 'company_added', 'label': f'{c.name} added to portfolio', 'at': c.created_at})
     recent_financials = Financials.query.order_by(Financials.updated_at.desc()).limit(10).all()
     for f in recent_financials:
-        comp = Company.query.get(f.company_id)
+        comp = companies_by_id.get(f.company_id)
         if comp:
             activity.append({'type': 'financials_added', 'label': f'{comp.name} {f.period} financials added', 'at': f.updated_at})
     activity.sort(key=lambda a: a['at'] or datetime.min, reverse=True)
@@ -309,6 +359,7 @@ def assess_company_opportunity(c, latest, prior):
 @app.route('/api/overview/charts')
 def overview_charts():
     companies = Company.query.all()
+    fin_by_company = all_financials_by_company()  # 1 query for all companies
 
     # ---- Revenue Growth Trend: combined revenue by year, YoY growth % ----
     # Year is extracted from each Financials row's free-text period label.
@@ -317,7 +368,7 @@ def overview_charts():
     # most recently updated one is used (avoids double-counting a year).
     year_revenue = {}   # year -> {company_id -> revenue}
     for c in companies:
-        rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.updated_at.desc()).all()
+        rows = sorted(fin_by_company.get(c.id, []), key=lambda f: f.updated_at or datetime.min, reverse=True)
         seen_years = set()
         for f in rows:
             yr = extract_year(f.period)
@@ -341,7 +392,7 @@ def overview_charts():
     # ---- Profitability Comparison: top 5 companies by net margin ----
     profitability = []
     for c in companies:
-        f = latest_financials(c.id)
+        f = latest_from_group(fin_by_company.get(c.id, []))
         if f:
             d = f.to_dict()
             if d['net_margin'] is not None:
@@ -352,7 +403,7 @@ def overview_charts():
     # ---- Sector Performance: avg financial score by sector ----
     sector_scores = {}  # sector -> list of scores
     for c in companies:
-        f = latest_financials(c.id)
+        f = latest_from_group(fin_by_company.get(c.id, []))
         if f:
             d = f.to_dict()
             if d['financial_score'] is not None:
@@ -372,6 +423,7 @@ def overview_charts():
 @app.route('/api/overview/attention')
 def overview_attention():
     companies = Company.query.all()
+    fin_by_company = all_financials_by_company()  # 1 query for all companies
 
     # ---- Companies Requiring Attention ----
     # Built only from data the model actually captures (revenue, net income,
@@ -380,7 +432,7 @@ def overview_attention():
     # not included here - it would have to be fabricated.
     issues = []
     for c in companies:
-        latest, prior = latest_two_financials(c.id)
+        latest, prior = latest_two_from_group(fin_by_company.get(c.id, []))
         if not latest:
             continue
         candidates = assess_company_risks(c, latest, prior)
@@ -433,10 +485,11 @@ def _compute_alert_feed():
     full Alerts page) so both always agree on what counts as a risk or
     an opportunity - same detection logic, just different amounts shown."""
     companies = Company.query.all()
+    fin_by_company = all_financials_by_company()  # 1 query for all companies
     risk_items, opportunity_items = [], []
 
     for c in companies:
-        latest, prior = latest_two_financials(c.id)
+        latest, prior = latest_two_from_group(fin_by_company.get(c.id, []))
         if not latest:
             continue
 
@@ -496,10 +549,12 @@ def all_alerts():
 def list_companies():
     sort = request.args.get('sort', 'name')
     companies = Company.query.all()
+    fin_by_company = all_financials_by_company()  # 1 query for all companies, replaces 3N queries
     result = []
     for c in companies:
         d = c.to_dict()
-        latest, prior = latest_two_financials(c.id)
+        rows = fin_by_company.get(c.id, [])  # already newest-period-first
+        latest, prior = latest_two_from_group(rows)
         latest_dict = latest.to_dict() if latest else None
         if latest_dict:
             prior_dict = prior.to_dict() if prior else None
@@ -513,7 +568,7 @@ def list_companies():
                 latest_dict['roe'] - prior_dict['roe']
                 if prior_dict and latest_dict['roe'] is not None and prior_dict['roe'] is not None else None
             )
-            trend_rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.period.asc()).all()
+            trend_rows = sorted(rows, key=lambda r: r.period or '')
             latest_dict['score_trend'] = [r.to_dict()['financial_score'] for r in trend_rows[-8:]]
         d['latest'] = latest_dict
         result.append(d)
@@ -973,6 +1028,138 @@ def nse_save_batch():
 
     return jsonify({'results': results, 'saved': saved, 'failed': len(items) - saved}), 200
 
+@app.route('/api/import/upload-batch', methods=['POST'])
+def nse_upload_batch():
+    """Upload several annual-report PDFs at once (multipart/form-data,
+    repeated 'files' field) - any mix of companies and years in a single
+    batch. Unlike /scan -> /parse -> /save, there's no NSE filing-title
+    metadata to key off, so each file is self-identified from its own
+    content: detect_company_name() + match_company() guess which company
+    it belongs to, detect_period_label() guesses the fiscal year, and the
+    result is parsed and saved in the same request - no review step.
+
+    Because there's no human review gate here, low-confidence guesses go
+    to the database exactly like high-confidence ones. What keeps this
+    honest instead:
+      - every saved line item still carries the parser's own per-item
+        confidence score (unchanged from the reviewed flow) so low-trust
+        numbers are still visibly low-trust in Source Evidence, they just
+        weren't screened out before saving;
+      - company/period identification failures are hard-reported per file
+        (never silently guessed past a low match score) so a
+        misidentified file shows up as a failure, not a wrong save;
+      - every save still goes through the existing ImportJob audit trail,
+        so 'what got auto-saved and when' is always reconstructable and
+        reversible after the fact.
+
+    Returns one result per uploaded file:
+        {"results": [
+            {"filename":..., "ok": true, "company_id":..., "company_name":...,
+             "period":..., "match_score":..., "created_company": bool, ...}
+            or
+            {"filename":..., "ok": false, "error":...}
+        ], "saved": <count>, "failed": <count>}
+    """
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({'error': "No files uploaded (expected form field 'files', one entry per file)."}), 400
+
+    existing_by_name = {c.name.strip().lower(): c.id for c in Company.query.all()}
+    existing_by_ticker = {c.ticker.strip().lower(): c.id for c in Company.query.all() if c.ticker}
+
+    results = []
+    saved = 0
+    for file in files:
+        filename = file.filename or 'unnamed.pdf'
+        try:
+            pdf_bytes = file.read()
+        except Exception as e:
+            results.append({'filename': filename, 'ok': False, 'error': f'Could not read upload: {e}'})
+            continue
+
+        try:
+            pages_text = []
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for i, page in enumerate(pdf.pages, start=1):
+                    pages_text.append((i, page.extract_text() or ''))
+        except Exception as e:
+            results.append({'filename': filename, 'ok': False, 'error': f'Could not open PDF: {e}'})
+            continue
+
+        detected_name = detect_company_name(pages_text)
+        period_label = detect_period_label(pages_text)
+        if not period_label:
+            results.append({
+                'filename': filename, 'ok': False,
+                'error': 'Could not detect a fiscal year from this PDF - no "for the year ended" or '
+                         '"at <date>" statement heading was found. Re-upload with the period specified separately.',
+            })
+            continue
+
+        matched, score = (match_company(detected_name) if detected_name else (None, 0.0))
+
+        company_id = None
+        created_company = False
+        if matched:
+            company_id = existing_by_ticker.get(matched['ticker'].lower()) or existing_by_name.get(matched['name'].strip().lower())
+        if not company_id and detected_name:
+            company_id = existing_by_name.get(detected_name.strip().lower())
+
+        try:
+            parsed = parse_financials_pdf(pdf_bytes)
+        except Exception as e:
+            results.append({'filename': filename, 'ok': False, 'error': f'Could not parse PDF: {e}'})
+            continue
+
+        if not parsed.get('statements'):
+            results.append({
+                'filename': filename, 'ok': False,
+                'error': 'No recognizable financial statements found in this PDF.',
+            })
+            continue
+
+        save_payload = {
+            'period': period_label,
+            'statements': parsed['statements'],
+        }
+        if company_id:
+            save_payload['company_id'] = company_id
+        elif matched:
+            save_payload['company_name'] = matched['name']
+            save_payload['ticker'] = matched['ticker']
+            save_payload['sector'] = matched['sector']
+            created_company = True
+        elif detected_name:
+            save_payload['company_name'] = detected_name
+            created_company = True
+        else:
+            results.append({
+                'filename': filename, 'ok': False,
+                'error': 'Could not identify which company this PDF belongs to. '
+                         'Re-upload using the single-file import and specify company_id directly.',
+            })
+            continue
+
+        result, status = _save_one_import(save_payload)
+        if status == 201:
+            saved += 1
+            if result.get('company_id') and matched:
+                existing_by_name[matched['name'].strip().lower()] = result['company_id']
+            elif result.get('company_id') and detected_name:
+                existing_by_name[detected_name.strip().lower()] = result['company_id']
+            results.append({
+                'filename': filename, 'ok': True,
+                'company_id': result['company_id'],
+                'company_name': (matched['name'] if matched else detected_name),
+                'period': period_label,
+                'match_score': score,
+                'created_company': created_company,
+            })
+        else:
+            results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Unknown error')})
+
+    return jsonify({'results': results, 'saved': saved, 'failed': len(results) - saved}), 200
+
 
 # ---------- MARKET SURVEYS ----------
 # Separate from the NSE per-company import above: a survey document covers
@@ -1289,13 +1476,15 @@ def export_snapshot(company_id):
 def export_comparison():
     """All companies, one sheet per company plus a summary ranking sheet."""
     companies = Company.query.order_by(Company.name).all()
+    fin_by_company = all_financials_by_company()  # 1 query for all companies
     wb = openpyxl.Workbook()
     summary = wb.active
     summary.title = 'Summary'
     summary.append(['Company', 'Ticker', 'Period', 'Net Margin %', 'ROE %', 'Debt/Equity'])
 
     for c in companies:
-        f = latest_financials(c.id)
+        rows = fin_by_company.get(c.id, [])
+        f = latest_from_group(rows)
         if f:
             d = f.to_dict()
             summary.append([
@@ -1311,7 +1500,6 @@ def export_comparison():
         ws = wb.create_sheet(title=sheet_name)
         ws.append(['Period', 'Currency', 'Revenue', 'Net Income', 'Total Assets',
                    'Total Liabilities', 'Total Equity'])
-        rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.period.desc()).all()
         for f in rows:
             ws.append([f.period, f.currency, f.revenue, f.net_income,
                        f.total_assets, f.total_liabilities, f.total_equity])
@@ -1331,8 +1519,9 @@ def export_portfolio():
     ws.title = 'Portfolio'
     ws.append(['Company', 'Ticker', 'Exchange', 'Sector', 'Country',
                'Latest Period', 'Revenue', 'Net Income', 'Net Margin %', 'ROE %', 'Debt/Equity'])
+    fin_by_company = all_financials_by_company()  # 1 query for all companies
     for c in companies:
-        f = latest_financials(c.id)
+        f = latest_from_group(fin_by_company.get(c.id, []))
         if f:
             d = f.to_dict()
             ws.append([

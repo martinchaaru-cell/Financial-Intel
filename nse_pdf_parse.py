@@ -128,6 +128,17 @@ _SIGNED_ALLOWED = {
 _NUMBER_RE = re.compile(r"\(?-?\d[\d,]*\.?\d*\)?")
 _LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z ,&/()'-]*[A-Za-z)]")
 
+# A thousands-grouped number: 1,234 or 1,234,567 - every comma-separated
+# group after the first is exactly 3 digits. Used to tell a real amount
+# ("6,047") apart from a comma-joined note list ("12,14").
+_THOUSANDS_RE = re.compile(r"^\(?-?\d{1,3}(,\d{3})+(\.\d+)?\)?$")
+
+# A single note-reference token: 1-3 bare digits, optionally with an
+# "(a)" or "(b)(iii)" style sub-reference suffix. Deliberately does not
+# match anything comma-grouped on its own - that's handled by the
+# thousands-vs-note-list check in _strip_note_reference below.
+_NOTE_TOKEN_RE = re.compile(r"^\d{1,3}(\([a-z]+\)(\([ivx]+\))?)?")
+
 
 def _parse_number(token: str):
     token = token.strip()
@@ -140,16 +151,58 @@ def _parse_number(token: str):
     return -value if negative else value
 
 
+def _strip_note_reference(remainder: str) -> str:
+    """NSE-style statements insert a Notes column between the label and
+    the actual amounts, e.g.:
+        'Staff costs 8 177,359 171,841 177,359 171,841'
+        'Depreciation and amortization 12,14 48,512 54,915 ...'
+        "Directors' emoluments 32(a) 47,289 43,606 ..."
+    Without this, the parser reads the note number itself (8, or the
+    first of "12,14") as if it were the reported figure. Peel off a
+    single leading note-reference token - which may itself be a
+    comma-joined list of note numbers like "12,14" - before number
+    extraction runs. A real thousands-grouped amount ("6,047") is left
+    untouched: the distinguishing signal is that a genuine amount's
+    post-comma chunk is always exactly 3 digits, checked via
+    _THOUSANDS_RE, whereas a note list's chunks are 1-3 digits with no
+    thousands-grouping meaning."""
+    remainder = remainder.lstrip()
+    m = _NOTE_TOKEN_RE.match(remainder)
+    if not m:
+        return remainder
+    after = remainder[m.end():]
+    if after[:1] != ',':
+        return after.lstrip()
+
+    next_space = remainder.find(' ')
+    first_chunk = remainder[:next_space] if next_space != -1 else remainder
+    if _THOUSANDS_RE.match(first_chunk):
+        return remainder  # genuine thousands-grouped amount - don't strip
+
+    # Comma-joined note list ("12,14", "6, 9, 14a") - consume each
+    # further ", <note>" segment.
+    rest = after
+    while rest.startswith(','):
+        m2 = re.match(r",\s*\d{1,3}(\([a-z]+\))?", rest)
+        if not m2:
+            break
+        rest = rest[m2.end():]
+    return rest.lstrip()
+
+
 def _split_label_and_numbers(line: str):
     """A statement line typically looks like:
-        'Total operating income          45,231,000   38,940,000'
-    (current period first, then prior period). Split the label text off
-    from the trailing numeric columns."""
+        'Total operating income     6   45,231,000   38,940,000'
+    label, an optional note-reference token, then the amount column(s)
+    (by NSE convention: Group current, Group prior, [Company current,
+    Company prior] where applicable). Splits the label off, strips any
+    note reference, and returns the remaining numbers in report order."""
     matches = list(_NUMBER_RE.finditer(line))
     if not matches:
         return None, []
     label = line[:matches[0].start()].strip(' .')
-    numbers = [_parse_number(m.group()) for m in matches]
+    remainder = _strip_note_reference(line[matches[0].start():])
+    numbers = [_parse_number(m.group()) for m in _NUMBER_RE.finditer(remainder)]
     numbers = [n for n in numbers if n is not None]
     return label, numbers
 
@@ -208,6 +261,84 @@ def _match_canonical(stmt_type, label):
         if rx.search(label):
             return norm_name
     return None
+
+
+# ---------- PERIOD DETECTION (for uploaded PDFs with no filing-title metadata) ----------
+# nse_import.py's extract_period() works off an NSE filing-page title like
+# "Equity Group Holdings Plc - ... For the period ended 30 June 2026" - a
+# locally-uploaded annual report PDF has no such title, so the year has to
+# come out of the statement pages themselves.
+
+_MONTHS = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+           r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+           r"nov(?:ember)?|dec(?:ember)?)")
+
+_PERIOD_END_RES = [
+    re.compile(rf"for\s+the\s+year\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
+    re.compile(rf"for\s+the\s+period\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
+    # Balance-sheet-style "AT 31 DECEMBER 2022" heading - anchored to the
+    # WHOLE line (not just "ends with", which .search() doesn't enforce on
+    # its own) so it can't match "...at 2022" buried inside a wrapped
+    # narrative paragraph elsewhere in the report.
+    re.compile(rf"^at\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})$", re.IGNORECASE),
+]
+# Fallback: the report's own running header, e.g. "... INTEGRATED REPORT AND
+# FINANCIAL STATEMENTS 2022" repeated on nearly every page - a much weaker
+# signal (it's the *report's* cover year, not necessarily every statement's
+# period end) so it's only used if nothing above matched anywhere.
+_REPORT_TITLE_YEAR_RE = re.compile(
+    r"(?:annual\s+report|financial\s+statements|integrated\s+report)\D{0,20}(\d{4})",
+    re.IGNORECASE,
+)
+
+
+def detect_period_label(pages_text) -> str | None:
+    """Scan every page for a statement period-end date ('FOR THE YEAR ENDED
+    31 DECEMBER 2022', 'AT 31 DECEMBER 2022') and return the most common
+    year found as 'FY<year>'. Falls back to the report's cover-page year if
+    no statement-level date is found. Returns None if neither is present -
+    callers should treat that as 'ask the user', not guess further."""
+    year_counts = {}
+    for _, page_text in pages_text:
+        for raw_line in page_text.splitlines():
+            line = raw_line.strip()
+            for rx in _PERIOD_END_RES:
+                m = rx.search(line)
+                if m:
+                    year_counts[m.group(1)] = year_counts.get(m.group(1), 0) + 1
+
+    if year_counts:
+        best_year = max(year_counts, key=year_counts.get)
+        return f"FY{best_year}"
+
+    for _, page_text in pages_text:
+        m = _REPORT_TITLE_YEAR_RE.search(page_text)
+        if m:
+            return f"FY{m.group(1)}"
+
+    return None
+
+
+def detect_company_name(pages_text, max_pages: int = 5) -> str | None:
+    """Best-effort company name from the first few pages - most annual
+    reports repeat 'X PLC INTEGRATED REPORT AND FINANCIAL STATEMENTS' or
+    similar as a running header, which is a more reliable signal than the
+    cover page's often stylised title text/graphics."""
+    name_re = re.compile(
+        r"([A-Z][A-Z .&'\-]{3,60}?(?:PLC|LIMITED|LTD|GROUP|HOLDINGS))\b",
+    )
+    counts = {}
+    for page_num, page_text in pages_text:
+        if page_num > max_pages:
+            break
+        for line in page_text.splitlines():
+            m = name_re.search(line)
+            if m:
+                name = m.group(1).strip()
+                counts[name] = counts.get(name, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=counts.get).title()
 
 
 def parse_financials_text(pages_text) -> dict:
