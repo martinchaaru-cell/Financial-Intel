@@ -61,8 +61,8 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .header-actions{display:flex;align-items:center;gap:8px;flex-shrink:0;}
 
 /* ---------- shared: icon-square stat cards, filter bars, avatars, view buttons ---------- */
-.stat-icon-square{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;
-  font-size:17px;flex-shrink:0;}
+.stat-icon-square{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:13px;flex-shrink:0;}
 .filter-bar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin-bottom:14px;}
 .filter-group{display:flex;flex-direction:column;gap:4px;}
 .filter-group label{font-size:9.5px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.04em;}
@@ -184,13 +184,13 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 
 .content{padding:24px 28px;flex:1;}
 
-.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
-.stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;
-  display:flex;align-items:flex-start;gap:12px;}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px;}
+.stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;
+  display:flex;align-items:flex-start;gap:9px;}
 .stat-card-body{min-width:0;flex:1;}
-.stat-value{font-size:20px;font-weight:700;line-height:1.2;}
-.stat-label{color:var(--text-dim);font-size:11.5px;order:-1;margin-bottom:2px;}
-.stat-trend{font-size:11px;margin-top:6px;display:flex;align-items:center;gap:4px;}
+.stat-value{font-size:15px;font-weight:700;line-height:1.2;}
+.stat-label{color:var(--text-dim);font-size:10px;order:-1;margin-bottom:1px;}
+.stat-trend{font-size:9.5px;margin-top:3px;display:flex;align-items:center;gap:3px;}
 .stat-trend.up{color:var(--green);}
 .stat-trend.down{color:var(--red);}
 .stat-trend.neutral{color:var(--text-faint);}
@@ -199,11 +199,110 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .row-3{grid-template-columns:1fr 1.3fr 1fr;}
 .row-4{grid-template-columns:repeat(4,1fr);}
 .chart-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+.co-breadcrumb{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-faint);margin-bottom:14px;flex-wrap:wrap;}
+.co-breadcrumb a{color:var(--text-faint);cursor:pointer;text-decoration:none;}
+.co-breadcrumb a:hover{color:var(--text);}
+.co-detail-head{display:flex;align-items:flex-start;gap:14px;margin-bottom:18px;flex-wrap:wrap;}
+.co-detail-logo{width:52px;height:52px;border-radius:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  font-size:18px;font-weight:700;color:#fff;}
+.co-detail-title h2{font-size:19px;font-weight:700;margin-bottom:2px;}
+.co-detail-title .sub{font-size:12px;color:var(--text-faint);}
+.co-detail-right{margin-left:auto;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+.fy-select-block{text-align:right;}
+.fy-select-block .fy-label{font-size:10.5px;color:var(--text-faint);}
+.fy-select-block select{font-size:15px;font-weight:700;background:transparent;border:none;color:var(--text);cursor:pointer;padding:0;}
+.fy-select-block .fy-range{font-size:10px;color:var(--text-faint);}
+.detail-2col{display:grid;grid-template-columns:1fr 320px;gap:16px;align-items:start;}
+@media(max-width:900px){.detail-2col{grid-template-columns:1fr;}}
+.detail-side-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px;}
+.detail-side-panel h3{font-size:13px;margin-bottom:12px;}
+.fyoverview-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.fyoverview-cell .fo-label{font-size:10.5px;color:var(--text-faint);}
+.fyoverview-cell .fo-value{font-size:16px;font-weight:700;margin-top:2px;}
+.fyoverview-cell .fo-delta{font-size:10.5px;margin-top:2px;}
+.ratio-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px;}
+.ratio-row:last-child{border-bottom:none;}
+.ratio-row .rr-metric{color:var(--text-dim);}
+.ratio-row .rr-values{display:flex;gap:10px;align-items:center;}
+.source-doc-row{display:flex;align-items:center;gap:10px;}
+.source-doc-icon{width:34px;height:34px;border-radius:8px;background:var(--red-soft);color:var(--red);
+  display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
+.source-doc-meta .sd-name{font-size:12px;font-weight:600;word-break:break-all;}
+.source-doc-meta .sd-date{font-size:10.5px;color:var(--text-faint);}
 .chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
 .chart-head h3{font-size:12.5px;font-weight:600;}
 .chart-select{background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text-dim);
   font-size:10.5px;padding:3px 8px;border-radius:6px;}
 .chart-link{color:var(--blue);font-size:11px;cursor:pointer;margin-top:10px;display:block;}
+
+/* ---------- Intelligence Report ---------- */
+.ir-tabbar{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:18px;flex-wrap:wrap;overflow-x:auto;}
+.ir-tab-btn{padding:11px 16px;background:transparent;border:none;color:var(--text-dim);cursor:pointer;
+  font-size:12.5px;font-weight:600;border-bottom:2px solid transparent;white-space:nowrap;display:flex;align-items:center;gap:6px;}
+.ir-tab-btn:hover{color:var(--text);}
+.ir-tab-btn.active{color:#fff;border-bottom-color:var(--blue);}
+.ir-panel-title{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);margin-bottom:14px;}
+.ir-gauge-row{display:flex;align-items:center;gap:20px;}
+.ir-gauge{width:118px;height:118px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;position:relative;}
+.ir-gauge-hole{width:88px;height:88px;background:var(--bg-panel);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+.ir-gauge-hole .n{font-size:26px;font-weight:700;line-height:1;}
+.ir-gauge-hole .l{font-size:10px;color:var(--text-faint);margin-top:2px;}
+.ir-band-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;margin-top:10px;}
+.ir-band-pill.strong{background:var(--green-soft);color:var(--green);}
+.ir-band-pill.moderate{background:var(--amber-soft);color:var(--amber);}
+.ir-band-pill.weak{background:var(--red-soft);color:var(--red);}
+.ir-kv-list{display:flex;flex-direction:column;gap:11px;}
+.ir-kv-row{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;}
+.ir-kv-row .k{color:var(--text-faint);}
+.ir-kv-pill{padding:3px 10px;border-radius:6px;font-size:11px;font-weight:700;}
+.ir-kv-pill.strong,.ir-kv-pill.positive,.ir-kv-pill.outperformer,.ir-kv-pill.high{background:var(--green-soft);color:var(--green);}
+.ir-kv-pill.moderate,.ir-kv-pill.neutral,.ir-kv-pill.in-line,.ir-kv-pill.medium{background:var(--amber-soft);color:var(--amber);}
+.ir-kv-pill.weak,.ir-kv-pill.negative,.ir-kv-pill.underperformer,.ir-kv-pill.low{background:var(--red-soft);color:var(--red);}
+.ir-highlight-item{display:flex;align-items:flex-start;gap:9px;font-size:12.5px;color:var(--text-dim);padding:6px 0;line-height:1.5;}
+.ir-highlight-item .ic{flex-shrink:0;margin-top:1px;}
+.ir-snapshot-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.ir-snapshot-cell .sn-label{font-size:10.5px;color:var(--text-faint);}
+.ir-snapshot-cell .sn-value{font-size:19px;font-weight:700;margin-top:3px;}
+.ir-snapshot-cell .sn-delta{font-size:11px;margin-top:4px;}
+.ir-bench-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
+.ir-bench-cell{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px;}
+.ir-bench-cell .bc-label{font-size:10.5px;color:var(--text-faint);}
+.ir-bench-cell .bc-value{font-size:19px;font-weight:700;margin-top:4px;}
+.ir-bench-cell .bc-delta{font-size:11px;margin-top:4px;}
+.ir-sector-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;}
+.ir-sector-cell{background:var(--bg-panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;text-align:center;}
+.ir-sector-cell .sc-icon{font-size:16px;}
+.ir-sector-cell .sc-name{font-size:10.5px;color:var(--text-faint);margin-top:4px;}
+.ir-sector-cell .sc-count{font-size:16px;font-weight:700;margin-top:2px;}
+@media(max-width:900px){.ir-bench-grid{grid-template-columns:1fr 1fr;} .ir-sector-grid{grid-template-columns:1fr 1fr 1fr;} .ir-snapshot-grid{grid-template-columns:1fr;}}
+.ir-sro-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
+@media(max-width:900px){.ir-sro-grid{grid-template-columns:1fr;}}
+.ir-sro-col h3{font-size:12px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px;}
+.ir-sro-col.strengths h3{color:var(--green);}
+.ir-sro-col.risks h3{color:var(--amber);}
+.ir-sro-col.opportunities h3{color:var(--blue);}
+.ir-peer-badge{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;}
+.ir-peer-badge.rank1{background:var(--green-soft);color:var(--green);}
+.ir-percentile-table td, .ir-percentile-table th{white-space:nowrap;}
+.ir-benefit-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);}
+.ir-benefit-row:last-child{border-bottom:none;}
+.ir-benefit-row .bn-name{flex:0 0 190px;font-size:12px;color:var(--text-dim);}
+.ir-benefit-row .bn-track{flex:1;height:8px;background:var(--bg-panel-2);border-radius:4px;overflow:hidden;}
+.ir-benefit-row .bn-fill{height:100%;background:var(--blue);border-radius:4px;}
+.ir-benefit-row .bn-pct{flex:0 0 40px;text-align:right;font-size:11.5px;font-weight:700;}
+.ir-source-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
+.ir-source-row:last-child{border-bottom:none;}
+.ir-source-icon{width:36px;height:36px;border-radius:9px;background:var(--red-soft);color:var(--red);
+  display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+.ir-source-meta{flex:1;min-width:0;}
+.ir-source-meta .sm-name{font-size:12.5px;font-weight:600;word-break:break-word;}
+.ir-source-meta .sm-date{font-size:11px;color:var(--text-faint);margin-top:2px;}
+.ir-outlook-banner{padding:16px;border-radius:var(--radius);margin-bottom:16px;border:1px solid var(--border);}
+.ir-outlook-banner.Positive{background:var(--green-soft);border-color:rgba(61,220,132,.35);}
+.ir-outlook-banner.Negative{background:var(--red-soft);border-color:rgba(255,97,97,.35);}
+.ir-outlook-banner.Neutral{background:var(--amber-soft);border-color:rgba(255,176,32,.35);}
+.ir-outlook-banner .ob-label{font-size:15px;font-weight:700;}
+.ir-outlook-banner .ob-sub{font-size:12px;color:var(--text-dim);margin-top:4px;}
 
 .linechart-svg{width:100%;height:130px;}
 .linechart-svg .grid-line{stroke:var(--border);stroke-width:1;}
@@ -605,6 +704,19 @@ function goToCompany(companyId){
   closeSidebar();
 }
 
+let irPeriod = null;
+let irCache = null;
+let irTab = 'executive-summary';
+
+function goToIntelligenceReport(companyId){
+  currentPage = 'intelligence-report';
+  currentCompanyId = companyId;
+  irPeriod = null; irCache = null; irTab = 'executive-summary';
+  renderNav();
+  render();
+  closeSidebar();
+}
+
 async function render(){
   const app = document.getElementById('app');
   const title = document.getElementById('pageTitle');
@@ -653,6 +765,8 @@ async function render(){
     await renderSettingsPage();
   } else if (currentPage === 'company-detail') {
     await renderCompanyDetail(currentCompanyId);
+  } else if (currentPage === 'intelligence-report') {
+    await renderIntelligenceReport(currentCompanyId);
   }
 }
 
@@ -2471,13 +2585,632 @@ async function deleteCurrentCompany(){
 
 async function renderCompanyDetailBody(companyId){
   const app = document.getElementById('app');
-  app.innerHTML = `<span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span><div class="empty">Loading full report...</div>`;
+  app.innerHTML = `<span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span><div class="empty">Loading...</div>`;
+  await renderCompanyOverviewTab(companyId);
+}
 
-  // Full report: every period this company has, fully expanded (every
-  // statement, every line item at every depth) in one continuous page -
-  // nothing sits behind a dropdown or a tab that has to be clicked
-  // through, since a real annual report review means scanning the whole
-  // thing, not one statement at a time.
+async function renderCompanyOverviewTab(companyId){
+  const app = document.getElementById('app');
+  const cRes = await fetch(`/api/companies/${companyId}`);
+  const c = await cRes.json();
+
+  if (!currentPeriodsCache.length) {
+    app.innerHTML = `
+      <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
+      <div class="panel"><div class="empty">No financial periods recorded yet for ${escapeHtml(c.name)}. Add one below.</div></div>
+      ${await renderCompanyDetailLegacyBody(companyId)}`;
+    return;
+  }
+
+  const periodLabel = currentPeriodLabel || currentPeriodsCache[0].period_label;
+  const dvRes = await fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(periodLabel)}/detail-view`);
+  const dv = dvRes.ok ? await dvRes.json() : null;
+
+  const breadcrumb = `
+    <div class="co-breadcrumb">
+      <a onclick="goTo('companies')">Companies</a> <span>&rsaquo;</span>
+      <span>${escapeHtml(c.name)}</span> <span>&rsaquo;</span>
+      <span>Financials</span> <span>&rsaquo;</span>
+      <span style="color:var(--text);">${escapeHtml(periodLabel)}</span>
+    </div>`;
+
+  const initials = coInitials(c.name);
+  const years = currentPeriodsCache.map(p => p.period_label);
+  const fySelect = `
+    <div class="fy-select-block">
+      <div class="fy-label">Financial Year</div>
+      <select onchange="setCurrentPeriodAndReload(this.value)">
+        ${years.map(y => `<option value="${escapeHtml(y)}" ${y === periodLabel ? 'selected' : ''}>${escapeHtml(y)}</option>`).join('')}
+      </select>
+      ${dv && dv.period && dv.period.end_date ? `<div class="fy-range">Year ended ${escapeHtml(dv.period.end_date)}</div>` : ''}
+    </div>`;
+
+  const head = `
+    ${breadcrumb}
+    <div class="co-detail-head">
+      <div class="co-detail-logo" style="background:${coAvatarColor(c.name)};">${initials}</div>
+      <div class="co-detail-title">
+        <h2>${escapeHtml(c.name)}</h2>
+        <div class="sub">${escapeHtml(c.ticker || '')} · ${escapeHtml(c.exchange || '')}</div>
+      </div>
+      <div class="co-detail-right">
+        ${fySelect}
+        <div class="fy-select-block">
+          <div class="fy-label">Currency</div>
+          <div style="font-size:15px;font-weight:700;">${escapeHtml((dv && dv.period && dv.period.currency) || 'KES')}</div>
+        </div>
+        <button class="secondary" style="margin:0;" onclick="toggleEditDataPanel()">✏️ Add / Edit Data</button>
+        ${detailExportMenuHtml(companyId)}
+        <button class="icon-btn" title="Delete company" onclick="deleteCurrentCompany()">🗑️</button>
+        <button class="btn-primary-cta" style="margin:0;" onclick="goToIntelligenceReport(${companyId})">📊 Intelligence Report</button>
+      </div>
+    </div>`;
+
+  if (!dv) {
+    app.innerHTML = `<span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>${head}
+      <div class="panel"><div class="empty">No income statement recorded for ${escapeHtml(periodLabel)} yet.</div></div>
+      ${await renderCompanyDetailLegacyBody(companyId)}`;
+    return;
+  }
+
+  const m = dv.metrics || {};
+  const rows = dv.income_statement_rows || [];
+  const colLabels = dv.period_columns || [];
+
+  const incomeTable = rows.length ? `
+    <table>
+      <thead>
+        <tr>
+          <th>Line Item</th>
+          ${colLabels.map(y => `<th class="amount">${y ? escapeHtml(y) : '—'}</th>`).join('')}
+          <th class="amount">YoY Change</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(r => `
+          <tr>
+            <td>${escapeHtml(r.label)}</td>
+            ${r.values.map(v => `<td class="amount">${v !== null && v !== undefined ? fmtAmount(v) : '—'}</td>`).join('')}
+            <td class="amount">${r.yoy_change_pct !== null && r.yoy_change_pct !== undefined ? deltaSpan(r.yoy_change_pct) : '—'}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>` : `<div class="empty">No income statement line items for ${escapeHtml(periodLabel)}.</div>`;
+
+  const fyOverview = `
+    <div class="detail-side-panel">
+      <h3>Financial Year Overview</h3>
+      <div class="fyoverview-grid">
+        <div class="fyoverview-cell"><div class="fo-label">Net Profit</div><div class="fo-value">${m.net_income !== undefined ? fmtAmount(m.net_income) : (rows.find(r=>/net.profit|net.income/i.test(r.label)) ? fmtAmount(rows.find(r=>/net.profit|net.income/i.test(r.label)).values[0]) : '—')}</div></div>
+        <div class="fyoverview-cell"><div class="fo-label">ROE</div><div class="fo-value">${m.roe !== undefined ? fmt(m.roe) + '%' : '—'}</div></div>
+        <div class="fyoverview-cell"><div class="fo-label">ROA</div><div class="fo-value">${m.roa !== undefined ? fmt(m.roa) + '%' : '—'}</div></div>
+        <div class="fyoverview-cell"><div class="fo-label">EPS</div><div class="fo-value">${m.eps !== undefined ? fmt(m.eps, 2) : '—'}</div></div>
+      </div>
+    </div>`;
+
+  const ratiosPanel = `
+    <div class="detail-side-panel">
+      <h3>Key Ratios</h3>
+      <div class="ratio-row"><span class="rr-metric">Net Profit Margin</span><span class="rr-values">${m.net_margin !== undefined ? fmt(m.net_margin) + '%' : '—'}</span></div>
+      <div class="ratio-row"><span class="rr-metric">ROE</span><span class="rr-values">${m.roe !== undefined ? fmt(m.roe) + '%' : '—'}</span></div>
+      <div class="ratio-row"><span class="rr-metric">ROA</span><span class="rr-values">${m.roa !== undefined ? fmt(m.roa) + '%' : '—'}</span></div>
+      <div class="ratio-row"><span class="rr-metric">Debt / Equity</span><span class="rr-values">${m.debt_equity !== undefined ? fmt(m.debt_equity, 2) : '—'}</span></div>
+    </div>`;
+
+  const sourceDocPanel = dv.source_document ? `
+    <div class="detail-side-panel">
+      <h3>Source Document</h3>
+      <div class="source-doc-row">
+        <div class="source-doc-icon">📄</div>
+        <div class="source-doc-meta">
+          <div class="sd-name">${escapeHtml(dv.source_document.filename || dv.source_document.url || 'Source filing')}</div>
+          <div class="sd-date">${dv.source_document.uploaded_at ? 'Uploaded ' + new Date(dv.source_document.uploaded_at).toLocaleDateString() : ''}</div>
+        </div>
+      </div>
+      ${dv.source_document.url ? `<button class="secondary" style="margin-top:10px;width:100%;" onclick="window.open('${escapeHtml(dv.source_document.url)}','_blank')">View Document ↗</button>` : ''}
+    </div>` : '';
+
+  app.innerHTML = `
+    <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
+    ${head}
+    <div class="detail-2col">
+      <div>
+        <div class="panel">
+          <div class="panel-head"><h2>Income Statement</h2></div>
+          ${incomeTable}
+        </div>
+      </div>
+      <div>
+        ${fyOverview}
+        ${ratiosPanel}
+        ${sourceDocPanel}
+      </div>
+    </div>
+    <div id="legacy-detail-body">${await renderCompanyDetailLegacyBody(companyId)}</div>
+  `;
+}
+
+function setCurrentPeriodAndReload(label){
+  currentPeriodLabel = label;
+  renderCompanyOverviewTab(currentCompanyId);
+}
+
+// ========================================================================
+// INTELLIGENCE REPORT — 8-tab company report page
+// ========================================================================
+
+const IR_TABS = [
+  {id:'executive-summary', label:'Executive Summary', icon:'🔵'},
+  {id:'financial-analysis', label:'Financial Analysis', icon:'📊'},
+  {id:'performance-trends', label:'Performance Trends', icon:'📈'},
+  {id:'peer-comparison', label:'Peer Comparison', icon:'👥'},
+  {id:'risk-analysis', label:'Risk Analysis', icon:'⚠️'},
+  {id:'remuneration', label:'Remuneration', icon:'🧾'},
+  {id:'outlook', label:'Outlook', icon:'🧭'},
+  {id:'source-evidence', label:'Source Evidence', icon:'📁'},
+];
+
+let irChart1 = null, irChart2 = null;
+
+async function renderIntelligenceReport(companyId){
+  const app = document.getElementById('app');
+  document.getElementById('pageTitle').textContent = 'Intelligence Report';
+  document.getElementById('pageSub').textContent = '';
+  app.innerHTML = `<div class="empty">Loading intelligence report...</div>`;
+
+  const cRes = await fetch(`/api/companies/${companyId}`);
+  const c = await cRes.json();
+
+  if (!irCache) {
+    const res = await fetch(`/api/companies/${companyId}/intelligence-report${irPeriod ? '?period=' + encodeURIComponent(irPeriod) : ''}`);
+    irCache = await safeJson(res, {has_data: false});
+    irPeriod = irCache.period || null;
+  }
+  const ir = irCache;
+
+  const breadcrumb = `
+    <div class="co-breadcrumb">
+      <a onclick="goTo('companies')">Companies</a> <span>&rsaquo;</span>
+      <a onclick="goToCompany(${companyId})">${escapeHtml(c.name)}</a> <span>&rsaquo;</span>
+      <span style="color:var(--text);">Intelligence Report</span>
+    </div>`;
+
+  const initials = coInitials(c.name);
+  const yearSelect = ir.has_data ? `
+    <div class="fy-select-block">
+      <div class="fy-label">Financial Year</div>
+      <select onchange="switchIRPeriod(this.value)">
+        ${ir.available_periods.map(p => `<option value="${escapeHtml(p)}" ${p === ir.period ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+      </select>
+    </div>` : '';
+
+  const head = `
+    ${breadcrumb}
+    <div class="co-detail-head">
+      <div class="co-detail-logo" style="background:${coAvatarColor(c.name)};">${initials}</div>
+      <div class="co-detail-title">
+        <h2>${escapeHtml(c.name)}</h2>
+        <div class="sub">${escapeHtml(c.ticker || '')} · ${escapeHtml(c.exchange || '')} · ${escapeHtml(c.sector || '')}</div>
+      </div>
+      <div class="co-detail-right">
+        ${yearSelect}
+        <button class="secondary" onclick="goToCompany(${companyId})">&larr; Back to Company</button>
+        <button class="secondary" onclick="compareSelectedIds=[${companyId}];goTo('compare');">⚖ Compare</button>
+        <button class="btn-primary-cta" style="margin:0;" ${ir.has_data ? '' : 'disabled style="opacity:.5;"'}
+          onclick="window.location.href='/api/companies/${companyId}/export/snapshot'">⭱ Export Report</button>
+      </div>
+    </div>`;
+
+  if (!ir.has_data) {
+    app.innerHTML = `${head}<div class="panel"><div class="empty">No financial data recorded yet for ${escapeHtml(c.name)} — add a period from the Company page first.</div></div>`;
+    return;
+  }
+
+  const tabBar = `
+    <div class="ir-tabbar">
+      ${IR_TABS.map(t => `<button class="ir-tab-btn ${irTab === t.id ? 'active' : ''}" onclick="switchIRTab('${t.id}')">${t.icon} ${t.label}</button>`).join('')}
+    </div>`;
+
+  app.innerHTML = `${head}${tabBar}<div id="ir-tab-body"></div>`;
+  renderIRTabBody();
+}
+
+function switchIRTab(tabId){
+  irTab = tabId;
+  document.querySelectorAll('.ir-tab-btn').forEach((btn, i) => btn.classList.toggle('active', IR_TABS[i].id === tabId));
+  renderIRTabBody();
+}
+
+async function switchIRPeriod(period){
+  irPeriod = period;
+  irCache = null;
+  await renderIntelligenceReport(currentCompanyId);
+}
+
+function renderIRTabBody(){
+  const el = document.getElementById('ir-tab-body');
+  const ir = irCache;
+  if (irTab === 'executive-summary') el.innerHTML = irExecutiveSummaryTab(ir);
+  else if (irTab === 'financial-analysis') { el.innerHTML = irFinancialAnalysisTab(ir); irMountFinancialCharts(ir); }
+  else if (irTab === 'performance-trends') { el.innerHTML = irPerformanceTrendsTab(ir); irMountTrendCharts(ir); }
+  else if (irTab === 'peer-comparison') el.innerHTML = irPeerComparisonTab(ir);
+  else if (irTab === 'risk-analysis') el.innerHTML = irRiskAnalysisTab(ir);
+  else if (irTab === 'remuneration') { el.innerHTML = `<div class="empty">Loading remuneration benchmark...</div>`; irRemunerationTab(ir); }
+  else if (irTab === 'outlook') el.innerHTML = irOutlookTab(ir);
+  else if (irTab === 'source-evidence') el.innerHTML = irSourceEvidenceTab(ir);
+}
+
+function irGauge(score, band){
+  const pct = Math.max(0, Math.min(100, score || 0));
+  const color = band === 'strong' ? 'var(--green)' : band === 'moderate' ? 'var(--amber)' : 'var(--red)';
+  const style = `background:conic-gradient(${color} 0 ${pct * 3.6}deg, var(--bg-panel-2) ${pct * 3.6}deg 360deg);`;
+  return `
+    <div class="ir-gauge" style="${style}">
+      <div class="ir-gauge-hole"><div class="n">${score ?? '-'}</div><div class="l">/100</div></div>
+    </div>`;
+}
+
+function irExecutiveSummaryTab(ir){
+  const fh = ir.financial_health;
+  const s = ir.snapshot;
+  const highlights = [];
+  ir.strengths.forEach(t => highlights.push({icon: '✅', text: t}));
+  ir.opportunities.forEach(o => highlights.push({icon: '💡', text: o.title}));
+  ir.risks.forEach(r => highlights.push({icon: r.severity === 'High' ? '🔴' : '🟠', text: `${r.title} — ${r.metric}`}));
+
+  const bench = ir.nse_benchmark;
+  const sectorsCov = ir.sectors_covered;
+
+  return `
+    <div class="row row-3" style="grid-template-columns:1fr 1.1fr 1.3fr;align-items:start;">
+      <div class="panel">
+        <div class="ir-panel-title">Financial Health Score</div>
+        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;">
+          ${irGauge(fh.score, fh.band)}
+          <div class="ir-band-pill ${fh.band}">${(fh.band || '').toUpperCase()}</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Assessment</div>
+        <div class="ir-kv-list">
+          <div class="ir-kv-row"><span class="k">Assessment</span><span class="ir-kv-pill ${(fh.band||'').toLowerCase()}">${fh.assessment.toUpperCase()}</span></div>
+          <div class="ir-kv-row"><span class="k">Outlook</span><span class="ir-kv-pill ${fh.outlook.toLowerCase()}">${fh.outlook.toUpperCase()}</span></div>
+          <div class="ir-kv-row"><span class="k">Market Position</span><span class="ir-kv-pill ${fh.market_position ? fh.market_position.toLowerCase() : 'neutral'}">${(fh.market_position || 'Not enough peer data').toUpperCase()}</span></div>
+          <div class="ir-kv-row"><span class="k">Confidence</span><span class="ir-kv-pill ${fh.confidence.toLowerCase()}">${fh.confidence.toUpperCase()} (${fh.confidence === 'High' ? '3+' : fh.confidence === 'Medium' ? '2' : '1'} periods)</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Key Highlights</div>
+        ${highlights.length ? highlights.map(h => `<div class="ir-highlight-item"><span class="ic">${h.icon}</span><span>${escapeHtml(h.text)}</span></div>`).join('')
+          : `<div class="empty">No standout signals vs the prior period on record.</div>`}
+      </div>
+    </div>
+
+    <div class="row row-3" style="grid-template-columns:1.4fr 1.1fr;">
+      <div class="panel">
+        <div class="ir-panel-title">Financial Snapshot — ${escapeHtml(ir.period)}</div>
+        <div class="ir-snapshot-grid">
+          <div class="ir-snapshot-cell"><div class="sn-label">Revenue</div><div class="sn-value">${fmtAmount(s.revenue)}</div>${s.revenue_yoy !== null ? `<div class="sn-delta">${deltaSpan(s.revenue_yoy)} vs prior period</div>` : ''}</div>
+          <div class="ir-snapshot-cell"><div class="sn-label">Net Profit</div><div class="sn-value">${fmtAmount(s.net_income)}</div>${s.net_income_yoy !== null ? `<div class="sn-delta">${deltaSpan(s.net_income_yoy)} vs prior period</div>` : ''}</div>
+          <div class="ir-snapshot-cell"><div class="sn-label">ROE</div><div class="sn-value">${fmt(s.roe)}%</div>${s.roe_delta !== null ? `<div class="sn-delta">${deltaSpan(s.roe_delta, {suffix:'pp'})} vs prior period</div>` : ''}</div>
+          <div class="ir-snapshot-cell"><div class="sn-label">Net Margin</div><div class="sn-value">${fmt(s.net_margin)}%</div>${s.net_margin_delta !== null ? `<div class="sn-delta">${deltaSpan(s.net_margin_delta, {suffix:'pp'})} vs prior period</div>` : ''}</div>
+        </div>
+      </div>
+      <div class="panel">
+        ${bench ? `
+          <div class="ir-panel-title">NSE Market Benchmark (${bench.companies_surveyed} companies surveyed)</div>
+          <div class="ir-kv-list">
+            <div class="ir-kv-row"><span class="k">Average Revenue</span><span>${fmtAmount(bench.avg_revenue)}M ${bench.avg_revenue_change_pct !== null ? deltaSpan(bench.avg_revenue_change_pct) : ''}</span></div>
+            <div class="ir-kv-row"><span class="k">Average Net Profit</span><span>${fmtAmount(bench.avg_net_profit)}M ${bench.avg_net_profit_change_pct !== null ? deltaSpan(bench.avg_net_profit_change_pct) : ''}</span></div>
+            <div class="ir-kv-row"><span class="k">Average Profit Margin</span><span>${fmt(bench.avg_profit_margin)}% ${bench.avg_profit_margin_change_pp !== null ? deltaSpan(bench.avg_profit_margin_change_pp, {suffix:'pp'}) : ''}</span></div>
+            <div class="ir-kv-row"><span class="k">NSE Capitalisation (${escapeHtml(bench.nse_capitalisation_period || '')})</span><span>KES ${fmt(bench.nse_capitalisation, 1)}T ${bench.nse_capitalisation_change !== null ? deltaSpan(bench.nse_capitalisation_change, {suffix:'T', decimals:1}) : ''}</span></div>
+          </div>
+          <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">Source: ${escapeHtml(bench.survey_title)}</div>
+        ` : `<div class="ir-panel-title">NSE Market Benchmark</div><div class="empty">No market survey imported yet. Import one from the Remuneration tab to populate this panel.</div>`}
+      </div>
+    </div>
+
+    ${sectorsCov ? `
+    <div class="panel">
+      <div class="ir-panel-title">Sectors Covered (${sectorsCov.total_companies} companies)</div>
+      <div class="ir-sector-grid">
+        ${sectorsCov.sectors.map(s => `<div class="ir-sector-cell"><div class="sc-icon">🏷️</div><div class="sc-name">${escapeHtml(s.sector)}</div><div class="sc-count">${s.count}</div></div>`).join('')}
+      </div>
+    </div>` : ''}
+  `;
+}
+
+function irFinancialAnalysisTab(ir){
+  const ratioRows = ir.key_ratios.map(r => `
+    <tr>
+      <td>${escapeHtml(r.metric)}</td>
+      <td class="amount">${r.current !== null ? fmt(r.current, r.suffix === '%' ? 1 : 2) + r.suffix : '-'}</td>
+      <td class="amount">${r.prior !== null ? fmt(r.prior, r.suffix === '%' ? 1 : 2) + r.suffix : '-'}</td>
+      <td class="amount">${r.change !== null ? deltaSpan(r.change, {suffix: r.suffix === '%' ? 'pp' : '', decimals: r.suffix === '%' ? 1 : 2}) : '-'}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="row" style="grid-template-columns:1.5fr 1fr;align-items:start;">
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Revenue vs Net Profit Trend (${escapeHtml(ir.currency)})</h3></div>
+        <div class="chart-wrap" style="height:260px;"><canvas id="ir-chart-1"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Key Ratios — ${escapeHtml(ir.period)} vs prior period</div>
+        <table>
+          <thead><tr><th>Metric</th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">Change</th></tr></thead>
+          <tbody>${ratioRows}</tbody>
+        </table>
+        <div style="font-size:10.5px;color:var(--text-faint);margin-top:12px;line-height:1.5;">
+          Gross/operating margin and EPS aren't shown — this company's saved figures don't include gross profit, operating profit, or shares outstanding, so those ratios can't be computed without guessing.
+        </div>
+      </div>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-head"><h3>Profit Margin Trend</h3></div>
+      <div class="chart-wrap" style="height:220px;"><canvas id="ir-chart-2"></canvas></div>
+    </div>
+  `;
+}
+
+function irMountFinancialCharts(ir){
+  const labels = ir.trend.map(t => t.period);
+  if (irChart1) irChart1.destroy();
+  if (irChart2) irChart2.destroy();
+  const chartOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { labels: { color: '#aab4cc' } } },
+    scales: {
+      x: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+      y: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+    },
+  };
+  const c1 = document.getElementById('ir-chart-1');
+  if (c1) irChart1 = new Chart(c1, {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: 'Revenue', data: ir.trend.map(t => t.revenue), backgroundColor: '#5b9bff' },
+      { label: 'Net Profit', data: ir.trend.map(t => t.net_income), backgroundColor: '#3ddc84' },
+    ]},
+    options: chartOpts,
+  });
+  const c2 = document.getElementById('ir-chart-2');
+  if (c2) irChart2 = new Chart(c2, {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Net Margin %', data: ir.trend.map(t => t.net_margin), borderColor: '#ffb020', backgroundColor: 'rgba(255,176,32,.15)', tension: .3 },
+    ]},
+    options: chartOpts,
+  });
+}
+
+function irPerformanceTrendsTab(ir){
+  return `
+    <div class="chart-panel">
+      <div class="chart-head"><h3>Revenue vs Net Profit Trend (${escapeHtml(ir.currency)})</h3><span class="chart-select">${ir.trend.length} periods on record</span></div>
+      <div class="chart-wrap" style="height:280px;"><canvas id="ir-chart-1"></canvas></div>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-head"><h3>Net Margin Trend</h3></div>
+      <div class="chart-wrap" style="height:220px;"><canvas id="ir-chart-2"></canvas></div>
+    </div>
+    ${ir.trend.length < 3 ? `<div class="empty">Only ${ir.trend.length} period(s) on record — add more financial years on the Company page for a fuller trend.</div>` : ''}
+  `;
+}
+function irMountTrendCharts(ir){ irMountFinancialCharts(ir); }
+
+function irPeerComparisonTab(ir){
+  const pc = ir.peer_comparison;
+  if (!pc.sector || pc.peer_count <= 1) {
+    return `<div class="panel"><div class="empty">${pc.sector ? `No other tracked companies in the ${escapeHtml(pc.sector)} sector yet.` : 'This company has no sector assigned, so peer comparison is unavailable.'}</div></div>`;
+  }
+  const rows = pc.metrics.map(m => `
+    <tr>
+      <td>${escapeHtml(m.label)}</td>
+      <td class="amount">${m.company !== null ? (m.suffix === '%' ? fmt(m.company) + '%' : m.suffix === '' && m.label.includes('Revenue') ? fmtAmount(m.company) : fmt(m.company, 2)) : '-'}</td>
+      <td class="amount">${m.sector_avg !== null ? (m.suffix === '%' ? fmt(m.sector_avg) + '%' : m.label.includes('Revenue') ? fmtAmount(m.sector_avg) : fmt(m.sector_avg, 2)) : '-'}</td>
+      <td class="amount">${m.top !== null ? (m.suffix === '%' ? fmt(m.top) + '%' : m.label.includes('Revenue') ? fmtAmount(m.top) : fmt(m.top, 2)) : '-'}</td>
+      <td class="amount">${m.rank ? `<span class="ir-peer-badge ${m.rank === 1 ? 'rank1' : ''}">${m.rank} / ${pc.peer_count}</span>` : '-'}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel">
+      <div class="ir-panel-title">Peer Comparison — ${escapeHtml(pc.sector)} (${pc.peer_count} companies tracked)</div>
+      <table>
+        <thead><tr><th>Metric</th><th class="amount">${escapeHtml(irCache.company.name)}</th><th class="amount">Sector Avg</th><th class="amount">Top Performer</th><th class="amount">Rank</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function irRiskAnalysisTab(ir){
+  return `
+    <div class="ir-sro-grid">
+      <div class="ir-sro-col strengths">
+        <h3>✅ Strengths</h3>
+        ${ir.strengths.length ? ir.strengths.map(t => `<div class="ir-highlight-item"><span class="ic">✅</span><span>${escapeHtml(t)}</span></div>`).join('') : `<div class="empty">None identified this period.</div>`}
+      </div>
+      <div class="ir-sro-col risks">
+        <h3>⚠️ Risks</h3>
+        ${ir.risks.length ? ir.risks.map(r => `<div class="ir-highlight-item"><span class="ic">${r.severity === 'High' ? '🔴' : '🟠'}</span><span><b>${escapeHtml(r.title)}</b> — ${escapeHtml(r.metric)}</span></div>`).join('') : `<div class="empty">No risk flags this period.</div>`}
+      </div>
+      <div class="ir-sro-col opportunities">
+        <h3>💡 Opportunities</h3>
+        ${ir.opportunities.length ? ir.opportunities.map(o => `<div class="ir-highlight-item"><span class="ic">💡</span><span>${escapeHtml(o.title)}</span></div>`).join('') : `<div class="empty">No standout positive signals this period.</div>`}
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-faint);margin-top:16px;">
+      Risk and opportunity flags come from the same rules used on the Alerts page — high debt/equity, falling profit, revenue decline, or strong revenue growth vs the prior period. Consistent everywhere, never company-specific guesswork.
+    </div>
+  `;
+}
+
+async function irRemunerationTab(ir){
+  const el = document.getElementById('ir-tab-body');
+  if (irTab !== 'remuneration') return;
+  const res = await fetch(`/api/companies/${currentCompanyId}/remuneration`);
+  const data = await safeJson(res, {has_survey: false});
+  if (irTab !== 'remuneration') return; // user may have switched tabs while this loaded
+
+  if (!data.has_survey) {
+    el.innerHTML = `
+      <div class="panel">
+        <div class="ir-panel-title">Director &amp; Executive Remuneration Benchmark</div>
+        <div class="empty">No remuneration survey imported yet.</div>
+        <div style="max-width:420px;margin:14px auto 0;">
+          <input type="file" id="ir-survey-file" accept="application/pdf">
+          <button onclick="uploadIRSurvey(${currentCompanyId})">Import Survey PDF</button>
+          <div id="ir-survey-error" class="error"></div>
+        </div>
+      </div>`;
+    return;
+  }
+
+  const rs = data.remuneration_stats;
+  const pctRow = (label, cat) => {
+    const chair = rs[cat] && rs[cat].chairperson;
+    const other = rs[cat] && rs[cat].other_neds;
+    if (!chair && !other) return '';
+    return `
+      <tr><td>${label} — Chairperson</td><td class="amount">${chair ? fmtAmount(chair.p25) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p50) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p75) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.average) : '-'}</td></tr>
+      <tr><td>${label} — Other NEDs</td><td class="amount">${other ? fmtAmount(other.p25) : '-'}</td><td class="amount">${other ? fmtAmount(other.p50) : '-'}</td><td class="amount">${other ? fmtAmount(other.p75) : '-'}</td><td class="amount">${other ? fmtAmount(other.average) : '-'}</td></tr>`;
+  };
+  const committeeRow = () => {
+    const chair = rs.committee_allowance && rs.committee_allowance.committee_chairperson;
+    const member = rs.committee_allowance && rs.committee_allowance.committee_member;
+    if (!chair && !member) return '';
+    return `
+      <tr><td>Committee Allowance — Chairperson</td><td class="amount">${chair ? fmtAmount(chair.p25) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p50) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p75) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.average) : '-'}</td></tr>
+      <tr><td>Committee Allowance — Member</td><td class="amount">${member ? fmtAmount(member.p25) : '-'}</td><td class="amount">${member ? fmtAmount(member.p50) : '-'}</td><td class="amount">${member ? fmtAmount(member.p75) : '-'}</td><td class="amount">${member ? fmtAmount(member.average) : '-'}</td></tr>`;
+  };
+
+  const maxPrevalence = Math.max(1, ...data.benefits.map(b => b.prevalence_pct || 0));
+  const benefitRows = data.benefits.map(b => `
+    <div class="ir-benefit-row">
+      <div class="bn-name">${escapeHtml(b.benefit_name)}</div>
+      <div class="bn-track"><div class="bn-fill" style="width:${(b.prevalence_pct || 0) / maxPrevalence * 100}%;"></div></div>
+      <div class="bn-pct">${b.prevalence_pct !== null ? b.prevalence_pct + '%' : '-'}</div>
+    </div>`).join('');
+
+  const ceoRows = data.ceo_comp.map(cc => `
+    <tr><td>${escapeHtml(cc.component_name)}</td><td class="amount">${fmtAmount(cc.p25)}</td><td class="amount">${fmtAmount(cc.p50)}</td><td class="amount">${fmtAmount(cc.p75)}</td><td class="amount">${fmtAmount(cc.average)}</td></tr>`).join('');
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>${escapeHtml(data.survey.title)} ${data.survey.edition ? '· ' + escapeHtml(data.survey.edition) : ''}</h2>
+        <span class="badge">${data.survey.companies_surveyed} companies surveyed</span>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-faint);margin-bottom:4px;">
+        ${data.survey.period_covered ? 'Period covered: ' + escapeHtml(data.survey.period_covered) : ''}
+        ${data.matched_sector ? ` · This company's survey sector: <b style="color:var(--text-dim);">${escapeHtml(data.matched_sector)}</b>` : ' · Company not identified in this survey\'s company list — figures below are market-wide, not sector-matched.'}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="ir-panel-title">Non-Executive Director Remuneration (KES)</div>
+      <table class="ir-percentile-table">
+        <thead><tr><th></th><th class="amount">25th pct</th><th class="amount">50th pct</th><th class="amount">75th pct</th><th class="amount">Average</th></tr></thead>
+        <tbody>
+          ${pctRow('Annual Retainer Fee', 'annual_fee')}
+          ${pctRow('Sitting Allowance', 'sitting_allowance')}
+          ${committeeRow()}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="row row-3" style="grid-template-columns:1.2fr 1fr;">
+      <div class="panel">
+        <div class="ir-panel-title">CEO / MD Monthly Compensation (KES)</div>
+        <table class="ir-percentile-table">
+          <thead><tr><th>Component</th><th class="amount">25th pct</th><th class="amount">50th pct</th><th class="amount">75th pct</th><th class="amount">Average</th></tr></thead>
+          <tbody>${ceoRows}</tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Board Benefits Prevalence</div>
+        ${benefitRows}
+      </div>
+    </div>
+  `;
+}
+
+async function uploadIRSurvey(companyId){
+  const fileInput = document.getElementById('ir-survey-file');
+  const errorEl = document.getElementById('ir-survey-error');
+  errorEl.textContent = '';
+  if (!fileInput.files.length) { errorEl.textContent = 'Choose a PDF first.'; return; }
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  try {
+    const res = await fetch('/api/surveys/import', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) { errorEl.textContent = data.error || 'Import failed.'; return; }
+    irRemunerationTab(irCache);
+  } catch (e) {
+    errorEl.textContent = 'Import failed: ' + e.message;
+  }
+}
+
+function irOutlookTab(ir){
+  const fh = ir.financial_health;
+  return `
+    <div class="ir-outlook-banner ${fh.outlook}">
+      <div class="ob-label">${fh.outlook} Outlook</div>
+      <div class="ob-sub">Based on ${ir.outlook_drivers.length} year-over-year signal(s) vs ${ir.available_periods[1] || 'the prior period on record'} — not a forecast, a read of the trend already in the data.</div>
+    </div>
+    <div class="panel">
+      <div class="ir-panel-title">What's Driving This</div>
+      ${ir.outlook_drivers.length ? ir.outlook_drivers.map(d => `<div class="ir-highlight-item"><span class="ic">→</span><span>${escapeHtml(d)}</span></div>`).join('') : `<div class="empty">Not enough period-over-period data yet to identify drivers.</div>`}
+    </div>
+    <div class="panel">
+      <div class="ir-panel-title">Confidence</div>
+      <div style="font-size:12.5px;color:var(--text-dim);line-height:1.6;">
+        Rated <b>${fh.confidence}</b> — based on ${ir.available_periods.length} recorded period(s) for this company.
+        ${fh.confidence !== 'High' ? ' Add more historical financial years on the Company page for a more reliable read.' : ''}
+      </div>
+    </div>
+  `;
+}
+
+function irSourceEvidenceTab(ir){
+  const docs = ir.source_documents || [];
+  const jobs = ir.import_jobs || [];
+  return `
+    <div class="panel">
+      <div class="ir-panel-title">Source Documents</div>
+      ${docs.length ? docs.map(d => `
+        <div class="ir-source-row">
+          <div class="ir-source-icon">📄</div>
+          <div class="ir-source-meta">
+            <div class="sm-name">${escapeHtml(d.filename || d.url || 'Filing')}${d.period_label ? ` · ${escapeHtml(d.period_label)}` : ''}</div>
+            <div class="sm-date">${d.uploaded_at ? 'Uploaded ' + new Date(d.uploaded_at).toLocaleDateString() : ''}${d.page_count ? ` · ${d.page_count} pages` : ''}</div>
+          </div>
+          ${d.url ? `<button class="secondary" onclick="window.open('${escapeHtml(d.url)}','_blank')">View ↗</button>` : ''}
+        </div>`).join('') : `<div class="empty">No parsed source PDFs on file for this company yet. Figures for ${escapeHtml(ir.period)} were entered as: <b>${escapeHtml(ir.legacy_source || 'manual')}</b>.</div>`}
+    </div>
+    <div class="panel">
+      <div class="ir-panel-title">Import Activity</div>
+      ${jobs.length ? `
+        <table>
+          <thead><tr><th>Status</th><th>Source</th><th>Started</th><th>Error</th></tr></thead>
+          <tbody>
+            ${jobs.map(j => `<tr>
+              <td><span class="status-badge status-${escapeHtml(j.status)}">${escapeHtml(j.status)}</span></td>
+              <td>${j.source_url ? `<a href="${escapeHtml(j.source_url)}" target="_blank" rel="noopener">Source PDF</a>` : '-'}</td>
+              <td>${j.started_at ? new Date(j.started_at).toLocaleString() : '-'}</td>
+              <td>${j.error_message ? `<span style="color:var(--red);">${escapeHtml(j.error_message)}</span>` : '-'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>` : `<div class="empty">No import jobs recorded for this company.</div>`}
+    </div>
+  `;
+}
+
+async function renderFullStatementsPanel(companyId){
+  // Every period's full statement breakdown (balance sheet, cash flow,
+  // equity - not just income statement, which the /detail-view panel
+  // above already covers) - every statement, every line item, at every
+  // depth, so nothing sits behind a click-through a real filing review
+  // wouldn't need.
   const detailFetches = currentPeriodsCache.map(p =>
     fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(p.period_label)}`).then(r => r.ok ? r.json() : null)
   );
@@ -2490,58 +3223,59 @@ async function renderCompanyDetailBody(companyId){
 
   const periodSections = allPeriodDetails.length
     ? allPeriodDetails.map(p => renderFullPeriodSection(p, companyId)).join('')
-    : `<div class="empty">No report data yet for this company. Add one below, or import from NSE on the Overview page.</div>`;
+    : `<div class="empty">No report data yet for this company. Add one via "Add / Edit Data" above, or import from NSE on the Companies page.</div>`;
 
-  app.innerHTML = `
-    <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
-
+  return `
     <div class="panel">
-      <div class="panel-head">
-        <h2>Full Financial Report</h2>
-        <button class="secondary" onclick="deleteCurrentCompany()">🗑️ Delete Company</button>
-      </div>
+      <div class="panel-head"><h2>Full Financial Report</h2></div>
       ${jumpNav}
       <div id="report-panel-body">${periodSections}</div>
-    </div>
+    </div>`;
+}
 
-    <div class="panel">
+function toggleEditDataPanel(){
+  const el = document.getElementById('edit-data-panel');
+  if (!el) return;
+  const opening = el.style.display === 'none';
+  el.style.display = opening ? '' : 'none';
+  if (opening) el.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function renderEditDataPanel(){
+  return `
+    <div class="panel" id="edit-data-panel" style="display:none;">
       <div class="panel-head"><h2>Add / Edit Period Report</h2></div>
       <div style="font-size:12px;color:var(--text-faint);margin-bottom:12px;">
         Enter one or more line items per statement - as many or as few as you have (revenue, costs, assets, whatever the report gives you). Not limited to five fixed numbers.
       </div>
       ${renderReportBuilder()}
-    </div>
+    </div>`;
+}
 
-    <div class="panel">
-      <div class="panel-head"><h2>Downloads</h2></div>
-      <div class="download-grid">
-        <div class="download-card">
-          <div class="dl-title">Full FY Report</div>
-          <div class="dl-desc">${currentPeriodLabel ? `${escapeHtml(currentPeriodLabel)} write-up with page-cited figures (Word)` : 'Add a period below first'}</div>
-          <button class="secondary" ${currentPeriodLabel ? '' : 'disabled style="opacity:.5;"'} onclick="window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(currentPeriodLabel || '')}/report.docx'">Download</button>
-        </div>
-        <div class="download-card">
-          <div class="dl-title">Company Snapshot</div>
-          <div class="dl-desc">Profile + all periods + calculated KPIs (Excel)</div>
-          <button class="secondary" onclick="window.location.href='/api/companies/${companyId}/export/snapshot'">Download</button>
-        </div>
-        <div class="download-card">
-          <div class="dl-title">Raw Financials</div>
-          <div class="dl-desc">Underlying numbers, no formatting (CSV)</div>
-          <button class="secondary" onclick="window.location.href='/api/companies/${companyId}/export/raw.csv'">Download</button>
-        </div>
-        <div class="download-card">
-          <div class="dl-title">Portfolio Export</div>
-          <div class="dl-desc">This company alongside all others (Excel)</div>
-          <button class="secondary" onclick="window.location.href='/api/export/portfolio'">Download</button>
-        </div>
-        <div class="download-card">
-          <div class="dl-title">Comparison Report</div>
-          <div class="dl-desc">Multi-sheet workbook, all companies (Excel)</div>
-          <button class="secondary" onclick="window.location.href='/api/export/comparison'">Download</button>
-        </div>
+function toggleExportMenu(e){
+  e.stopPropagation();
+  document.getElementById('detailExportMenu').classList.toggle('hidden');
+}
+
+function detailExportMenuHtml(companyId){
+  const hasPeriod = !!currentPeriodLabel;
+  return `
+    <div style="position:relative;display:inline-block;">
+      <button class="secondary" style="margin:0;" onclick="toggleExportMenu(event)">⭱ Export ▾</button>
+      <div class="columns-menu hidden" id="detailExportMenu" onclick="event.stopPropagation()">
+        <div class="columns-menu-item" style="${hasPeriod ? '' : 'opacity:.5;pointer-events:none;'}" onclick="window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(currentPeriodLabel || '')}/report.docx'">📄 Full FY Report (.docx)</div>
+        <div class="columns-menu-item" onclick="window.location.href='/api/companies/${companyId}/export/snapshot'">📊 Company Snapshot (.xlsx)</div>
+        <div class="columns-menu-item" onclick="window.location.href='/api/companies/${companyId}/export/raw.csv'">🗂️ Raw Financials (.csv)</div>
+        <div class="columns-menu-item" onclick="window.location.href='/api/export/portfolio'">📁 Portfolio Export (.xlsx)</div>
+        <div class="columns-menu-item" onclick="window.location.href='/api/export/comparison'">📁 Comparison Report (.xlsx)</div>
       </div>
-    </div>
+    </div>`;
+}
+
+async function renderCompanyDetailLegacyBody(companyId){
+  return `
+    ${await renderFullStatementsPanel(companyId)}
+    ${renderEditDataPanel()}
   `;
 }
 

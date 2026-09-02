@@ -499,8 +499,23 @@ def list_companies():
     result = []
     for c in companies:
         d = c.to_dict()
-        f = latest_financials(c.id)
-        d['latest'] = f.to_dict() if f else None
+        latest, prior = latest_two_financials(c.id)
+        latest_dict = latest.to_dict() if latest else None
+        if latest_dict:
+            prior_dict = prior.to_dict() if prior else None
+            latest_dict['revenue_yoy'] = pct_change(latest_dict['revenue'], prior_dict['revenue']) if prior_dict else None
+            latest_dict['net_income_yoy'] = pct_change(latest_dict['net_income'], prior_dict['net_income']) if prior_dict else None
+            latest_dict['net_margin_delta'] = (
+                latest_dict['net_margin'] - prior_dict['net_margin']
+                if prior_dict and latest_dict['net_margin'] is not None and prior_dict['net_margin'] is not None else None
+            )
+            latest_dict['roe_delta'] = (
+                latest_dict['roe'] - prior_dict['roe']
+                if prior_dict and latest_dict['roe'] is not None and prior_dict['roe'] is not None else None
+            )
+            trend_rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.period.asc()).all()
+            latest_dict['score_trend'] = [r.to_dict()['financial_score'] for r in trend_rows[-8:]]
+        d['latest'] = latest_dict
         result.append(d)
 
     if sort == 'score':
@@ -1115,6 +1130,89 @@ def get_period_detail(company_id, period_label):
     ).first_or_404()
     return jsonify(period.to_dict())
 
+@app.route('/api/companies/<int:company_id>/periods/<period_label>/detail-view')
+def get_period_detail_view(company_id, period_label):
+    """Company Detail page data: the selected period's income statement
+    with up to two prior fiscal years lined up alongside it (by
+    normalized_name, so rows match even if label wording differs
+    year to year) plus YoY% on the latest column, the period's
+    calculated ratios, and its source document. Built from the same
+    FinancialPeriod/CalculatedMetric rows get_period_detail and
+    calculate_ratios use, so figures always agree with the rest of the
+    app - this endpoint only reshapes them for the 3-year comparison
+    table.
+    """
+    company = Company.query.get_or_404(company_id)
+    period = FinancialPeriod.query.filter_by(
+        company_id=company_id, period_label=period_label
+    ).first_or_404()
+
+    all_periods = FinancialPeriod.query.filter_by(company_id=company_id).all()
+    ordered = sorted(
+        all_periods,
+        key=lambda p: (p.fiscal_year if p.fiscal_year is not None else extract_year(p.period_label) or 0),
+        reverse=True
+    )
+    idx = next((i for i, p in enumerate(ordered) if p.id == period.id), 0)
+    window = ordered[idx:idx + 3]  # selected period + up to 2 prior years
+    while len(window) < 3:
+        window.append(None)
+
+    def flat_income_rows(p):
+        """label -> amount for every income-statement line item (top level
+        and children), keyed by normalized_name when set else the label
+        text, so rows align across years even if wording drifted."""
+        if p is None:
+            return {}
+        stmt = p.statement('income_statement')
+        if not stmt:
+            return {}
+        rows = {}
+        def walk(items):
+            for li in items:
+                key = li.normalized_name or li.label
+                rows[key] = {'label': li.label, 'amount': li.amount}
+                walk(li.children)
+        walk([li for li in stmt.line_items if li.parent_id is None])
+        return rows
+
+    cols = [flat_income_rows(p) for p in window]
+    # Preserve the order line items first appear in, latest period first
+    seen_order = []
+    for col in cols:
+        for key in col:
+            if key not in seen_order:
+                seen_order.append(key)
+
+    income_rows = []
+    for key in seen_order:
+        latest_cell = cols[0].get(key)
+        prior_cell = cols[1].get(key) if len(cols) > 1 else None
+        income_rows.append({
+            'label': (latest_cell or prior_cell or {}).get('label', key),
+            'values': [c.get(key, {}).get('amount') if c else None for c in cols],
+            'yoy_change_pct': pct_change(
+                latest_cell['amount'] if latest_cell else None,
+                prior_cell['amount'] if prior_cell else None
+            ),
+        })
+
+    metrics = {m.metric_name: m.value for m in period.calculated_metrics}
+    source_doc = None
+    stmt = period.statement('income_statement')
+    if stmt and stmt.source_document_id:
+        doc = SourceDocument.query.get(stmt.source_document_id)
+        source_doc = doc.to_dict() if doc else None
+
+    return jsonify({
+        'company': company.to_dict(),
+        'period': period.to_dict(include_line_items=False),
+        'period_columns': [p.period_label if p else None for p in window],
+        'income_statement_rows': income_rows,
+        'metrics': metrics,
+        'source_document': source_doc,
+    })
+
 @app.route('/api/companies/<int:company_id>/periods/<period_label>/report.docx')
 def generate_period_report(company_id, period_label):
     """Word report for one FY, built off the same verified line items and
@@ -1325,6 +1423,247 @@ def compare_companies():
         result.append(d)
 
     return jsonify(result)
+
+def _survey_period_series(survey, metric_name):
+    rows = [m for m in survey.market_metrics if m.metric_name == metric_name]
+    rows.sort(key=lambda m: m.period_label)
+    return rows
+
+def _latest_survey():
+    return MarketSurvey.query.order_by(MarketSurvey.uploaded_at.desc()).first()
+
+def _match_survey_sector(survey, company_name):
+    """Same loose name-matching rule as /api/surveys/<id>/sector-for-company,
+    inlined here so the Intelligence Report doesn't need a second round
+    trip to get a company's benchmark sector."""
+    norm = re.sub(r'[^a-z0-9]', '', company_name.lower())
+    for sc in survey.sector_companies:
+        if re.sub(r'[^a-z0-9]', '', sc.company_name.lower()) == norm:
+            return sc.sector
+    return None
+
+@app.route('/api/companies/<int:company_id>/intelligence-report')
+def company_intelligence_report(company_id):
+    """Everything the 8-tab Intelligence Report page needs for one company,
+    in one call. Built entirely from figures already computed elsewhere in
+    the app (Financials.to_dict(), assess_company_risks/opportunity, the
+    latest imported MarketSurvey) so nothing here can disagree with what
+    the Companies/Rankings/Alerts pages already show. Fields the schema
+    genuinely has no data for (gross/operating margin, EPS, stock
+    return/market cap) are left out rather than estimated."""
+    c = Company.query.get_or_404(company_id)
+    rows = Financials.query.filter_by(company_id=company_id).order_by(Financials.period.desc()).all()
+    if not rows:
+        return jsonify({'company': c.to_dict(), 'has_data': False, 'available_periods': []})
+
+    period_label = request.args.get('period')
+    idx = next((i for i, r in enumerate(rows) if r.period == period_label), 0) if period_label else 0
+    latest = rows[idx]
+    prior = rows[idx + 1] if idx + 1 < len(rows) else None
+    prior2 = rows[idx + 2] if idx + 2 < len(rows) else None
+    ld = latest.to_dict()
+    pd_ = prior.to_dict() if prior else None
+
+    def delta(cur, pri):
+        return (cur - pri) if (cur is not None and pri is not None) else None
+
+    roa = (ld['net_income'] / latest.total_assets * 100) if (latest.total_assets and ld['net_income'] is not None) else None
+    prior_roa = (pd_['net_income'] / prior.total_assets * 100) if (prior and prior.total_assets and pd_['net_income'] is not None) else None
+
+    snapshot = {
+        'revenue': ld['revenue'], 'revenue_yoy': pct_change(ld['revenue'], pd_['revenue']) if pd_ else None,
+        'net_income': ld['net_income'], 'net_income_yoy': pct_change(ld['net_income'], pd_['net_income']) if pd_ else None,
+        'roe': ld['roe'], 'roe_delta': delta(ld['roe'], pd_['roe'] if pd_ else None),
+        'net_margin': ld['net_margin'], 'net_margin_delta': delta(ld['net_margin'], pd_['net_margin'] if pd_ else None),
+        'roa': roa, 'roa_delta': delta(roa, prior_roa),
+    }
+
+    trend_rows = list(reversed(rows[:5]))
+    trend = [{'period': r.period, 'revenue': r.revenue, 'net_income': r.net_income,
+               'net_margin': r.to_dict()['net_margin']} for r in trend_rows]
+
+    key_ratios = [
+        {'metric': 'Net Profit Margin', 'current': ld['net_margin'], 'prior': pd_['net_margin'] if pd_ else None, 'suffix': '%'},
+        {'metric': 'ROE', 'current': ld['roe'], 'prior': pd_['roe'] if pd_ else None, 'suffix': '%'},
+        {'metric': 'ROA', 'current': roa, 'prior': prior_roa, 'suffix': '%'},
+        {'metric': 'Debt to Equity', 'current': ld['debt_equity'], 'prior': pd_['debt_equity'] if pd_ else None, 'suffix': ''},
+    ]
+    for r in key_ratios:
+        r['change'] = delta(r['current'], r['prior'])
+
+    risk_candidates = assess_company_risks(c, latest, prior)
+    opp = assess_company_opportunity(c, latest, prior)
+    risks = [{'severity': 'High' if r[0] == 3 else 'Medium', 'title': r[1], 'metric': r[2]} for r in risk_candidates]
+    opportunities = [{'title': o[0]} for o in ([opp] if opp else [])]
+
+    strengths = []
+    if snapshot['net_margin_delta'] is not None and snapshot['net_margin_delta'] > 0:
+        strengths.append(f"Net margin improved {round(snapshot['net_margin_delta'], 1)}pp to {round(ld['net_margin'], 1)}%")
+    if snapshot['roe_delta'] is not None and snapshot['roe_delta'] > 0:
+        strengths.append(f"ROE improved {round(snapshot['roe_delta'], 1)}pp to {round(ld['roe'], 1)}%")
+    if snapshot['revenue_yoy'] is not None and snapshot['revenue_yoy'] > 0:
+        strengths.append(f"Revenue grew {round(snapshot['revenue_yoy'], 1)}% year over year")
+    if snapshot['net_income_yoy'] is not None and snapshot['net_income_yoy'] > 0:
+        strengths.append(f"Net profit grew {round(snapshot['net_income_yoy'], 1)}% year over year")
+    if ld['score_band'] == 'strong':
+        strengths.append(f"Financial health score of {ld['financial_score']}/100, rated Strong")
+    if not opportunities and not risks and not strengths:
+        strengths.append("No notable swings vs the prior period on record.")
+
+    # ---- Peer comparison (same sector) ----
+    sector = c.sector
+    peer_rows = []
+    if sector:
+        for p in Company.query.filter_by(sector=sector).all():
+            pf = latest_financials(p.id)
+            if pf:
+                peer_rows.append({**pf.to_dict(), 'id': p.id, 'name': p.name})
+    peer_count = len(peer_rows)
+
+    def sector_avg(key):
+        vals = [p[key] for p in peer_rows if p.get(key) is not None]
+        return (sum(vals) / len(vals)) if vals else None
+
+    def sector_top_val(key, reverse=True):
+        vals = [p[key] for p in peer_rows if p.get(key) is not None]
+        return (max(vals) if reverse else min(vals)) if vals else None
+
+    def rank_of(key, reverse=True):
+        vals = sorted([p for p in peer_rows if p.get(key) is not None], key=lambda p: p[key], reverse=reverse)
+        for i, p in enumerate(vals):
+            if p['id'] == company_id:
+                return i + 1
+        return None
+
+    peer_comparison = {
+        'sector': sector, 'peer_count': peer_count,
+        'metrics': [
+            {'label': 'Revenue', 'company': ld['revenue'], 'sector_avg': sector_avg('revenue'), 'top': sector_top_val('revenue'), 'rank': rank_of('revenue'), 'suffix': ''},
+            {'label': 'Net Profit Margin', 'company': ld['net_margin'], 'sector_avg': sector_avg('net_margin'), 'top': sector_top_val('net_margin'), 'rank': rank_of('net_margin'), 'suffix': '%'},
+            {'label': 'ROE', 'company': ld['roe'], 'sector_avg': sector_avg('roe'), 'top': sector_top_val('roe'), 'rank': rank_of('roe'), 'suffix': '%'},
+            {'label': 'Debt to Equity', 'company': ld['debt_equity'], 'sector_avg': sector_avg('debt_equity'), 'top': sector_top_val('debt_equity', reverse=False), 'rank': rank_of('debt_equity', reverse=False), 'suffix': ''},
+            {'label': 'Financial Health Score', 'company': ld['financial_score'], 'sector_avg': sector_avg('financial_score'), 'top': sector_top_val('financial_score'), 'rank': rank_of('financial_score'), 'suffix': ''},
+        ],
+    }
+
+    # ---- NSE-wide benchmark, from the most recently imported market survey ----
+    survey = _latest_survey()
+    benchmark = None
+    sectors_covered = None
+    if survey:
+        def latest_two(metric):
+            series = _survey_period_series(survey, metric)
+            cur = series[-1] if series else None
+            pri = series[-2] if len(series) > 1 else None
+            return cur, pri
+        avg_rev_cur, avg_rev_pri = latest_two('avg_turnover')
+        avg_np_cur, avg_np_pri = latest_two('avg_net_profit')
+        avg_margin_cur, avg_margin_pri = latest_two('avg_profit_margin')
+        cap_cur, cap_pri = latest_two('nse_capitalisation')
+        benchmark = {
+            'survey_title': survey.title, 'companies_surveyed': survey.companies_surveyed,
+            'avg_revenue': avg_rev_cur.value if avg_rev_cur else None,
+            'avg_revenue_change_pct': pct_change(avg_rev_cur.value, avg_rev_pri.value) if avg_rev_cur and avg_rev_pri else None,
+            'avg_net_profit': avg_np_cur.value if avg_np_cur else None,
+            'avg_net_profit_change_pct': pct_change(avg_np_cur.value, avg_np_pri.value) if avg_np_cur and avg_np_pri else None,
+            'avg_profit_margin': avg_margin_cur.value if avg_margin_cur else None,
+            'avg_profit_margin_change_pp': delta(avg_margin_cur.value, avg_margin_pri.value) if avg_margin_cur and avg_margin_pri else None,
+            'avg_profit_margin_period': avg_margin_cur.period_label if avg_margin_cur else None,
+            'avg_profit_margin_prior_period': avg_margin_pri.period_label if avg_margin_pri else None,
+            'nse_capitalisation': cap_cur.value if cap_cur else None,
+            'nse_capitalisation_period': cap_cur.period_label if cap_cur else None,
+            'nse_capitalisation_change': delta(cap_cur.value, cap_pri.value) if cap_cur and cap_pri else None,
+        }
+        sector_counts = {}
+        for sc in survey.sector_companies:
+            sector_counts[sc.sector] = sector_counts.get(sc.sector, 0) + 1
+        sectors_covered = {
+            'total_companies': survey.companies_surveyed,
+            'sectors': sorted([{'sector': s, 'count': n} for s, n in sector_counts.items()], key=lambda x: -x['count']),
+        }
+
+    # ---- Source evidence ----
+    source_docs = SourceDocument.query.filter_by(company_id=company_id).order_by(SourceDocument.uploaded_at.desc()).all()
+    jobs = ImportJob.query.filter_by(company_id=company_id).order_by(ImportJob.started_at.desc()).limit(20).all()
+
+    # ---- Outlook (rule-based: counts real positive vs negative YoY signals) ----
+    signal_values = [snapshot['revenue_yoy'], snapshot['net_income_yoy'], snapshot['roe_delta'], snapshot['net_margin_delta']]
+    pos_signals = sum(1 for x in signal_values if x is not None and x > 0)
+    neg_signals = sum(1 for x in signal_values if x is not None and x < 0)
+    if pos_signals >= 3:
+        outlook_label = 'Positive'
+    elif neg_signals >= 3:
+        outlook_label = 'Negative'
+    else:
+        outlook_label = 'Neutral'
+
+    score_rank = rank_of('financial_score')
+    market_position = None
+    if score_rank and peer_count:
+        third = max(1, round(peer_count / 3))
+        market_position = 'Outperformer' if score_rank <= third else ('Underperformer' if score_rank > peer_count - third else 'In-line')
+
+    confidence = 'High' if prior2 else ('Medium' if prior else 'Low')
+
+    outlook_drivers = []
+    if snapshot['revenue_yoy'] is not None:
+        outlook_drivers.append(f"Revenue {'grew' if snapshot['revenue_yoy'] >= 0 else 'declined'} {round(abs(snapshot['revenue_yoy']), 1)}% vs {pd_['period']}" if pd_ else '')
+    if snapshot['net_margin_delta'] is not None:
+        outlook_drivers.append(f"Net margin {'improved' if snapshot['net_margin_delta'] >= 0 else 'narrowed'} {round(abs(snapshot['net_margin_delta']), 1)}pp")
+    if snapshot['roe_delta'] is not None:
+        outlook_drivers.append(f"ROE {'improved' if snapshot['roe_delta'] >= 0 else 'declined'} {round(abs(snapshot['roe_delta']), 1)}pp")
+    if market_position:
+        outlook_drivers.append(f"{market_position} vs {peer_count - 1} other {sector or 'sector'} peer(s) on Financial Health Score")
+    outlook_drivers = [d for d in outlook_drivers if d]
+
+    return jsonify({
+        'company': c.to_dict(),
+        'has_data': True,
+        'available_periods': [r.period for r in rows],
+        'period': ld['period'], 'currency': ld['currency'],
+        'financial_health': {
+            'score': ld['financial_score'], 'band': ld['score_band'],
+            'assessment': (ld['score_band'] or 'unknown').capitalize(),
+            'outlook': outlook_label, 'market_position': market_position, 'confidence': confidence,
+        },
+        'snapshot': snapshot,
+        'trend': trend,
+        'key_ratios': key_ratios,
+        'strengths': strengths, 'risks': risks, 'opportunities': opportunities,
+        'peer_comparison': peer_comparison,
+        'nse_benchmark': benchmark, 'sectors_covered': sectors_covered,
+        'source_documents': [d.to_dict() for d in source_docs],
+        'import_jobs': [{**j.to_dict(), 'source_url': (SourceDocument.query.get(j.source_document_id).url if j.source_document_id else None)} for j in jobs],
+        'legacy_source': latest.source,
+        'outlook_drivers': outlook_drivers,
+    })
+
+@app.route('/api/companies/<int:company_id>/remuneration')
+def company_remuneration(company_id):
+    """Remuneration-tab data for one company: the latest imported market
+    survey's percentile tables, benefits, and CEO/MD comp, plus which
+    sector the survey itself placed this company in (for any sector-level
+    breakout). Independent of Financials/FinancialPeriod - this is
+    NSE-market benchmark context, never the company's own figures."""
+    c = Company.query.get_or_404(company_id)
+    survey = _latest_survey()
+    if not survey:
+        return jsonify({'has_survey': False})
+
+    matched_sector = _match_survey_sector(survey, c.name)
+    remuneration_stats = {}
+    for rs in survey.remuneration_stats:
+        remuneration_stats.setdefault(rs.category, {})[rs.role] = rs.to_dict()
+
+    return jsonify({
+        'has_survey': True,
+        'survey': survey.to_dict(),
+        'matched_sector': matched_sector,
+        'remuneration_stats': remuneration_stats,
+        'sector_allowances': [sa.to_dict() for sa in survey.sector_allowances],
+        'benefits': [b.to_dict() for b in survey.benefits],
+        'ceo_comp': [cc.to_dict() for cc in survey.ceo_comp],
+    })
 
 @app.route('/api/companies/<int:company_id>/trends')
 def company_trends(company_id):
