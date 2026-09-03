@@ -222,6 +222,91 @@ def fetch_nse_page(url: str = NSE_FINANCIAL_RESULTS_URL, timeout: int = 20) -> s
     return resp.text
 
 
+def fetch_nse_filings_for_year(year: int, base_url: str = NSE_FINANCIAL_RESULTS_URL, max_pages: int = 40):
+    """
+    The results page only shows the newest filings by default (why a plain
+    scan only ever surfaces the current year or two) - this walks further
+    back through the site's pagination to reach older years on demand.
+
+    NSE's page shows year-filter tabs (All, 2026, 2025, ... 2015) but they
+    render without direct href/query-param links, which points to a
+    client-side (JS/AJAX) filter rather than a separate URL per year -
+    something this pure-HTML scraper can't drive. What's used instead is
+    WordPress's standard pagination path (/page/N/), which is a very
+    common, stable convention independent of that filter widget - walking
+    it page by page and keeping only filings whose own title states a date
+    in the requested year.
+
+    Not verified against a live fetch during development (this sandbox's
+    network can't reach nse.co.ke - see fetch_nse_page's docstring) - it
+    degrades safely if the assumption is wrong: two consecutive pages with
+    no filings (a 404 on /page/N/, or an empty results block) stops the
+    walk rather than looping or fabricating results, and every filing
+    found is still tagged with the same match_company/period_guess fields
+    the current-year scan already returns, so nothing downstream needs to
+    treat year-scoped results differently.
+
+    Returns (filings, pages_scanned) - filings is [] if that year truly
+    isn't reachable this way, in which case the batch PDF uploader is the
+    reliable fallback for that year's reports.
+    """
+    matched = []
+    consecutive_empty = 0
+    pages_scanned = 0
+
+    for page_num in range(1, max_pages + 1):
+        url = base_url if page_num == 1 else urljoin(base_url, f"page/{page_num}/")
+        html = None
+        for attempt in range(3):
+            try:
+                html = fetch_nse_page(url)
+                break
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else None
+                if status == 404:
+                    html = None
+                    break  # genuinely past the last page - stop the whole walk, not just retry
+                # other HTTP error (500, 503, rate limit...) - worth a couple retries
+                if attempt == 2:
+                    html = None
+            except Exception:
+                # network hiccup (timeout, connection reset) - also worth retrying
+                if attempt == 2:
+                    html = None
+        if html is None:
+            break
+
+        pages_scanned += 1
+        page_filings = fetch_nse_filings(html, base_url=base_url)
+
+        if not page_filings:
+            consecutive_empty += 1
+            if consecutive_empty >= 2:
+                break
+            continue
+        consecutive_empty = 0
+
+        page_years = []
+        for f in page_filings:
+            yr = None
+            if f.get("period_guess"):
+                m = re.search(r"(19|20)\d{2}", f["period_guess"])
+                if m:
+                    yr = int(m.group(0))
+            f["detected_year"] = yr
+            page_years.append(yr)
+            if yr == year:
+                matched.append(f)
+
+        # Filings are newest-first, so once an entire page is older than
+        # the requested year there's nothing further back worth checking.
+        known_years = [y for y in page_years if y is not None]
+        if known_years and max(known_years) < year:
+            break
+
+    return matched, pages_scanned
+
+
 if __name__ == "__main__":
     # Local test against the reconstructed sample page (see
     # sample_nse_page.html) - proves the parsing/matching logic works

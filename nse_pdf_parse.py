@@ -43,6 +43,16 @@ _HEADING_RES = {
     for stmt, patterns in STATEMENT_HEADINGS.items()
 }
 
+# A real statement heading is just the heading text (optionally with
+# "(Continued)") - nothing else on the line. A table-of-contents entry
+# has the SAME heading text but with trailing page numbers tacked on
+# ("Consolidated Statement of Financial Position 75 - 76"), which is
+# what makes the TOC page get misread as the start of the real
+# statement, pulling every front-matter line after it in as if it were
+# balance-sheet data. Any digit on a heading-matching line is that
+# signal - a genuine heading line never contains one.
+_HEADING_HAS_DIGIT_RE = re.compile(r"\d")
+
 # Lines that end a statement's numeric section even without hitting the
 # next heading (notes sections, page furniture) - stop pulling line items
 # once one of these appears, so we don't scrape footnote numbers.
@@ -63,6 +73,13 @@ CANONICAL_LINE_ITEMS = {
         r"total\s+operating\s+income": 'revenue',
         r"^\s*revenue\b": 'revenue',
         r"total\s+revenue": 'revenue',
+        # NSE's own statement labels its top line "Total income" (a sum of
+        # transaction levies/listing fees/data-vending income, not a
+        # conventional "Revenue" line) - anchored to match only the exact
+        # subtotal line, not "Total comprehensive income" or "Total other
+        # comprehensive income" which also contain "income" but are a
+        # different figure entirely.
+        r"^total\s+income$": 'revenue',
         r"total\s+interest\s+and\s+similar\s+income": 'interest_income',
         r"interest\s+expense": 'interest_expense',
         r"cost\s+of\s+sales": 'cost_of_sales',
@@ -211,6 +228,7 @@ _JUNK_LABEL_RES = [
     re.compile(p, re.IGNORECASE) for p in [
         r"^k?shs\.?[`']?\s*$",                    # "Shs." / "Kshs.`" bare currency-unit fragments
         r"^k?shs\.?\s*['\u2018\u2019]?0*\s*$",     # "Shs '000" style unit-column headers
+        r"^sh\.?\s*['\u2018\u2019]?0*\s*$",        # "Sh'" / "Sh '000'" - same as above without the "k"
         r"^assets\s*k?shs\.?[`']?\s*$",            # "Assets Shs.`" - column header run-together
         r"^liabilities\s*k?shs\.?[`']?\s*$",
         r"^[a-h]\)\s*$",                           # bare lettered legend marker, e.g. "a)" alone
@@ -218,6 +236,15 @@ _JUNK_LABEL_RES = [
         r"^[a-h]\s+liabilities\s*$",               # real reported line item (compare "Total Assets",
         r"^assets\s*$",                            # which has a real qualifier word and is kept)
         r"^liabilities\s*$",
+        r"^for\s+the\s+(year|period)\s+ended\b",   # statement period-end heading, e.g. "FOR THE
+                                                    # YEAR ENDED 31 DECEMBER 2022" - the date it
+                                                    # contains gets misread as an amount otherwise
+        r"^at\s+\d",                               # balance-sheet-style "AT 31 DECEMBER 2022" heading
+        r"^notes?\s*$",                            # bare "Notes" / "Note" column header
+        r"^group\s+company\s*$",                   # "Group Company" - Bank/Company/Group column
+        r"^group\s*$",                             # super-header row, and its bare single-word
+        r"^company\s*$",                           # forms when it wraps onto its own line
+        r"^bank\s*$",
     ]
 ]
 
@@ -239,6 +266,12 @@ def _looks_like_label(label: str) -> bool:
 
 
 def _classify_statement(line: str):
+    # A TOC/contents-page entry repeats the exact heading text followed by
+    # a page number or page range on the same line - reject those so the
+    # contents page never gets mistaken for the start of the real
+    # statement (see _HEADING_HAS_DIGIT_RE's comment above).
+    if _HEADING_HAS_DIGIT_RE.search(line):
+        return None
     for stmt, regexes in _HEADING_RES.items():
         for rx in regexes:
             if rx.search(line):
@@ -319,6 +352,26 @@ def detect_period_label(pages_text) -> str | None:
     return None
 
 
+def detect_prior_period_label(period_label: str | None) -> str | None:
+    """The comparative column a two-column statement carries (NSE's
+    'amount'/'prior_amount' pair - see parse_financials_text's docstring)
+    is always the fiscal year immediately before the detected one: annual
+    reports show exactly one prior year of comparatives, never further
+    back, and NSE's own reports mark that column with a footnote ("*
+    Change in presentation of comparatives") confirming it's the prior
+    FY, not an arbitrary earlier year. Only handles the 'FY<year>' shape
+    detect_period_label() produces - a period label detect_period_label
+    never returns (quarterly, half-year) has no defined prior label here,
+    so callers should treat None as 'don't attempt a second save'."""
+    if not period_label or not period_label.startswith('FY'):
+        return None
+    try:
+        year = int(period_label[2:])
+    except ValueError:
+        return None
+    return f"FY{year - 1}"
+
+
 def detect_company_name(pages_text, max_pages: int = 5) -> str | None:
     """Best-effort company name from the first few pages - most annual
     reports repeat 'X PLC INTEGRATED REPORT AND FINANCIAL STATEMENTS' or
@@ -341,6 +394,35 @@ def detect_company_name(pages_text, max_pages: int = 5) -> str | None:
     return max(counts, key=counts.get).title()
 
 
+def _derive_total_liabilities(items: list) -> dict | None:
+    """NSE's own statement layout never states 'Total Liabilities' as its
+    own labeled line - it only gives 'TOTAL ASSETS' and 'Total equity' /
+    'TOTAL SHAREHOLDERS' FUNDS AND LIABILITIES' (equity+liabilities
+    combined), leaving debt_equity/debt_assets with nothing to compute
+    from downstream (ratios.py, Financial Health Score, Debt/Equity on
+    every Intelligence Report tab). Where a direct 'Total Liabilities'
+    line genuinely wasn't found, derive it the only way the accounting
+    identity allows: total_assets - total_equity. Returns a dict with
+    'amount' and/or 'prior_amount' (only the columns that were
+    computable), or None if total_assets/total_equity themselves weren't
+    both found for a given column."""
+    by_name = {li['normalized_name']: li for li in items if li.get('normalized_name')}
+    if 'total_liabilities' in by_name:
+        return None  # a real line was found - never override it with a derived one
+
+    assets = by_name.get('total_assets')
+    equity = by_name.get('total_equity')
+    if not assets or not equity:
+        return None
+
+    derived = {}
+    if assets.get('amount') is not None and equity.get('amount') is not None:
+        derived['amount'] = assets['amount'] - equity['amount']
+    if assets.get('prior_amount') is not None and equity.get('prior_amount') is not None:
+        derived['prior_amount'] = assets['prior_amount'] - equity['prior_amount']
+    return derived or None
+
+
 def parse_financials_text(pages_text) -> dict:
     """
     pages_text: iterable of (page_number, page_text), 1-indexed.
@@ -353,7 +435,15 @@ def parse_financials_text(pages_text) -> dict:
             "equity":           {"line_items": [...]},
         }}
 
-    Each line item: {label, normalized_name, amount, page, confidence, order_index}
+    Each line item: {label, normalized_name, amount, prior_amount, page,
+    confidence, order_index}. `amount` is the current-period (first)
+    column; `prior_amount` is the comparative prior-period column when
+    the statement's layout has one (NSE's convention: current period,
+    then prior period, per Group/Company block) - None if only one
+    column was present on the line. Callers that only care about the
+    current period can keep reading `amount` exactly as before;
+    `prior_amount` is purely additive.
+
     Statements with zero recognized lines are omitted entirely.
     """
     statements = {stmt: [] for stmt in STATEMENT_HEADINGS}
@@ -386,9 +476,12 @@ def parse_financials_text(pages_text) -> dict:
 
             normalized = _match_canonical(current_stmt, label)
             amount = numbers[0]  # current-period column, by NSE convention
+            prior_amount = numbers[1] if len(numbers) > 1 else None
 
             if normalized not in _SIGNED_ALLOWED:
                 amount = abs(amount)
+                if prior_amount is not None:
+                    prior_amount = abs(prior_amount)
 
             # Dedupe, two levels:
             # 1. Any exact (label, amount) repeat within a statement is
@@ -415,10 +508,31 @@ def parse_financials_text(pages_text) -> dict:
                 'label': label,
                 'normalized_name': normalized,
                 'amount': amount,
+                'prior_amount': prior_amount,
                 'page': page_num,
                 'confidence': 0.9 if normalized else 0.5,
                 'order_index': order_counters[current_stmt],
             })
+
+    # Derived total_liabilities (see _derive_total_liabilities docstring) -
+    # balance sheet only, added as its own synthetic line item so it flows
+    # through _save_one_import's normalized_name -> flat[] pickup exactly
+    # like a directly-parsed line would, just with a lower confidence
+    # score and a label that says plainly it's computed, not read off the
+    # page.
+    bs_items = statements.get('balance_sheet', [])
+    derived = _derive_total_liabilities(bs_items)
+    if derived:
+        order_counters['balance_sheet'] += 1
+        bs_items.append({
+            'label': 'Total Liabilities (derived: Total Assets − Total Equity)',
+            'normalized_name': 'total_liabilities',
+            'amount': derived.get('amount'),
+            'prior_amount': derived.get('prior_amount'),
+            'page': None,
+            'confidence': 0.6,
+            'order_index': order_counters['balance_sheet'],
+        })
 
     return {
         'statements': {
