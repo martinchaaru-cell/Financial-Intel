@@ -128,6 +128,86 @@ def extract_year(period_label):
     m = re.search(r'(19|20)\d{2}', period_label)
     return int(m.group(0)) if m else None
 
+# ---------- FinancialPeriod -> legacy-Financials-shaped view ----------
+# The Intelligence Report (and anything else built against the old flat
+# Financials.to_dict() shape - assess_company_risks/opportunity, peer
+# ranking, etc.) shouldn't have to change just because the underlying
+# numbers now come from the richer FinancialPeriod/FinancialLineItem/
+# CalculatedMetric tables instead of the old 5-field table. This wraps
+# one FinancialPeriod so it can be dropped in wherever a Financials row
+# used to be passed - same .to_dict() shape, same attribute names - but
+# every value is read live from the normalized schema (whatever the PDF
+# parser actually captured, via ratios.py's already-computed
+# CalculatedMetric rows), not from the old table's dual-write.
+
+def _line_item_amount(period, normalized_name):
+    for stmt in period.statements:
+        for li in stmt.line_items:
+            found = _line_item_amount_in_tree(li, normalized_name)
+            if found is not None:
+                return found
+    return None
+
+def _line_item_amount_in_tree(li, normalized_name):
+    if li.normalized_name == normalized_name:
+        return li.amount
+    for child in li.children:
+        found = _line_item_amount_in_tree(child, normalized_name)
+        if found is not None:
+            return found
+    return None
+
+class PeriodFinancialsView:
+    """Duck-types the old Financials model closely enough to be used
+    anywhere one was: same attributes, same to_dict() shape."""
+    def __init__(self, period):
+        self.period_obj = period
+        self.id = period.id
+        self.period = period.period_label
+        self.currency = period.currency
+        self.revenue = _line_item_amount(period, 'revenue')
+        self.net_income = _line_item_amount(period, 'net_income')
+        self.total_assets = _line_item_amount(period, 'total_assets')
+        self.total_liabilities = _line_item_amount(period, 'total_liabilities')
+        self.total_equity = _line_item_amount(period, 'total_equity')
+        metrics = {m.metric_name: m.value for m in period.calculated_metrics}
+        self._net_margin = metrics.get('net_margin')
+        self._roe = metrics.get('roe')
+        self._roa = metrics.get('roa')
+        self._debt_equity = metrics.get('debt_equity')
+        has_source = any(s.source_document_id for s in period.statements)
+        self.source = 'nse_import' if has_source else 'manual'
+
+    def to_dict(self):
+        net_margin = self._net_margin
+        roe = self._roe
+        debt_equity = self._debt_equity
+        score = calc_financial_score(net_margin, roe, debt_equity)
+        return {
+            'id': self.id, 'period': self.period, 'currency': self.currency,
+            'revenue': self.revenue, 'net_income': self.net_income,
+            'total_assets': self.total_assets, 'total_liabilities': self.total_liabilities,
+            'total_equity': self.total_equity, 'source': self.source,
+            'net_margin': net_margin, 'roe': roe, 'roa': self._roa, 'debt_equity': debt_equity,
+            'financial_score': score, 'score_band': score_band(score),
+        }
+
+def _ordered_periods(company_id):
+    """All of a company's FinancialPeriods, newest fiscal year first -
+    same ordering rule get_period_detail_view already uses, so the
+    Intelligence Report and the Company Detail page never disagree about
+    which period is 'latest'."""
+    periods = FinancialPeriod.query.filter_by(company_id=company_id).all()
+    return sorted(
+        periods,
+        key=lambda p: (p.fiscal_year if p.fiscal_year is not None else extract_year(p.period_label) or 0),
+        reverse=True,
+    )
+
+def latest_period_view(company_id):
+    periods = _ordered_periods(company_id)
+    return PeriodFinancialsView(periods[0]) if periods else None
+
 def bulk_financials_by_company(company_ids=None):
     """One query for every company's full financials history, instead of
     a separate query per company (the N+1 pattern latest_financials() /
@@ -976,6 +1056,22 @@ def _save_one_import(data):
             )
             db.session.add(c)
             db.session.commit()
+        else:
+            # Backfill metadata an older/earlier-created row is missing -
+            # e.g. a company first added before sector matching existed,
+            # or before this filing's match included a sector at all.
+            # Never overwrites a value that's already set (this only fills
+            # gaps, it doesn't treat the current save as more authoritative
+            # than whatever's already there).
+            changed = False
+            if not (c.sector or '').strip() and (data.get('sector') or '').strip():
+                c.sector = data['sector'].strip()
+                changed = True
+            if not (c.ticker or '').strip() and ticker:
+                c.ticker = ticker
+                changed = True
+            if changed:
+                db.session.commit()
         company_id = c.id
     else:
         if Company.query.get(company_id) is None:
@@ -986,7 +1082,15 @@ def _save_one_import(data):
         return {'error': 'period is required'}, 400
 
     statements_payload = data.get('statements') or {}
-    if not statements_payload:
+    # A dict with statement-type keys but empty `line_items` lists (e.g.
+    # {"income_statement": {"line_items": []}}) is truthy and used to slip
+    # past this check, which let a FinancialPeriod get created (or an
+    # existing one reused) with nothing actually saved to it - an "empty"
+    # period that then shows up with a Financial Year selector but no
+    # data and no ratios. Require at least one real line item, not just a
+    # non-empty dict.
+    has_line_items = any((s or {}).get('line_items') for s in statements_payload.values())
+    if not statements_payload or not has_line_items:
         return {'error': 'statements (with at least one line item) is required'}, 400
 
     # Optional source document, so line items can point back to "which PDF,
@@ -1207,6 +1311,23 @@ def nse_upload_batch():
     files = request.files.getlist('files')
     if not files:
         return jsonify({'error': "No files uploaded (expected form field 'files', one entry per file)."}), 400
+    if len(files) > 10:
+        return jsonify({'error': f'Too many files ({len(files)}). Upload at most 10 at a time.'}), 400
+
+    # Optional: called from a specific Company Detail page ("Upload
+    # Documents" there, as opposed to the general multi-company import).
+    # When present, every file in this batch is attributed to this one
+    # company directly - detect_company_name()/match_company() are
+    # skipped entirely, so a report with an unusual cover page (or one
+    # for a subsidiary sharing a similar name) can never get attributed
+    # to the wrong company. Only the fiscal year still needs detecting
+    # per file.
+    forced_company_id = request.form.get('company_id', type=int)
+    forced_company = None
+    if forced_company_id:
+        forced_company = Company.query.get(forced_company_id)
+        if forced_company is None:
+            return jsonify({'error': f'company_id {forced_company_id} not found'}), 404
 
     existing_by_name = {c.name.strip().lower(): c.id for c in Company.query.all()}
     existing_by_ticker = {c.ticker.strip().lower(): c.id for c in Company.query.all() if c.ticker}
@@ -1230,7 +1351,6 @@ def nse_upload_batch():
             results.append({'filename': filename, 'ok': False, 'error': f'Could not open PDF: {e}'})
             continue
 
-        detected_name = detect_company_name(pages_text)
         period_label = detect_period_label(pages_text)
         if not period_label:
             results.append({
@@ -1240,14 +1360,21 @@ def nse_upload_batch():
             })
             continue
 
-        matched, score = (match_company(detected_name) if detected_name else (None, 0.0))
+        if forced_company:
+            detected_name = forced_company.name
+            matched, score = {'name': forced_company.name, 'ticker': forced_company.ticker,
+                               'sector': forced_company.sector}, 1.0
+            company_id = forced_company.id
+        else:
+            detected_name = detect_company_name(pages_text)
+            matched, score = (match_company(detected_name) if detected_name else (None, 0.0))
 
-        company_id = None
+            company_id = None
+            if matched:
+                company_id = existing_by_ticker.get(matched['ticker'].lower()) or existing_by_name.get(matched['name'].strip().lower())
+            if not company_id and detected_name:
+                company_id = existing_by_name.get(detected_name.strip().lower())
         created_company = False
-        if matched:
-            company_id = existing_by_ticker.get(matched['ticker'].lower()) or existing_by_name.get(matched['name'].strip().lower())
-        if not company_id and detected_name:
-            company_id = existing_by_name.get(detected_name.strip().lower())
 
         try:
             parsed = parse_financials_pdf(pdf_bytes)
@@ -1794,14 +1921,16 @@ def _match_survey_sector(survey, company_name):
 @app.route('/api/companies/<int:company_id>/intelligence-report')
 def company_intelligence_report(company_id):
     """Everything the 8-tab Intelligence Report page needs for one company,
-    in one call. Built entirely from figures already computed elsewhere in
-    the app (Financials.to_dict(), assess_company_risks/opportunity, the
-    latest imported MarketSurvey) so nothing here can disagree with what
-    the Companies/Rankings/Alerts pages already show. Fields the schema
-    genuinely has no data for (gross/operating margin, EPS, stock
+    in one call. Reads live from FinancialPeriod/FinancialLineItem/
+    CalculatedMetric (via PeriodFinancialsView) - the same normalized data
+    the Company Detail page and the PDF import pipeline use - so this
+    reflects everything actually captured from an imported filing, not
+    just the 5 fields the old flat Financials table tracked. Fields the
+    schema genuinely has no data for (gross/operating margin, EPS, stock
     return/market cap) are left out rather than estimated."""
     c = Company.query.get_or_404(company_id)
-    rows = Financials.query.filter_by(company_id=company_id).order_by(Financials.period.desc()).all()
+    periods = _ordered_periods(company_id)
+    rows = [PeriodFinancialsView(p) for p in periods]
     if not rows:
         return jsonify({'company': c.to_dict(), 'has_data': False, 'available_periods': []})
 
@@ -1816,8 +1945,12 @@ def company_intelligence_report(company_id):
     def delta(cur, pri):
         return (cur - pri) if (cur is not None and pri is not None) else None
 
-    roa = (ld['net_income'] / latest.total_assets * 100) if (latest.total_assets and ld['net_income'] is not None) else None
-    prior_roa = (pd_['net_income'] / prior.total_assets * 100) if (prior and prior.total_assets and pd_['net_income'] is not None) else None
+    # roa comes straight from CalculatedMetric (ratios.py already computes
+    # it whenever total_assets is available) rather than being re-derived
+    # here, so it can never disagree with what ratios.py/the Company
+    # Detail page show for the same period.
+    roa = ld['roa']
+    prior_roa = pd_['roa'] if pd_ else None
 
     snapshot = {
         'revenue': ld['revenue'], 'revenue_yoy': pct_change(ld['revenue'], pd_['revenue']) if pd_ else None,
@@ -1864,7 +1997,7 @@ def company_intelligence_report(company_id):
     peer_rows = []
     if sector:
         for p in Company.query.filter_by(sector=sector).all():
-            pf = latest_financials(p.id)
+            pf = latest_period_view(p.id)
             if pf:
                 peer_rows.append({**pf.to_dict(), 'id': p.id, 'name': p.name})
     peer_count = len(peer_rows)

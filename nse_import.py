@@ -46,6 +46,8 @@ NSE_COMPANIES = [
     {"name": "Sameer Africa", "ticker": "SMER", "sector": "Automobiles & Accessories"},
     # --- Banking ---
     {"name": "Absa Bank Kenya", "ticker": "ABSA", "sector": "Banking"},
+    {"name": "Family Bank", "ticker": "FMLY", "sector": "Banking",
+     "aliases": ["Family Bank Limited"]},
     {"name": "BK Group", "ticker": "BKG", "sector": "Banking"},
     {"name": "Co-operative Bank of Kenya", "ticker": "COOP", "sector": "Banking"},
     {"name": "Diamond Trust Bank Kenya", "ticker": "DTK", "sector": "Banking"},
@@ -139,10 +141,23 @@ def extract_company_title(filing_title: str) -> str:
     return parts[0].strip() if parts else filing_title.strip()
 
 
-def match_company(filing_title: str, companies=None, min_score: float = 0.55):
+def match_company(filing_title: str, companies=None, min_score: float = 0.75):
     """
     Best-effort fuzzy match of a filing title to a company in our hardcoded
     list. Returns (company_dict_or_None, score).
+
+    min_score was 0.55 until a real false positive was found: a filing for
+    "Family Bank Limited" (a company not yet in NSE_COMPANIES at the time)
+    scored 0.6 against "Absa Bank Kenya" - both are short "X Bank ..."
+    strings, which inflates difflib's character-overlap ratio even though
+    the names aren't a real match - and got silently saved into Absa's
+    records. Genuine matches (including aliased/reworded titles) score at
+    or near 1.0 here because of the substring boost below, so 0.75 leaves
+    a wide safety margin above that false positive while still accepting
+    real matches. A title that now falls under 0.75 comes back as
+    NO MATCH rather than guessing - which is the correct failure mode: an
+    unmatched filing needs a human (or an NSE_COMPANIES addition), a
+    wrongly-matched one silently corrupts another company's data.
     """
     companies = companies if companies is not None else NSE_COMPANIES
     candidate_name = _normalize(extract_company_title(filing_title))
@@ -251,8 +266,10 @@ def fetch_nse_filings_for_year(year: int, base_url: str = NSE_FINANCIAL_RESULTS_
     reliable fallback for that year's reports.
     """
     matched = []
+    seen_pdf_urls = set()
     consecutive_empty = 0
     pages_scanned = 0
+    prev_page_signature = None
 
     for page_num in range(1, max_pages + 1):
         url = base_url if page_num == 1 else urljoin(base_url, f"page/{page_num}/")
@@ -279,6 +296,20 @@ def fetch_nse_filings_for_year(year: int, base_url: str = NSE_FINANCIAL_RESULTS_
         pages_scanned += 1
         page_filings = fetch_nse_filings(html, base_url=base_url)
 
+        # Guard against fake/non-functioning pagination: the NSE results
+        # page's /page/N/ URLs are a guessed WordPress convention (see this
+        # function's docstring) and were never verified live. If the site
+        # doesn't actually support them, it can silently re-serve page 1's
+        # content for every "page" instead of 404ing - which, without this
+        # check, would re-walk the exact same filings up to max_pages times
+        # (e.g. 40 pages x 2 filings = 80 "results" that are really one
+        # filing repeated). Compare this page's filings (by pdf_url) against
+        # the previous page's and stop the walk the moment they match.
+        page_signature = tuple(sorted(f["pdf_url"] for f in page_filings))
+        if page_signature and page_signature == prev_page_signature:
+            break
+        prev_page_signature = page_signature
+
         if not page_filings:
             consecutive_empty += 1
             if consecutive_empty >= 2:
@@ -295,7 +326,11 @@ def fetch_nse_filings_for_year(year: int, base_url: str = NSE_FINANCIAL_RESULTS_
                     yr = int(m.group(0))
             f["detected_year"] = yr
             page_years.append(yr)
-            if yr == year:
+            # Same filing can legitimately appear on more than one listing
+            # page (e.g. a "Latest" section plus the paginated archive) -
+            # dedupe by pdf_url so it's only counted/returned once.
+            if yr == year and f["pdf_url"] not in seen_pdf_urls:
+                seen_pdf_urls.add(f["pdf_url"])
                 matched.append(f)
 
         # Filings are newest-first, so once an entire page is older than

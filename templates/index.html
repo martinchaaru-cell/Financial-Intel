@@ -596,11 +596,11 @@ tr.li-child td:first-child{color:var(--text-dim);}
 <div class="modal-overlay" id="uploadReportsModal">
   <div class="modal-box" style="max-width:560px;">
     <div class="modal-head">
-      <h2>Upload Annual Reports</h2>
+      <h2 id="uploadReportsTitle">Upload Annual Reports</h2>
       <span class="modal-close" onclick="closeUploadReportsModal()">✕</span>
     </div>
-    <p style="color:var(--text-secondary,#666);font-size:13px;margin:0 0 12px;">
-      Select one or more annual report PDFs — any mix of companies and years.
+    <p id="uploadReportsDesc" style="color:var(--text-secondary,#666);font-size:13px;margin:0 0 12px;">
+      Select up to 10 annual report PDFs — any mix of companies and years.
       Each file is auto-identified by its own content (company name, fiscal year)
       and saved directly, no review step. Re-uploading a report for a company/year
       already on file updates that period instead of duplicating it.
@@ -1012,23 +1012,14 @@ async function renderOverview(){
     </div>
 
     <div class="panel">
-      <div class="panel-head"><h2>Import from NSE</h2></div>
+      <div class="panel-head"><h2>Import Reports</h2></div>
       <div style="font-size:12px;color:var(--text-faint);margin-bottom:10px;">
-        Pulls filed financial statements straight from NSE's public results page and matches them to companies.
-        The site's front page normally only shows the current year or two - pick an earlier year to scan further back
-        (older years are best-effort: if nothing turns up, use "Upload Annual Reports" on the Companies page instead).
+        Upload annual report or financial statement PDFs directly — up to 10 at a time, any mix of companies
+        and years. Each file is identified from its own content and saved automatically, no review step.
+        To attribute every file in a batch to one company with no risk of mismatch, use "Upload Documents"
+        on that company's own page instead.
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
-        <label for="nse-scan-year" style="font-size:12px;color:var(--text-faint);">Year:</label>
-        <select id="nse-scan-year">
-          <option value="">Current (default)</option>
-          ${Array.from({length: new Date().getFullYear() - 2012}, (_, i) => new Date().getFullYear() - i)
-            .map(y => `<option value="${y}">${y}</option>`).join('')}
-        </select>
-        <button onclick="scanNSE()">Scan NSE Filings</button>
-      </div>
-      <div id="nse-scan-status" class="empty hidden"></div>
-      <div id="nse-scan-results"></div>
+      <button onclick="openUploadReportsModal()">⭱ Upload Annual Reports</button>
     </div>
   `;
 }
@@ -1223,16 +1214,40 @@ function closeAddCompanyModal(){
 
 /* ---------- MULTI-FILE ANNUAL REPORT UPLOAD ---------- */
 
+const UPLOAD_MAX_FILES = 10;
 let uploadReportsFiles = [];
+// When set, every file in the batch is saved straight to this company
+// (no auto-detection/matching) - set by openUploadReportsModal(companyId)
+// from the Company Detail page; left null for the general, multi-company
+// upload entry point on the Companies page.
+let uploadReportsCompanyId = null;
+let uploadReportsCompanyName = null;
 
-function openUploadReportsModal(){
+function openUploadReportsModal(companyId, companyName){
   uploadReportsFiles = [];
+  uploadReportsCompanyId = companyId || null;
+  uploadReportsCompanyName = companyName || null;
   document.getElementById('uploadReportsInput').value = '';
   document.getElementById('uploadReportsFileList').innerHTML = '';
   document.getElementById('uploadReportsStatus').textContent = '';
   document.getElementById('uploadReportsResults').innerHTML = '';
   document.getElementById('uploadReportsSubmitBtn').disabled = true;
   document.getElementById('uploadReportsSubmitBtn').textContent = 'Upload & Save';
+
+  const titleEl = document.getElementById('uploadReportsTitle');
+  const descEl = document.getElementById('uploadReportsDesc');
+  if (uploadReportsCompanyId) {
+    titleEl.textContent = `Upload Documents — ${uploadReportsCompanyName || 'this company'}`;
+    descEl.textContent = `Select up to ${UPLOAD_MAX_FILES} annual report or financial statement PDFs for ` +
+      `${uploadReportsCompanyName || 'this company'}. Each file's fiscal year is detected automatically and ` +
+      `saved directly to this company - no company matching, so it can't be attributed to the wrong one. ` +
+      `Re-uploading a report for a year already on file updates that period instead of duplicating it.`;
+  } else {
+    titleEl.textContent = 'Upload Annual Reports';
+    descEl.textContent = `Select up to ${UPLOAD_MAX_FILES} annual report PDFs — any mix of companies and years. ` +
+      `Each file is auto-identified by its own content (company name, fiscal year) and saved directly, no review ` +
+      `step. Re-uploading a report for a company/year already on file updates that period instead of duplicating it.`;
+  }
   document.getElementById('uploadReportsModal').classList.add('open');
 }
 function closeUploadReportsModal(){
@@ -1240,16 +1255,29 @@ function closeUploadReportsModal(){
 }
 
 function onUploadReportsFilesChosen(fileList){
-  uploadReportsFiles = Array.from(fileList);
+  const chosen = Array.from(fileList);
   const listEl = document.getElementById('uploadReportsFileList');
-  if (!uploadReportsFiles.length) {
-    listEl.innerHTML = '';
-    document.getElementById('uploadReportsSubmitBtn').disabled = true;
+  const submitBtn = document.getElementById('uploadReportsSubmitBtn');
+
+  if (chosen.length > UPLOAD_MAX_FILES) {
+    uploadReportsFiles = chosen.slice(0, UPLOAD_MAX_FILES);
+    listEl.innerHTML = `<div style="color:var(--red,#c0392b);margin-bottom:4px;">
+        You selected ${chosen.length} files — only the first ${UPLOAD_MAX_FILES} will be uploaded.
+        Do the rest in a second batch.</div>` +
+      uploadReportsFiles.map(f => `<div>📄 ${escapeHtml(f.name)} <span style="color:var(--text-secondary,#666);">(${(f.size/1024/1024).toFixed(1)} MB)</span></div>`).join('');
+    submitBtn.disabled = false;
     return;
   }
-  listEl.innerHTML = `<div style="color:var(--text-secondary,#666);margin-bottom:4px;">${uploadReportsFiles.length} file(s) selected:</div>` +
+
+  uploadReportsFiles = chosen;
+  if (!uploadReportsFiles.length) {
+    listEl.innerHTML = '';
+    submitBtn.disabled = true;
+    return;
+  }
+  listEl.innerHTML = `<div style="color:var(--text-secondary,#666);margin-bottom:4px;">${uploadReportsFiles.length} of ${UPLOAD_MAX_FILES} file(s) selected:</div>` +
     uploadReportsFiles.map(f => `<div>📄 ${escapeHtml(f.name)} <span style="color:var(--text-secondary,#666);">(${(f.size/1024/1024).toFixed(1)} MB)</span></div>`).join('');
-  document.getElementById('uploadReportsSubmitBtn').disabled = false;
+  submitBtn.disabled = false;
 }
 
 async function submitUploadReports(){
@@ -1264,6 +1292,7 @@ async function submitUploadReports(){
 
   const fd = new FormData();
   uploadReportsFiles.forEach(f => fd.append('files', f));
+  if (uploadReportsCompanyId) fd.append('company_id', uploadReportsCompanyId);
 
   try {
     const res = await fetch('/api/import/upload-batch', { method: 'POST', body: fd });
@@ -1280,7 +1309,7 @@ async function submitUploadReports(){
         return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);">
           ✅ <strong>${escapeHtml(r.filename)}</strong> → ${escapeHtml(r.company_name || 'Unknown')}
           (${escapeHtml(r.period)})${r.created_company ? ' <span style="color:var(--amber,#b8860b);">— new company created</span>' : ''}
-          ${r.match_score !== undefined && r.match_score !== null ? `<span style="color:var(--text-secondary,#666);"> · match ${(r.match_score*100).toFixed(0)}%</span>` : ''}
+          ${r.match_score !== undefined && r.match_score !== null && !uploadReportsCompanyId ? `<span style="color:var(--text-secondary,#666);"> · match ${(r.match_score*100).toFixed(0)}%</span>` : ''}
         </div>`;
       }
       return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);color:var(--red,#c0392b);">
@@ -1289,7 +1318,12 @@ async function submitUploadReports(){
     }).join('');
     btn.textContent = 'Upload & Save';
     if (data.saved > 0) {
-      await renderCompaniesPage(coFilterText);  // refresh the table with new/updated companies
+      if (uploadReportsCompanyId) {
+        closeUploadReportsModal();
+        await renderCompanyOverviewTab(uploadReportsCompanyId);  // refresh this company's page with the new period(s)
+      } else {
+        await renderCompaniesPage(coFilterText);  // refresh the table with new/updated companies
+      }
     }
   } catch (e) {
     statusEl.textContent = 'Upload failed: ' + e.message;
@@ -1313,8 +1347,21 @@ async function scanNSE(){
   try {
     const qs = year ? `?year=${encodeURIComponent(year)}` : '';
     const res = await fetch('/api/import/nse/scan' + qs);
-    const data = await res.json();
-    if (!res.ok) { statusEl.textContent = data.error || 'Scan failed.'; return; }
+    // Read as text first - a slow year-scan can hit the platform's own
+    // gateway timeout, which returns an HTML error page rather than JSON.
+    // Parsing that straight with res.json() throws a cryptic "Unexpected
+    // token '<'" instead of telling the user what actually happened.
+    const raw = await res.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch (parseErr) {
+      statusEl.textContent = res.ok
+        ? 'Scan failed: the server returned an unexpected (non-JSON) response.'
+        : `Scan failed (HTTP ${res.status}). The scan likely took too long and timed out - try a narrower year or try again.`;
+      return;
+    }
+    if (!res.ok) { statusEl.textContent = (data && data.error) || 'Scan failed.'; return; }
     nseFilingsCache = data.filings || [];
     statusEl.classList.add('hidden');
     if (data.note) {
@@ -2788,7 +2835,10 @@ async function renderCompanyOverviewTab(companyId){
   if (!currentPeriodsCache.length) {
     app.innerHTML = `
       <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
-      <div class="panel"><div class="empty">No financial periods recorded yet for ${escapeHtml(c.name)}. Add one below.</div></div>
+      <div class="panel">
+        <div class="empty">No financial periods recorded yet for ${escapeHtml(c.name)}.</div>
+        <button style="margin-top:10px;" onclick="openUploadReportsModal(${companyId}, ${JSON.stringify(c.name)})">⭱ Upload Documents</button>
+      </div>
       ${await renderCompanyDetailLegacyBody(companyId)}`;
     return;
   }
@@ -2830,6 +2880,7 @@ async function renderCompanyOverviewTab(companyId){
           <div class="fy-label">Currency</div>
           <div style="font-size:15px;font-weight:700;">${escapeHtml((dv && dv.period && dv.period.currency) || 'KES')}</div>
         </div>
+        <button class="secondary" style="margin:0;" onclick="openUploadReportsModal(${companyId}, ${JSON.stringify(c.name)})">⭱ Upload Documents</button>
         <button class="secondary" style="margin:0;" onclick="toggleEditDataPanel()">✏️ Add / Edit Data</button>
         ${detailExportMenuHtml(companyId)}
         <button class="icon-btn" title="Delete company" onclick="deleteCurrentCompany()">🗑️</button>
