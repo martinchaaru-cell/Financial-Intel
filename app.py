@@ -60,6 +60,22 @@ if database_url.startswith('postgres://'):
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Hosted Postgres (Replit's provisioned DB is Neon-backed) silently drops
+# idle connections after a short window. Without this, SQLAlchemy's pool
+# can hand out a connection that the server already closed - the driver
+# only discovers this mid-query, which surfaces as
+# "psycopg2.OperationalError: SSL connection has been closed unexpectedly"
+# on whatever query happens to run next (e.g. the very first
+# Company.query.get() in an upload request). pool_pre_ping runs a
+# cheap "SELECT 1" before handing out a pooled connection and
+# transparently reconnects if it's dead; pool_recycle proactively retires
+# connections before the server's own idle timeout gets a chance to kill
+# them mid-request.
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 280,
+}
+
 # Hard cap on request body size, so an oversized upload is rejected up
 # front with a clear JSON error instead of being read into memory and
 # failing unpredictably later. 60 MB comfortably covers a batch of up to

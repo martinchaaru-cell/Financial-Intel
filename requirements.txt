@@ -6,3 +6,4 @@ psycopg2-binary
 pdfplumber
 pypdf
 python-docx
+docx
