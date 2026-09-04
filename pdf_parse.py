@@ -467,30 +467,88 @@ _REPORT_TITLE_YEAR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Last-resort signal: a bare 4-digit year in the uploaded filename itself
+# (e.g. "Equity-Group-Holdings-PLC-2024-Integrated-Report...pdf"). This is
+# NOT a substitute for reading the statement pages - a file can be renamed
+# or have no year in its name at all - but every comparative statement in
+# a two-year report mentions the prior year almost as often as the current
+# one (each line has a current-period column and a prior-period column),
+# so raw occurrence-counting alone can be a near coin-flip. The filename
+# year is used only to break that kind of tie, never to overrule a clear
+# textual majority.
+_FILENAME_YEAR_RE = re.compile(r"(20\d{2}|19\d{2})")
 
-def detect_period_label(pages_text) -> str | None:
-    """Scan every page for a statement period-end date ('FOR THE YEAR ENDED
-    31 DECEMBER 2022', 'AT 31 DECEMBER 2022') and return the most common
-    year found as 'FY<year>'. Falls back to the report's cover-page year if
-    no statement-level date is found. Returns None if neither is present -
+
+def _filename_year(filename: str | None) -> str | None:
+    if not filename:
+        return None
+    years = _FILENAME_YEAR_RE.findall(filename)
+    return years[-1] if years else None
+
+
+def detect_period_label(pages_text, filename: str | None = None) -> str | None:
+    """Determine the reporting fiscal year and return it as 'FY<year>'.
+
+    Every page is scanned for statement period-end dates ('FOR THE YEAR
+    ENDED 31 DECEMBER 2022', 'AT 31 DECEMBER 2022'). Two-year comparative
+    statements mention both the current and prior year on almost every
+    line (current-period column + prior-period column), so a naive
+    "most frequent year wins" count is only a couple of matches away from
+    picking the WRONG year on files where the two years are close in
+    count - which is most of them. To avoid that:
+
+      1. Count each year once per PAGE (its first match), not once per
+         line. A page repeating "Year ended 31 December 2024" as a column
+         header alongside a dozen "2023" comparative figures should only
+         contribute one vote per year, not vote by line-item count.
+      2. If that still leaves a tie or a margin of 1, prefer the higher
+         year - a report's reporting year is never earlier than its
+         comparative year, so on genuine ambiguity the later year is the
+         better guess.
+      3. If a filename year is available and matches one of the two
+         leading candidates, prefer it as the final tie-breaker over the
+         "prefer higher year" rule, since it's an independent signal from
+         outside the document body.
+
+    Falls back to the report's cover-page year (_REPORT_TITLE_YEAR_RE) if
+    no statement-level date is found anywhere, then to the filename year.
+    Returns None only if none of these signals are present at all -
     callers should treat that as 'ask the user', not guess further."""
-    year_counts = {}
+    year_page_counts: dict[str, int] = {}
     for _, page_text in pages_text:
+        years_on_this_page: set[str] = set()
         for raw_line in page_text.splitlines():
             line = raw_line.strip()
             for rx in _PERIOD_END_RES:
                 m = rx.search(line)
                 if m:
-                    year_counts[m.group(1)] = year_counts.get(m.group(1), 0) + 1
+                    years_on_this_page.add(m.group(1))
+        for y in years_on_this_page:
+            year_page_counts[y] = year_page_counts.get(y, 0) + 1
 
-    if year_counts:
-        best_year = max(year_counts, key=year_counts.get)
-        return f"FY{best_year}"
+    fname_year = _filename_year(filename)
+
+    if year_page_counts:
+        ranked = sorted(year_page_counts.items(), key=lambda kv: (-kv[1], -int(kv[0])))
+        top_year, top_count = ranked[0]
+        if len(ranked) > 1:
+            second_year, second_count = ranked[1]
+            if top_count - second_count <= 1:
+                # Near-tie: let a filename year decide if it names one of
+                # the two contenders; otherwise fall back to the higher
+                # year, per the docstring above.
+                if fname_year in (top_year, second_year):
+                    return f"FY{fname_year}"
+                top_year = max(top_year, second_year, key=int)
+        return f"FY{top_year}"
 
     for _, page_text in pages_text:
         m = _REPORT_TITLE_YEAR_RE.search(page_text)
         if m:
             return f"FY{m.group(1)}"
+
+    if fname_year:
+        return f"FY{fname_year}"
 
     return None
 
@@ -515,7 +573,31 @@ def detect_prior_period_label(period_label: str | None) -> str | None:
     return f"FY{year - 1}"
 
 
-def detect_company_name(pages_text, max_pages: int = 400) -> str | None:
+def _filename_company_candidate(filename: str | None) -> str | None:
+    """Best-effort company name straight out of the uploaded filename, e.g.
+    'Equity-Group-Holdings-PLC-2024-Integrated-Report...pdf' ->
+    'Equity Group Holdings PLC'. Strips the extension, replaces separators
+    with spaces, and cuts the string at the first token that signals
+    "the report metadata starts here, not the company name" - a 4-digit
+    year, or the words that head every annual-report filename pattern seen
+    in practice (Integrated/Annual Report, Financial Statement(s)). This is
+    ONLY meant to be used as a tie-breaker/fallback alongside content-based
+    detection (see detect_company_name) - a renamed file or one with no
+    year/company in its name at all simply yields None here, which callers
+    should treat the same as "no filename signal available"."""
+    if not filename:
+        return None
+    stem = re.sub(r"\.pdf$", "", filename, flags=re.IGNORECASE)
+    stem = re.sub(r"[_\-]+", " ", stem).strip()
+    cut_re = re.compile(
+        r"\b(?:19|20)\d{2}\b|\bintegrated\b|\bannual\b|\bfinancial\b", re.IGNORECASE
+    )
+    m = cut_re.search(stem)
+    candidate = stem[:m.start()].strip() if m else stem
+    return candidate or None
+
+
+def detect_company_name(pages_text, max_pages: int = 400, filename: str | None = None) -> str | None:
     """Best-effort company name from the first few pages - most annual
     reports repeat 'X PLC INTEGRATED REPORT AND FINANCIAL STATEMENTS' or
     similar as a running header, which is a more reliable signal than the
@@ -534,6 +616,14 @@ def detect_company_name(pages_text, max_pages: int = 400) -> str | None:
     highly enough to be a confident real match; only falls back to
     "most frequent candidate" when nothing scores well (e.g. a company
     not yet in the roster), same as before.
+
+    If a filename is supplied and content-based detection finds nothing
+    at all (no candidate name anywhere in the scanned pages), the
+    filename's own leading text (see _filename_company_candidate) is used
+    as a last-resort fallback rather than returning None outright. It is
+    never used to override a content-based candidate - a company's own
+    report text is a stronger signal than how the file happened to be
+    named on the portal it was downloaded from.
     """
     name_re = re.compile(
         r"([A-Z][A-Z .&'\-]{3,60}?(?:PLC|LIMITED|LTD|GROUP|HOLDINGS))\b",
@@ -547,8 +637,10 @@ def detect_company_name(pages_text, max_pages: int = 400) -> str | None:
             if m:
                 name = m.group(1).strip()
                 counts[name] = counts.get(name, 0) + 1
+
     if not counts:
-        return None
+        fname_candidate = _filename_company_candidate(filename)
+        return fname_candidate
 
     try:
         from company_directory import match_company

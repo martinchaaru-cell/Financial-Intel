@@ -1242,7 +1242,7 @@ def upload_documents_batch():
 
         pages_text = extracted['pages_text']
 
-        period_label = detect_period_label(pages_text)
+        period_label = detect_period_label(pages_text, filename=filename)
         if not period_label:
             results.append({
                 'filename': filename, 'ok': False,
@@ -1257,7 +1257,7 @@ def upload_documents_batch():
                                'sector': forced_company.sector}, 1.0
             company_id = forced_company.id
         else:
-            detected_name = detect_company_name(pages_text)
+            detected_name = detect_company_name(pages_text, filename=filename)
             matched, score = (match_company(detected_name) if detected_name else (None, 0.0))
 
             company_id = None
