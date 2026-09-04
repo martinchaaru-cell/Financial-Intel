@@ -1,9 +1,8 @@
 Flask
 Flask-SQLAlchemy
-requests
 pandas
 openpyxl
 psycopg2-binary
-beautifulsoup4
 pdfplumber
+pypdf
 python-docx

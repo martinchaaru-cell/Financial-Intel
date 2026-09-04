@@ -16,9 +16,9 @@ from models import (
     SurveyRemunerationStat, SurveySectorAllowance, SurveyBenefit, SurveyCEOComp,
 )
 from ratios import calculate_ratios
-from nse_import import fetch_nse_filings, fetch_nse_page, fetch_nse_filings_for_year, NSE_FINANCIAL_RESULTS_URL, NSE_COMPANIES, match_company
-from nse_pdf_parse import (
-    fetch_and_parse_pdf, match_canonical_label, parse_financials_pdf,
+from company_directory import match_company
+from pdf_parse import (
+    match_canonical_label, parse_financials_pdf, extract_pdf_document,
     detect_period_label, detect_prior_period_label, detect_company_name,
 )
 from survey_pdf_parse import parse_survey_pdf
@@ -59,7 +59,54 @@ if database_url.startswith('postgres://'):
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Hard cap on request body size, so an oversized upload is rejected up
+# front with a clear JSON error instead of being read into memory and
+# failing unpredictably later. 60 MB comfortably covers a batch of up to
+# 10 financial-statement PDFs (annual reports are usually under 5 MB;
+# even a dense 300-page integrated report with embedded images tends to
+# land well under 30 MB) while still catching a genuinely wrong upload.
+# Raise this (and the matching platform/proxy timeout - see pdf_parse.py's
+# parse_financials_pdf docstring) if legitimate reports start hitting it.
+app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
+
 db.init_app(app)
+
+
+# ---------- ERROR HANDLING ----------
+# Every API route on this app returns JSON - including errors. Without
+# this, an uncaught exception (or a request-too-large rejection) falls
+# through to Flask/Werkzeug's default HTML error page, which breaks any
+# frontend code doing res.json() on the response (this is exactly what
+# was happening: an oversized/slow PDF upload failed with the JSON parser
+# choking on the words "Internal Server Error" instead of showing the
+# real problem). These handlers are the last line of defense - route
+# handlers should still catch what they can locally for a more specific
+# per-file error message (see /api/import/upload-batch).
+
+@app.errorhandler(413)
+def handle_request_too_large(e):
+    max_mb = app.config['MAX_CONTENT_LENGTH'] / (1024 * 1024)
+    return jsonify({
+        'error': f'Upload too large - this request is over the {max_mb:.0f} MB limit. '
+                 'Upload fewer files at once, or a smaller file.'
+    }), 413
+
+
+@app.errorhandler(404)
+def handle_not_found(e):
+    return jsonify({'error': 'Not found.'}), 404
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    # Preserve real HTTP errors (404 above, explicit abort(400) calls,
+    # etc.) - only unexpected/unhandled exceptions fall through to here.
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return jsonify({'error': e.description or e.name}), e.code
+    app.logger.exception('Unhandled exception')
+    return jsonify({'error': f'Unexpected server error: {e}'}), 500
 
 # ---------- MODELS ----------
 # Company now lives in models.py (imported above), alongside the new
@@ -176,7 +223,7 @@ class PeriodFinancialsView:
         self._roa = metrics.get('roa')
         self._debt_equity = metrics.get('debt_equity')
         has_source = any(s.source_document_id for s in period.statements)
-        self.source = 'nse_import' if has_source else 'manual'
+        self.source = 'pdf_upload' if has_source else 'manual'
 
     def to_dict(self):
         net_margin = self._net_margin
@@ -791,34 +838,6 @@ def delete_company(company_id):
         app.logger.exception('Failed to delete company %s', company_id)
         return jsonify({'error': f'Delete failed: {e}'}), 500
 
-@app.route('/api/companies/seed-nse', methods=['POST'])
-def seed_nse_companies():
-    """Create a Company row for every entry in NSE_COMPANIES that doesn't
-    already exist (matched by ticker). This decouples "is this company in
-    our roster" from "have we successfully imported a filing for it yet" -
-    without this, the Companies page only ever shows whichever companies
-    happened to have a matched filing get saved, which is a small,
-    shifting subset of the full 63-company exchange at any given moment.
-
-    Safe to call repeatedly - existing companies (matched by ticker) are
-    left untouched, nothing is updated or duplicated.
-    """
-    created = []
-    for entry in NSE_COMPANIES:
-        existing = Company.query.filter(
-            db.func.lower(Company.ticker) == entry['ticker'].lower()
-        ).first()
-        if existing:
-            continue
-        c = Company(
-            name=entry['name'], ticker=entry['ticker'], exchange='NSE',
-            sector=entry.get('sector', ''), country='Kenya'
-        )
-        db.session.add(c)
-        created.append(entry['name'])
-    db.session.commit()
-    return jsonify({'created': created, 'created_count': len(created), 'skipped_count': len(NSE_COMPANIES) - len(created)}), 200
-
 # ---------- API: FINANCIALS ----------
 
 @app.route('/api/companies/<int:company_id>/financials', methods=['POST'])
@@ -851,113 +870,6 @@ def add_financials(company_id):
     db.session.add(f)
     db.session.commit()
     return jsonify(f.to_dict()), 201
-
-# ---------- NSE IMPORT ----------
-# Three-step flow, each step reviewable before the next:
-#   1. /scan   - list current NSE filings + best-guess company match
-#   2. /parse  - download+parse one filing's PDF, return DRAFT numbers
-#   3. /save   - human confirms the draft numbers, THEN they're written
-# Nothing here auto-saves. PDF parsing is heuristic and needs a human
-# glance before it lands in the database.
-
-@app.route('/api/import/nse/scan')
-def nse_scan():
-    """List filings from NSE's financial-results page. By default returns
-    whatever's currently on the front page (usually just the most recent
-    year or two - the site doesn't keep the full history there). Pass
-    ?year=2023 to walk further back via fetch_nse_filings_for_year(); see
-    its docstring for exactly how that works and its real limits."""
-    year_param = request.args.get('year', type=int)
-    url_param = (request.args.get('url') or '').strip()
-
-    if url_param:
-        try:
-            html = fetch_nse_page(url_param)
-        except Exception as e:
-            return jsonify({'error': f'Could not reach {url_param}: {e}'}), 502
-        filings = fetch_nse_filings(html, base_url=url_param)
-        note = f'Fetched directly from the URL you provided ({url_param}).'
-        pages_scanned = 1
-    elif year_param:
-        try:
-            filings, pages_scanned = fetch_nse_filings_for_year(year_param)
-        except Exception as e:
-            return jsonify({'error': f'Could not reach NSE: {e}'}), 502
-        if filings:
-            note = f'Found {len(filings)} filing(s) for {year_param} after scanning {pages_scanned} page(s).'
-        else:
-            note = (
-                f'No {year_param} filings found after scanning {pages_scanned} page(s) of NSE\'s results feed. '
-                f'Older years may not be reachable this way - use "Upload Annual Reports" on the Companies page '
-                f'to import a {year_param} report PDF directly instead.'
-            )
-    else:
-        try:
-            html = fetch_nse_page(NSE_FINANCIAL_RESULTS_URL)
-        except Exception as e:
-            return jsonify({'error': f'Could not reach NSE: {e}'}), 502
-        filings = fetch_nse_filings(html)
-        note = None
-        pages_scanned = 1
-
-    # Attach whether we already have this company in our own database,
-    # since that determines whether "save" needs to create a company first.
-    existing = {c.name.strip().lower(): c.id for c in Company.query.all()}
-    for f in filings:
-        mc = f.get('matched_company')
-        f['existing_company_id'] = existing.get(mc['name'].strip().lower()) if mc else None
-
-    return jsonify({'filings': filings, 'note': note, 'pages_scanned': pages_scanned, 'year': year_param})
-
-@app.route('/api/import/nse/parse', methods=['POST'])
-def nse_parse():
-    data = request.get_json(force=True) or {}
-    pdf_url = (data.get('pdf_url') or '').strip()
-    if not pdf_url:
-        return jsonify({'error': 'pdf_url is required'}), 400
-    try:
-        parsed = fetch_and_parse_pdf(pdf_url)
-    except Exception as e:
-        return jsonify({'error': f'Could not parse PDF: {e}'}), 502
-    return jsonify({'pdf_url': pdf_url, 'parsed': parsed})
-
-@app.route('/api/import/nse/parse-batch', methods=['POST'])
-def nse_parse_batch():
-    """Parses several filings in one call, instead of one /parse round
-    trip per filing. Each filing is parsed independently - one bad PDF
-    (network hiccup, unparseable scan) doesn't abort the rest of the
-    batch, it just comes back with its own 'error' field so the review
-    screen can show it as failed rather than losing the whole batch.
-
-    Expected payload:
-        {"filings": [{"title", "pdf_url", "matched_company", "period_guess",
-                       "existing_company_id"}, ...]}
-    (i.e. entries taken straight from /scan's response - pass through
-    whichever ones the user selected).
-
-    Returns the same list back, each entry augmented with either
-    "parsed" (the draft statements) or "error".
-    """
-    data = request.get_json(force=True) or {}
-    filings = data.get('filings') or []
-    if not filings:
-        return jsonify({'error': 'filings is required'}), 400
-
-    results = []
-    for f in filings:
-        pdf_url = (f.get('pdf_url') or '').strip()
-        entry = dict(f)
-        if not pdf_url:
-            entry['error'] = 'Missing pdf_url'
-            results.append(entry)
-            continue
-        try:
-            entry['parsed'] = fetch_and_parse_pdf(pdf_url)
-        except Exception as e:
-            entry['error'] = f'Could not parse PDF: {e}'
-        results.append(entry)
-
-    return jsonify(results)
 
 def _statements_for_column(statements_payload, column='current'):
     """The parser now carries both a current-period 'amount' and a
@@ -1024,11 +936,30 @@ def _save_current_and_prior_period(base_payload, statements_payload, period_labe
 
 
 def _save_one_import(data):
-    """Shared save logic behind both /save (one filing) and /save-batch
-    (many filings in one request) - see nse_save()'s old docstring for the
-    payload shape this expects. Returns (result_dict, status_code) instead
-    of a Flask response directly, so batch callers can collect per-item
-    results without each item needing its own HTTP round trip.
+    """Shared save logic behind /api/import/upload-batch (and, per file,
+    the current/prior-period pair via _save_current_and_prior_period
+    above). Saves parsed statements into the normalized schema - one
+    FinancialPeriod, one FinancialStatement per statement type present,
+    and a FinancialLineItem per parsed line - plus a matching flat
+    `Financials` row (source='pdf_upload') so older routes that read that
+    table (overview stats, some exports) keep working; see models.py's
+    migration notes for why that table is kept around.
+
+    Expected payload shape:
+        {
+          "company_id": 1,            # or company_name/ticker/sector to create one
+          "period": "FY2025",
+          "statements": {
+            "income_statement": {"line_items": [{"label", "normalized_name",
+                                                   "amount", "page", "confidence"}, ...]},
+            "balance_sheet": {...}, "cash_flow": {...}, "equity": {...}
+          }
+        }
+
+    Returns (result_dict, status_code) instead of a Flask response
+    directly, so batch callers (the per-file loop in
+    upload_documents_batch) can collect per-item results without each
+    item needing its own HTTP round trip.
     """
     company_id = data.get('company_id')
     if not company_id:
@@ -1205,7 +1136,7 @@ def _save_one_import(data):
         total_assets=flat.get('total_assets', 0.0),
         total_liabilities=flat.get('total_liabilities', 0.0),
         total_equity=flat.get('total_equity', 0.0),
-        source='nse_import'
+        source='pdf_upload'
     )
     db.session.add(f)
     db.session.commit()
@@ -1216,68 +1147,8 @@ def _save_one_import(data):
         'financials': f.to_dict(),   # legacy shape, for any frontend code still reading it
     }, 201
 
-@app.route('/api/import/nse/save', methods=['POST'])
-def nse_save():
-    """Human has reviewed the parsed line items (and can have hand-edited
-    them) - this saves them into the normalized schema: one FinancialPeriod,
-    one FinancialStatement per statement type present, and a
-    FinancialLineItem per reviewed line.
-
-    Expected payload shape (matches what /parse returns, after review):
-        {
-          "company_id": 1,            # or company_name/ticker/sector to create one
-          "period": "FY2025",
-          "pdf_url": "https://...",   # optional, recorded as the SourceDocument
-          "statements": {
-            "income_statement": {"line_items": [{"label", "normalized_name",
-                                                   "amount", "page", "confidence"}, ...]},
-            "balance_sheet": {...}, "cash_flow": {...}, "equity": {...}
-          }
-        }
-
-    Also writes a matching flat `Financials` row (source='nse_import') so
-    existing routes that haven't been upgraded yet (overview stats, the
-    older exports) keep working unchanged - see models.py's migration
-    notes for why that table is being kept around for now.
-    """
-    data = request.get_json(force=True) or {}
-    result, status = _save_one_import(data)
-    return jsonify(result), status
-
-@app.route('/api/import/nse/save-batch', methods=['POST'])
-def nse_save_batch():
-    """Saves several already-reviewed filings in one request, instead of
-    one /save round trip per filing. Each item is independent - one
-    failing item (bad period label, a company_id that got deleted mid-
-    review, etc.) doesn't roll back the ones that already succeeded.
-
-    Expected payload:
-        {"items": [ <same shape /save takes>, ... ]}
-
-    Returns:
-        {"results": [{"ok": true, "company_id":..., "period":...} or
-                      {"ok": false, "error":...}, ...],
-         "saved": <count>, "failed": <count>}
-    """
-    data = request.get_json(force=True) or {}
-    items = data.get('items') or []
-    if not items:
-        return jsonify({'error': 'items is required'}), 400
-
-    results = []
-    saved = 0
-    for item in items:
-        result, status = _save_one_import(item)
-        if status == 201:
-            saved += 1
-            results.append({'ok': True, **result})
-        else:
-            results.append({'ok': False, 'error': result.get('error', 'Unknown error')})
-
-    return jsonify({'results': results, 'saved': saved, 'failed': len(items) - saved}), 200
-
 @app.route('/api/import/upload-batch', methods=['POST'])
-def nse_upload_batch():
+def upload_documents_batch():
     """Upload several annual-report PDFs at once (multipart/form-data,
     repeated 'files' field) - any mix of companies and years in a single
     batch. Unlike /scan -> /parse -> /save, there's no NSE filing-title
@@ -1342,14 +1213,18 @@ def nse_upload_batch():
             results.append({'filename': filename, 'ok': False, 'error': f'Could not read upload: {e}'})
             continue
 
+        # One slow pdfplumber pass covers both company/period detection
+        # AND statement parsing - see extract_pdf_document's docstring for
+        # why this used to be two separate full passes over the same file
+        # (the main reason a large report like a 300-page integrated
+        # report could time out).
         try:
-            pages_text = []
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                for i, page in enumerate(pdf.pages, start=1):
-                    pages_text.append((i, page.extract_text() or ''))
+            extracted = extract_pdf_document(pdf_bytes)
         except Exception as e:
-            results.append({'filename': filename, 'ok': False, 'error': f'Could not open PDF: {e}'})
+            results.append({'filename': filename, 'ok': False, 'error': f'Could not read/parse PDF: {e}'})
             continue
+
+        pages_text = extracted['pages_text']
 
         period_label = detect_period_label(pages_text)
         if not period_label:
@@ -1376,13 +1251,7 @@ def nse_upload_batch():
                 company_id = existing_by_name.get(detected_name.strip().lower())
         created_company = False
 
-        try:
-            parsed = parse_financials_pdf(pdf_bytes)
-        except Exception as e:
-            results.append({'filename': filename, 'ok': False, 'error': f'Could not parse PDF: {e}'})
-            continue
-
-        if not parsed.get('statements'):
+        if not extracted.get('statements'):
             results.append({
                 'filename': filename, 'ok': False,
                 'error': 'No recognizable financial statements found in this PDF.',
@@ -1414,16 +1283,27 @@ def nse_upload_batch():
 
         # Annual reports carry a prior-year comparative column right next
         # to the current year on every statement line (see
-        # nse_pdf_parse.detect_prior_period_label's docstring) - save both
+        # pdf_parse.detect_prior_period_label's docstring) - save both
         # periods from this one PDF instead of only the current one, so a
         # single upload populates two FinancialPeriod rows' worth of
         # history (needed for every YoY figure across the Intelligence
         # Report's 8 tabs) rather than leaving the comparative column on
         # the page unsaved.
         prior_period_label = detect_prior_period_label(period_label)
-        result, status, prior_result, prior_status = _save_current_and_prior_period(
-            save_payload, parsed['statements'], period_label, prior_period_label
-        )
+        try:
+            result, status, prior_result, prior_status = _save_current_and_prior_period(
+                save_payload, extracted['statements'], period_label, prior_period_label
+            )
+        except Exception as e:
+            # Defense in depth: _save_current_and_prior_period/_save_one_import
+            # normally return an ('error', 4xx) pair for expected problems,
+            # but an unexpected DB/data-shape issue on one file shouldn't
+            # take down the rest of the batch (or the whole request) - it
+            # should show up as a per-file failure instead.
+            db.session.rollback()
+            app.logger.exception(f'Unexpected error saving {filename}')
+            results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
+            continue
         if status == 201:
             saved += 1
             if result.get('company_id') and matched:
@@ -1877,10 +1757,22 @@ def system_status():
 
 @app.route('/api/compare')
 def compare_companies():
-    """Side-by-side comparison for a chosen set of companies - same
-    latest-period metrics the Companies/Rankings pages already use, so
-    numbers never disagree between pages."""
+    """Side-by-side comparison for a chosen set of companies. Defaults to
+    each company's own latest period (unchanged, so numbers still match
+    the Companies/Rankings pages when no period is picked) - but if a
+    'period' query param is given (e.g. ?ids=1,2,3&period=FY2024), every
+    company is compared at THAT period label instead, so a batch upload
+    that adds an older year for several companies at once can actually be
+    compared at that year, not just whichever year is now "latest" for
+    each of them.
+
+    A company simply doesn't have every period every other company has
+    (different fiscal year ends, one report skipped a year, etc.) - that
+    company's 'latest' comes back null rather than silently falling back
+    to a different period, so the frontend can show "No data for
+    <period>" instead of quietly comparing mismatched years."""
     ids_param = request.args.get('ids', '')
+    period = (request.args.get('period') or '').strip() or None
     try:
         ids = [int(x) for x in ids_param.split(',') if x.strip()]
     except ValueError:
@@ -1894,11 +1786,33 @@ def compare_companies():
         if c is None:
             continue
         d = c.to_dict()
-        f = latest_financials(c.id)
+        if period:
+            f = Financials.query.filter_by(company_id=cid, period=period).first()
+        else:
+            f = latest_financials(c.id)
         d['latest'] = f.to_dict() if f else None
         result.append(d)
 
     return jsonify(result)
+
+@app.route('/api/compare/periods')
+def compare_periods():
+    """Every distinct period label across a chosen set of companies, for
+    building the period selector on the Compare page - union, not
+    intersection, so a period only one of the selected companies has is
+    still offered (that company will simply be the only one with data
+    for it; the others show "No data for <period>" per compare_companies'
+    docstring above, rather than the option being hidden entirely)."""
+    ids_param = request.args.get('ids', '')
+    try:
+        ids = [int(x) for x in ids_param.split(',') if x.strip()]
+    except ValueError:
+        return jsonify({'error': 'ids must be a comma-separated list of integers'}), 400
+    if not ids:
+        return jsonify({'error': 'ids is required, e.g. ?ids=1,2,3'}), 400
+
+    labels = {row.period for row in Financials.query.filter(Financials.company_id.in_(ids)).all() if row.period}
+    return jsonify({'periods': sorted(labels, reverse=True)})
 
 def _survey_period_series(survey, metric_name):
     rows = [m for m in survey.market_metrics if m.metric_name == metric_name]

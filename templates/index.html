@@ -610,6 +610,16 @@ tr.li-child td:first-child{color:var(--text-dim);}
            onchange="onUploadReportsFilesChosen(this.files)">
     <div id="uploadReportsFileList" style="font-size:13px;margin-bottom:12px;"></div>
     <button id="uploadReportsSubmitBtn" onclick="submitUploadReports()" disabled>Upload &amp; Save</button>
+    <div id="uploadReportsProgressWrap" style="display:none;margin-top:12px;">
+      <div style="height:8px;border-radius:4px;background:var(--bg-panel-2,#eee);overflow:hidden;">
+        <div id="uploadReportsProgressBar" style="height:100%;width:0%;background:var(--blue,#2563eb);transition:width .15s linear;"></div>
+      </div>
+      <div id="uploadReportsProgressText" style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary,#666);margin-top:4px;">
+        <span id="uploadReportsProgressPct">0%</span>
+        <span id="uploadReportsProgressSpeed"></span>
+        <span id="uploadReportsProgressEta"></span>
+      </div>
+    </div>
     <div id="uploadReportsStatus" style="margin-top:10px;font-size:13px;"></div>
     <div id="uploadReportsResults" style="margin-top:10px;max-height:300px;overflow-y:auto;"></div>
   </div>
@@ -650,9 +660,6 @@ let currentStatementTab = null;
 let builderPeriod = '';
 let builderTab = 'income_statement';
 let builderRows = { income_statement: [], balance_sheet: [], cash_flow: [], equity: [] };
-
-// ---- NSE import review state (replaces the old flat preview form) ----
-let nsePreviewState = null; // {filing, statements, tab}
 
 const STATEMENT_LABELS = {
   income_statement: 'Income Statement', balance_sheet: 'Balance Sheet',
@@ -1215,6 +1222,10 @@ function closeAddCompanyModal(){
 /* ---------- MULTI-FILE ANNUAL REPORT UPLOAD ---------- */
 
 const UPLOAD_MAX_FILES = 10;
+// Mirrors app.py's MAX_CONTENT_LENGTH (60 MB per request) - checked
+// client-side too so an oversized batch is caught before spending time
+// uploading it, not after.
+const UPLOAD_MAX_TOTAL_BYTES = 60 * 1024 * 1024;
 let uploadReportsFiles = [];
 // When set, every file in the batch is saved straight to this company
 // (no auto-detection/matching) - set by openUploadReportsModal(companyId)
@@ -1233,6 +1244,7 @@ function openUploadReportsModal(companyId, companyName){
   document.getElementById('uploadReportsResults').innerHTML = '';
   document.getElementById('uploadReportsSubmitBtn').disabled = true;
   document.getElementById('uploadReportsSubmitBtn').textContent = 'Upload & Save';
+  document.getElementById('uploadReportsProgressWrap').style.display = 'none';
 
   const titleEl = document.getElementById('uploadReportsTitle');
   const descEl = document.getElementById('uploadReportsDesc');
@@ -1265,19 +1277,38 @@ function onUploadReportsFilesChosen(fileList){
         You selected ${chosen.length} files — only the first ${UPLOAD_MAX_FILES} will be uploaded.
         Do the rest in a second batch.</div>` +
       uploadReportsFiles.map(f => `<div>📄 ${escapeHtml(f.name)} <span style="color:var(--text-secondary,#666);">(${(f.size/1024/1024).toFixed(1)} MB)</span></div>`).join('');
-    submitBtn.disabled = false;
-    return;
+  } else {
+    uploadReportsFiles = chosen;
   }
 
-  uploadReportsFiles = chosen;
   if (!uploadReportsFiles.length) {
     listEl.innerHTML = '';
     submitBtn.disabled = true;
     return;
   }
-  listEl.innerHTML = `<div style="color:var(--text-secondary,#666);margin-bottom:4px;">${uploadReportsFiles.length} of ${UPLOAD_MAX_FILES} file(s) selected:</div>` +
+
+  const totalBytes = uploadReportsFiles.reduce((sum, f) => sum + f.size, 0);
+  const overLimit = totalBytes > UPLOAD_MAX_TOTAL_BYTES;
+  const header = chosen.length > UPLOAD_MAX_FILES ? '' :
+    `<div style="color:${overLimit ? 'var(--red,#c0392b)' : 'var(--text-secondary,#666)'};margin-bottom:4px;">` +
+    `${uploadReportsFiles.length} of ${UPLOAD_MAX_FILES} file(s) selected — ${_formatBytes(totalBytes)} total` +
+    (overLimit ? ` (over the ${_formatBytes(UPLOAD_MAX_TOTAL_BYTES)} limit for one batch — remove a file or split into two uploads)` : '') +
+    `:</div>`;
+  listEl.innerHTML = header +
     uploadReportsFiles.map(f => `<div>📄 ${escapeHtml(f.name)} <span style="color:var(--text-secondary,#666);">(${(f.size/1024/1024).toFixed(1)} MB)</span></div>`).join('');
-  submitBtn.disabled = false;
+  submitBtn.disabled = overLimit;
+}
+
+function _formatBytes(bytes){
+  if (bytes >= 1024*1024) return (bytes/1024/1024).toFixed(1) + ' MB';
+  if (bytes >= 1024) return (bytes/1024).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+function _formatEta(seconds){
+  if (!isFinite(seconds) || seconds < 0) return '';
+  if (seconds < 1) return '<1s left';
+  if (seconds < 60) return `${Math.ceil(seconds)}s left`;
+  return `${Math.floor(seconds/60)}m ${Math.round(seconds%60)}s left`;
 }
 
 async function submitUploadReports(){
@@ -1285,24 +1316,90 @@ async function submitUploadReports(){
   const statusEl = document.getElementById('uploadReportsStatus');
   const resultsEl = document.getElementById('uploadReportsResults');
   const btn = document.getElementById('uploadReportsSubmitBtn');
+  const progWrap = document.getElementById('uploadReportsProgressWrap');
+  const progBar = document.getElementById('uploadReportsProgressBar');
+  const progPct = document.getElementById('uploadReportsProgressPct');
+  const progSpeed = document.getElementById('uploadReportsProgressSpeed');
+  const progEta = document.getElementById('uploadReportsProgressEta');
+
   btn.disabled = true;
   btn.textContent = 'Uploading...';
-  statusEl.textContent = `Parsing and saving ${uploadReportsFiles.length} file(s) — this can take a moment for large PDFs...`;
+  statusEl.textContent = `Uploading ${uploadReportsFiles.length} file(s)...`;
   resultsEl.innerHTML = '';
+  progWrap.style.display = 'block';
+  progBar.style.width = '0%';
+  progPct.textContent = '0%';
+  progSpeed.textContent = '';
+  progEta.textContent = '';
 
   const fd = new FormData();
   uploadReportsFiles.forEach(f => fd.append('files', f));
   if (uploadReportsCompanyId) fd.append('company_id', uploadReportsCompanyId);
 
+  const totalBytes = uploadReportsFiles.reduce((sum, f) => sum + f.size, 0);
+  const startedAt = Date.now();
+
+  const finish = (ok, message) => {
+    btn.disabled = false;
+    btn.textContent = 'Upload & Save';
+    if (!ok) statusEl.textContent = message;
+  };
+
   try {
-    const res = await fetch('/api/import/upload-batch', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) {
-      statusEl.textContent = data.error || 'Upload failed.';
-      btn.disabled = false;
-      btn.textContent = 'Upload & Save';
-      return;
-    }
+    const data = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/import/upload-batch');
+
+      // Upload-phase progress: real bytes-sent/total, actual transfer
+      // speed (smoothed over the whole transfer so it doesn't jitter
+      // wildly on a bursty connection), and an ETA derived from that
+      // speed - all from the browser's own network timing, not guessed.
+      xhr.upload.onprogress = (evt) => {
+        if (!evt.lengthComputable) return;
+        const pct = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
+        const elapsedSec = (Date.now() - startedAt) / 1000;
+        const bytesPerSec = elapsedSec > 0.2 ? evt.loaded / elapsedSec : 0;
+        const remainingSec = bytesPerSec > 0 ? (evt.total - evt.loaded) / bytesPerSec : Infinity;
+        progBar.style.width = pct + '%';
+        progPct.textContent = pct + '%';
+        progSpeed.textContent = bytesPerSec > 0 ? `${_formatBytes(bytesPerSec)}/s` : '';
+        progEta.textContent = _formatEta(remainingSec);
+      };
+
+      // Once every byte has left the browser, the server still has to
+      // parse and save each PDF - large reports can take tens of
+      // seconds there with no further upload-progress events possible
+      // (there's nothing more being "uploaded"), so switch the copy to
+      // make that wait legible instead of leaving the bar stuck at 99%.
+      xhr.upload.onload = () => {
+        progBar.style.width = '100%';
+        progPct.textContent = '100%';
+        progSpeed.textContent = '';
+        progEta.textContent = '';
+        statusEl.textContent = `Upload complete — parsing and saving ${uploadReportsFiles.length} file(s) ` +
+          `now. Large reports (100+ pages) can take a minute or more.`;
+      };
+
+      xhr.onload = () => {
+        let data;
+        try {
+          data = JSON.parse(xhr.responseText);
+        } catch (e) {
+          reject(new Error('The server returned an unexpected (non-JSON) response.'));
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data);
+        } else {
+          reject(new Error(data.error || `Upload failed (HTTP ${xhr.status}).`));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error during upload - check your connection and try again.'));
+      xhr.ontimeout = () => reject(new Error('Upload timed out.'));
+
+      xhr.send(fd);
+    });
+
     statusEl.textContent = `Done: ${data.saved} saved, ${data.failed} failed.`;
     resultsEl.innerHTML = (data.results || []).map(r => {
       if (r.ok) {
@@ -1316,7 +1413,7 @@ async function submitUploadReports(){
         ❌ <strong>${escapeHtml(r.filename)}</strong> — ${escapeHtml(r.error || 'Unknown error')}
       </div>`;
     }).join('');
-    btn.textContent = 'Upload & Save';
+    finish(true);
     if (data.saved > 0) {
       if (uploadReportsCompanyId) {
         closeUploadReportsModal();
@@ -1326,431 +1423,10 @@ async function submitUploadReports(){
       }
     }
   } catch (e) {
-    statusEl.textContent = 'Upload failed: ' + e.message;
-    btn.disabled = false;
-    btn.textContent = 'Upload & Save';
+    finish(false, 'Upload failed: ' + e.message);
   }
 }
 
-/* ---------- NSE IMPORT ---------- */
-
-let nseFilingsCache = [];
-
-async function scanNSE(){
-  const statusEl = document.getElementById('nse-scan-status');
-  const resultsEl = document.getElementById('nse-scan-results');
-  const yearSel = document.getElementById('nse-scan-year');
-  const year = yearSel && yearSel.value ? yearSel.value : '';
-  statusEl.classList.remove('hidden');
-  statusEl.textContent = year ? `Scanning NSE financial results for ${year}... this can take longer than the current-year scan.` : 'Scanning NSE financial results...';
-  resultsEl.innerHTML = '';
-  try {
-    const qs = year ? `?year=${encodeURIComponent(year)}` : '';
-    const res = await fetch('/api/import/nse/scan' + qs);
-    // Read as text first - a slow year-scan can hit the platform's own
-    // gateway timeout, which returns an HTML error page rather than JSON.
-    // Parsing that straight with res.json() throws a cryptic "Unexpected
-    // token '<'" instead of telling the user what actually happened.
-    const raw = await res.text();
-    let data = null;
-    try {
-      data = raw ? JSON.parse(raw) : null;
-    } catch (parseErr) {
-      statusEl.textContent = res.ok
-        ? 'Scan failed: the server returned an unexpected (non-JSON) response.'
-        : `Scan failed (HTTP ${res.status}). The scan likely took too long and timed out - try a narrower year or try again.`;
-      return;
-    }
-    if (!res.ok) { statusEl.textContent = (data && data.error) || 'Scan failed.'; return; }
-    nseFilingsCache = data.filings || [];
-    statusEl.classList.add('hidden');
-    if (data.note) {
-      statusEl.classList.remove('hidden');
-      statusEl.textContent = data.note;
-    }
-    renderNSEResults(nseFilingsCache);
-  } catch (e) {
-    statusEl.textContent = 'Scan failed: ' + e.message;
-  }
-}
-
-function renderNSEResults(filings){
-  const resultsEl = document.getElementById('nse-scan-results');
-  if (!filings.length) {
-    resultsEl.innerHTML = '<div class="empty">No filings found.</div>';
-    return;
-  }
-  const rows = filings.map((f, i) => {
-    const mc = f.matched_company;
-    const matchLabel = mc
-      ? `${escapeHtml(mc.name)} <span class="badge">${Math.round((f.match_score || 0) * 100)}% match</span>`
-      : '<span class="badge">No match</span>';
-    const statusLabel = f.existing_company_id
-      ? '<span class="badge">Already tracked</span>'
-      : '<span class="badge">New company</span>';
-    return `
-      <tr>
-        <td><input type="checkbox" class="nse-select-box" data-idx="${i}" onchange="updateNSEBatchButton()"></td>
-        <td>${escapeHtml(f.title)}</td>
-        <td>${matchLabel}</td>
-        <td>${statusLabel}</td>
-        <td><button class="secondary" onclick="previewNSEFiling(${i})">Parse &amp; Preview</button></td>
-      </tr>`;
-  }).join('');
-  resultsEl.innerHTML = `
-    <div class="batch-toolbar">
-      <label class="batch-select-all"><input type="checkbox" id="nse-select-all" onchange="toggleAllNSESelect(this.checked)"> Select all</label>
-      <button id="nse-batch-parse-btn" onclick="parseSelectedNSEFilings()" disabled>Parse Selected (0)</button>
-    </div>
-    <table>
-      <thead><tr><th></th><th>Filing</th><th>Matched Company</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-}
-
-function toggleAllNSESelect(checked){
-  document.querySelectorAll('.nse-select-box').forEach(cb => cb.checked = checked);
-  updateNSEBatchButton();
-}
-
-function updateNSEBatchButton(){
-  const n = document.querySelectorAll('.nse-select-box:checked').length;
-  const btn = document.getElementById('nse-batch-parse-btn');
-  btn.disabled = n === 0;
-  btn.textContent = `Parse Selected (${n})`;
-}
-
-async function previewNSEFiling(index){
-  const filing = nseFilingsCache[index];
-  const statusEl = document.getElementById('nse-scan-status');
-  statusEl.classList.remove('hidden');
-  statusEl.textContent = `Parsing PDF: ${filing.title}...`;
-  try {
-    const res = await fetch('/api/import/nse/parse', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ pdf_url: filing.pdf_url })
-    });
-    const data = await res.json();
-    statusEl.classList.add('hidden');
-    if (!res.ok) { alert(data.error || 'Parse failed.'); return; }
-    renderNSEPreview(filing, data.parsed);
-  } catch (e) {
-    statusEl.classList.add('hidden');
-    alert('Parse failed: ' + e.message);
-  }
-}
-
-function renderNSEPreview(filing, parsed){
-  nsePreviewState = {
-    filing,
-    statements: JSON.parse(JSON.stringify((parsed && parsed.statements) || {})),
-    tab: null
-  };
-  const types = Object.keys(nsePreviewState.statements);
-  nsePreviewState.tab = types.length ? types[0] : 'income_statement';
-  renderNSEPreviewPanel();
-}
-
-function _duplicateLineItemIndexes(items){
-  const seen = new Set();
-  const dupIndexes = new Set();
-  items.forEach((li, i) => {
-    const key = `${(li.label || '').trim().toLowerCase()}|${li.amount}`;
-    if (!key.trim()) return;
-    if (seen.has(key)) dupIndexes.add(i);
-    else seen.add(key);
-  });
-  return dupIndexes;
-}
-
-function renderNSEPreviewPanel(){
-  const resultsEl = document.getElementById('nse-scan-results');
-  const filing = nsePreviewState.filing;
-  const mc = filing.matched_company;
-  const types = Object.keys(nsePreviewState.statements);
-
-  const tabs = types.map(t =>
-    `<button class="tab-btn ${t === nsePreviewState.tab ? 'active' : ''}" onclick="switchNSETab('${t}')">${STATEMENT_LABELS[t] || t}</button>`
-  ).join('');
-
-  const activeItems = (nsePreviewState.statements[nsePreviewState.tab] || { line_items: [] }).line_items;
-  const dupCount = _duplicateLineItemIndexes(activeItems).size;
-  const rows = activeItems.length ? renderNSEEditableRows(activeItems)
-    : '<tr><td colspan="4" class="empty">No line items yet on this statement.</td></tr>';
-
-  resultsEl.innerHTML = `
-    <div class="panel" style="background:var(--bg-panel-2);margin-top:10px;">
-      <div class="panel-head"><h2>Review before saving</h2></div>
-      <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(filing.title)}</div>
-      <div class="grid">
-        <input id="nse-company-name" placeholder="Company name" value="${mc ? escapeHtml(mc.name) : ''}">
-        <input id="nse-ticker" placeholder="Ticker" value="${mc ? escapeHtml(mc.ticker) : ''}">
-        <input id="nse-period" placeholder="Period" value="${escapeHtml(filing.period_guess || '')}">
-      </div>
-      <div style="font-size:11px;color:var(--text-faint);margin:10px 0;">
-        Parsed automatically from the PDF - a page badge shows where a figure came from in the filing so you can double-check it. Edit any label or amount, remove anything wrong, or add lines by hand.
-      </div>
-      ${types.length ? `<div class="tab-bar">${tabs}</div>` : '<div class="empty">Nothing recognizable was extracted from this PDF - add lines manually below.</div>'}
-      ${dupCount ? `<div style="font-size:12px;color:var(--red);margin-bottom:8px;">${dupCount} duplicate row${dupCount > 1 ? 's' : ''} highlighted below. <button class="secondary" style="padding:4px 10px;font-size:11.5px;" onclick="removeNSEDuplicates()">Remove duplicates</button></div>` : ''}
-      <table>
-        <thead><tr><th>Label</th><th class="amount">Amount</th><th>Page</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <button class="secondary" onclick="addNSELineItem()">+ Add Line Item</button>
-      <button onclick="confirmNSESave(${filing.existing_company_id ?? 'null'})">Confirm &amp; Save</button>
-      <button class="secondary" onclick="renderNSEResults(nseFilingsCache)">Cancel</button>
-      <div id="nse-save-error" class="error"></div>
-    </div>
-  `;
-}
-
-function switchNSETab(t){ nsePreviewState.tab = t; renderNSEPreviewPanel(); }
-
-function renderNSEEditableRows(items){
-  const dupIndexes = _duplicateLineItemIndexes(items);
-  return items.map((li, i) => `
-    <tr class="${dupIndexes.has(i) ? 'dup-row' : ''}">
-      <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateNSELineItem(${i},'label',this.value)">${dupIndexes.has(i) ? '<span class="dup-badge">dup</span>' : ''}</td>
-      <td><input class="nse-row-input amount" type="number" step="any" value="${li.amount ?? ''}" oninput="updateNSELineItem(${i},'amount',this.value)"></td>
-      <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
-      <td><button class="icon-btn" onclick="removeNSELineItem(${i})" title="Remove">✕</button></td>
-    </tr>`).join('');
-}
-
-function updateNSELineItem(i, field, val){
-  nsePreviewState.statements[nsePreviewState.tab].line_items[i][field] = val;
-}
-function removeNSELineItem(i){
-  nsePreviewState.statements[nsePreviewState.tab].line_items.splice(i, 1);
-  renderNSEPreviewPanel();
-}
-function addNSELineItem(){
-  if (!nsePreviewState.statements[nsePreviewState.tab]) {
-    nsePreviewState.statements[nsePreviewState.tab] = { line_items: [] };
-  }
-  nsePreviewState.statements[nsePreviewState.tab].line_items.push({ label: '', amount: '', page: null, normalized_name: null });
-  renderNSEPreviewPanel();
-}
-
-async function confirmNSESave(existingCompanyId){
-  const errorEl = document.getElementById('nse-save-error');
-  errorEl.textContent = '';
-  const period = document.getElementById('nse-period').value.trim();
-  if (!period) { errorEl.textContent = 'Period is required.'; return; }
-
-  const statements = {};
-  for (const [stmtType, data] of Object.entries(nsePreviewState.statements)) {
-    const items = (data.line_items || [])
-      .filter(li => li.label && li.amount !== '' && li.amount !== null && li.amount !== undefined)
-      .map((li, idx) => ({
-        label: li.label, normalized_name: li.normalized_name || null,
-        amount: parseFloat(li.amount), page: li.page || null,
-        confidence: li.confidence ?? null, order_index: idx
-      }));
-    if (items.length) statements[stmtType] = { line_items: items };
-  }
-  if (!Object.keys(statements).length) { errorEl.textContent = 'Add at least one line item before saving.'; return; }
-
-  const payload = { period, pdf_url: nsePreviewState.filing.pdf_url, statements };
-  if (existingCompanyId) {
-    payload.company_id = existingCompanyId;
-  } else {
-    payload.company_name = document.getElementById('nse-company-name').value;
-    payload.ticker = document.getElementById('nse-ticker').value;
-  }
-  const res = await fetch('/api/import/nse/save', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
-  });
-  const data = await res.json();
-  if (!res.ok) { errorEl.textContent = data.error || 'Save failed.'; return; }
-  nsePreviewState = null;
-  renderOverview();
-}
-
-// ---------- Batch import: parse many filings at once, review them all on
-// one screen, then save whichever are still checked in one request. This
-// is the multi-filing counterpart to the single Parse & Preview flow
-// above - it doesn't replace the review step (nse_pdf_parse.py's own
-// results are best-effort/DRAFT), it just batches the round trips so
-// getting through NSE's full company list isn't 60+ one-at-a-time clicks. ----------
-
-let nseBatchState = [];
-
-async function parseSelectedNSEFilings(){
-  const indexes = Array.from(document.querySelectorAll('.nse-select-box:checked')).map(cb => parseInt(cb.dataset.idx, 10));
-  if (!indexes.length) return;
-
-  const statusEl = document.getElementById('nse-scan-status');
-  statusEl.classList.remove('hidden');
-  statusEl.textContent = `Parsing ${indexes.length} filing(s)...`;
-
-  const filings = indexes.map(i => nseFilingsCache[i]);
-  try {
-    const res = await fetch('/api/import/nse/parse-batch', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ filings })
-    });
-    const data = await res.json();
-    statusEl.classList.add('hidden');
-    if (!res.ok) { alert(data.error || 'Batch parse failed.'); return; }
-
-    nseBatchState = data.map(entry => {
-      const mc = entry.matched_company;
-      const statements = entry.error ? {} : JSON.parse(JSON.stringify((entry.parsed && entry.parsed.statements) || {}));
-      const types = Object.keys(statements);
-      return {
-        filing: entry, statements, activeTab: types.length ? types[0] : 'income_statement',
-        companyName: mc ? mc.name : '', ticker: mc ? mc.ticker : '',
-        existingCompanyId: entry.existing_company_id || null,
-        period: entry.period_guess || '',
-        include: !entry.error,
-        parseError: entry.error || null,
-        saveResult: null,
-      };
-    });
-    renderNSEBatchReview();
-  } catch (e) {
-    statusEl.classList.add('hidden');
-    alert('Batch parse failed: ' + e.message);
-  }
-}
-
-function renderNSEBatchReview(){
-  const resultsEl = document.getElementById('nse-scan-results');
-  const includedCount = nseBatchState.filter(b => b.include).length;
-
-  const cards = nseBatchState.map((b, bi) => {
-    if (b.parseError) {
-      return `
-        <div class="panel batch-card" style="background:var(--bg-panel-2);">
-          <div class="panel-head"><h2>${escapeHtml(b.filing.title)}</h2><span class="badge" style="color:var(--red);">Parse failed</span></div>
-          <div style="font-size:12px;color:var(--red);">${escapeHtml(b.parseError)}</div>
-        </div>`;
-    }
-
-    const types = Object.keys(b.statements);
-    const tabs = types.map(t =>
-      `<button class="tab-btn ${t === b.activeTab ? 'active' : ''}" onclick="switchBatchTab(${bi},'${t}')">${STATEMENT_LABELS[t] || t}${_duplicateLineItemIndexes((b.statements[t].line_items || [])).size ? ' ⚠' : ''}</button>`
-    ).join('');
-    const activeItems = (b.statements[b.activeTab] || { line_items: [] }).line_items;
-    const dupIndexes = _duplicateLineItemIndexes(activeItems);
-    const totalDupCount = types.reduce((sum, t) => sum + _duplicateLineItemIndexes(b.statements[t].line_items || []).size, 0);
-    const rows = activeItems.length ? activeItems.map((li, i) => `
-      <tr class="${dupIndexes.has(i) ? 'dup-row' : ''}">
-        <td><input class="nse-row-input" value="${escapeHtml(li.label || '')}" oninput="updateBatchLineItem(${bi},${i},'label',this.value)">${dupIndexes.has(i) ? '<span class="dup-badge">dup</span>' : ''}</td>
-        <td><input class="nse-row-input amount" type="number" step="any" value="${li.amount ?? ''}" oninput="updateBatchLineItem(${bi},${i},'amount',this.value)"></td>
-        <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
-        <td><button class="icon-btn" onclick="removeBatchLineItem(${bi},${i})" title="Remove">✕</button></td>
-      </tr>`).join('') : '<tr><td colspan="4" class="empty">No line items on this statement.</td></tr>';
-
-    return `
-      <div class="panel batch-card" style="background:var(--bg-panel-2);">
-        <div class="panel-head">
-          <h2><label><input type="checkbox" ${b.include ? 'checked' : ''} onchange="toggleBatchInclude(${bi},this.checked)"> ${escapeHtml(b.filing.title)}</label>${totalDupCount ? `<span class="dup-badge" style="margin-left:8px;">${totalDupCount} duplicate${totalDupCount > 1 ? 's' : ''}</span>` : ''}</h2>
-        </div>
-        <div class="grid">
-          <input placeholder="Company name" value="${escapeHtml(b.companyName)}" oninput="updateBatchField(${bi},'companyName',this.value)" ${b.existingCompanyId ? 'disabled' : ''}>
-          <input placeholder="Ticker" value="${escapeHtml(b.ticker)}" oninput="updateBatchField(${bi},'ticker',this.value)" ${b.existingCompanyId ? 'disabled' : ''}>
-          <input placeholder="Period" value="${escapeHtml(b.period)}" oninput="updateBatchField(${bi},'period',this.value)">
-        </div>
-        ${types.length ? `<div class="tab-bar">${tabs}</div>` : '<div class="empty">Nothing recognizable was extracted - add lines manually.</div>'}
-        ${dupIndexes.size ? `<div style="font-size:12px;color:var(--red);margin-bottom:8px;">${dupIndexes.size} duplicate row${dupIndexes.size > 1 ? 's' : ''} on this statement. <button class="secondary" style="padding:4px 10px;font-size:11.5px;" onclick="removeBatchDuplicates(${bi})">Remove duplicates</button></div>` : ''}
-        <table>
-          <thead><tr><th>Label</th><th class="amount">Amount</th><th>Page</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-        <button class="secondary" onclick="addBatchLineItem(${bi})">+ Add Line Item</button>
-        ${b.saveResult ? `<div style="font-size:12px;margin-top:8px;color:${b.saveResult.ok ? 'var(--green)' : 'var(--red)'};">${b.saveResult.ok ? 'Saved.' : escapeHtml(b.saveResult.error)}</div>` : ''}
-      </div>`;
-  }).join('');
-
-  resultsEl.innerHTML = `
-    <div class="panel" style="background:var(--bg-panel-2);margin-top:10px;">
-      <div class="panel-head">
-        <h2>Review before saving</h2>
-        <div>
-          <button onclick="saveAllNSEBatch()">Save All Included (${includedCount})</button>
-          <button class="secondary" onclick="renderNSEResults(nseFilingsCache)">Cancel</button>
-        </div>
-      </div>
-      <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
-        Parsed automatically, per filing - still best-effort, so check each one before saving. Uncheck any filing to leave it out of the save.
-      </div>
-      <div id="nse-batch-save-error" class="error"></div>
-    </div>
-    ${cards}
-  `;
-}
-
-function toggleBatchInclude(bi, checked){ nseBatchState[bi].include = checked; }
-function updateBatchField(bi, field, val){ nseBatchState[bi][field] = val; }
-function switchBatchTab(bi, t){ nseBatchState[bi].activeTab = t; renderNSEBatchReview(); }
-function updateBatchLineItem(bi, i, field, val){ nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items[i][field] = val; }
-function removeBatchLineItem(bi, i){
-  nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items.splice(i, 1);
-  renderNSEBatchReview();
-}
-function removeBatchDuplicates(bi){
-  const items = nseBatchState[bi].statements[nseBatchState[bi].activeTab].line_items;
-  const dupIndexes = [..._duplicateLineItemIndexes(items)].sort((a, b) => b - a);
-  dupIndexes.forEach(i => items.splice(i, 1));
-  renderNSEBatchReview();
-}
-function addBatchLineItem(bi){
-  const b = nseBatchState[bi];
-  if (!b.statements[b.activeTab]) b.statements[b.activeTab] = { line_items: [] };
-  b.statements[b.activeTab].line_items.push({ label: '', amount: '', page: null, normalized_name: null });
-  renderNSEBatchReview();
-}
-
-async function saveAllNSEBatch(){
-  const errorEl = document.getElementById('nse-batch-save-error');
-  errorEl.textContent = '';
-
-  const items = [];
-  const includedIndexes = [];
-  for (let bi = 0; bi < nseBatchState.length; bi++) {
-    const b = nseBatchState[bi];
-    if (!b.include || b.parseError) continue;
-    if (!b.period.trim()) { errorEl.textContent = `Period is required for "${b.filing.title}".`; return; }
-
-    const statements = {};
-    for (const [stmtType, data] of Object.entries(b.statements)) {
-      const rows = (data.line_items || [])
-        .filter(li => li.label && li.amount !== '' && li.amount !== null && li.amount !== undefined)
-        .map((li, idx) => ({
-          label: li.label, normalized_name: li.normalized_name || null,
-          amount: parseFloat(li.amount), page: li.page || null,
-          confidence: li.confidence ?? null, order_index: idx
-        }));
-      if (rows.length) statements[stmtType] = { line_items: rows };
-    }
-    if (!Object.keys(statements).length) { errorEl.textContent = `Add at least one line item for "${b.filing.title}", or uncheck it.`; return; }
-
-    const payload = { period: b.period.trim(), pdf_url: b.filing.pdf_url, statements };
-    if (b.existingCompanyId) {
-      payload.company_id = b.existingCompanyId;
-    } else {
-      payload.company_name = b.companyName;
-      payload.ticker = b.ticker;
-    }
-    items.push(payload);
-    includedIndexes.push(bi);
-  }
-  if (!items.length) { errorEl.textContent = 'Nothing checked to save.'; return; }
-
-  const res = await fetch('/api/import/nse/save-batch', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ items })
-  });
-  const data = await res.json();
-  if (!res.ok) { errorEl.textContent = data.error || 'Batch save failed.'; return; }
-
-  data.results.forEach((r, idx) => { nseBatchState[includedIndexes[idx]].saveResult = r; });
-  renderNSEBatchReview();
-  if (data.failed === 0) {
-    setTimeout(() => { nseBatchState = []; renderOverview(); }, 900);
-  }
-}
 
 // ---------- Companies page ----------
 
@@ -1849,8 +1525,9 @@ function renderCompaniesTable(filterText){
 
   if (allCompaniesCache.length === 0) {
     app.innerHTML = `<div class="panel"><div class="empty">No companies yet.
-      <button class="btn-primary-cta" style="margin:0 6px;" onclick="openAddCompanyModal()">+ Add Company</button> or
-      <button class="secondary" onclick="seedNSECompanies()">Seed all NSE companies</button> to pre-populate the full NSE roster.</div></div>`;
+      Upload a financial statement PDF, or
+      <button class="btn-primary-cta" style="margin:0 6px;" onclick="openAddCompanyModal()">+ Add Company</button>
+      to enter one manually.</div></div>`;
     return;
   }
 
@@ -1933,7 +1610,6 @@ function renderCompaniesTable(filterText){
       </div>
       <button class="export-btn" onclick="window.location.href='/api/export/portfolio'">⭳ Export</button>
       <button class="secondary" style="margin:0;" onclick="openUploadReportsModal()">⭱ Upload Annual Reports</button>
-      <button class="secondary" style="margin:0;" onclick="seedNSECompanies()">Seed all NSE companies</button>
       <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
     </div>`;
 
@@ -2040,22 +1716,6 @@ function coSortValue(c, key){
   const l = c.latest;
   if (!l) return null;
   return l[key];
-}
-
-async function seedNSECompanies(){
-  try {
-    const res = await fetch('/api/companies/seed-nse', { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(data.error || `Seeding failed (status ${res.status}).`);
-      return;
-    }
-    alert(`Added ${data.created_count} new companies (${data.skipped_count} already existed).`);
-    renderCompaniesPage('');
-  } catch (err) {
-    console.error('Seed failed:', err);
-    alert('Seeding failed — check the browser console for details.');
-  }
 }
 
 async function deleteCompany(companyId, companyName){
@@ -2406,6 +2066,8 @@ async function populateExportsCompanyList(){
 // ---------- Compare Companies ----------
 
 let compareSelectedIds = [];
+let compareSelectedPeriod = '';   // '' = each company's own latest
+let comparePeriodOptions = [];
 
 async function renderComparePage(){
   const app = document.getElementById('app');
@@ -2417,6 +2079,7 @@ async function renderComparePage(){
     app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
     return;
   }
+  await refreshComparePeriodOptions();
   renderCompareShell();
   if (compareSelectedIds.length >= 2) await runCompare();
 }
@@ -2437,6 +2100,15 @@ function renderCompareShell(){
   const available = allCompaniesCache.filter(c => !compareSelectedIds.includes(c.id));
   const addOptions = available.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
 
+  const periodSelect = selected.length >= 2 ? `
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+      <label style="font-size:13px;color:var(--text-secondary,#666);">Compare at:</label>
+      <select class="filter-select" id="comparePeriodSelect" onchange="setComparePeriod(this.value)">
+        <option value="" ${compareSelectedPeriod === '' ? 'selected' : ''}>Each company's latest period</option>
+        ${comparePeriodOptions.map(p => `<option value="${escapeHtml(p)}" ${p === compareSelectedPeriod ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+      </select>
+    </div>` : '';
+
   app.innerHTML = `
     <div class="panel">
       <div class="panel-head">
@@ -2452,9 +2124,33 @@ function renderCompareShell(){
         </select>
         <button class="secondary" style="margin:0;" onclick="addCompareFromSelect()">Add</button>
       </div>` : ''}
+      ${periodSelect}
     </div>
     <div id="compare-result"></div>
   `;
+}
+
+async function refreshComparePeriodOptions(){
+  if (compareSelectedIds.length < 2) { comparePeriodOptions = []; return; }
+  try {
+    const res = await fetch(`/api/compare/periods?ids=${compareSelectedIds.join(',')}`);
+    const data = await res.json();
+    comparePeriodOptions = data.periods || [];
+    // A period picked for a previous selection might not apply to the
+    // new one (e.g. a company that only has FY2025 was removed) - drop
+    // back to "each company's latest" rather than silently comparing at
+    // a period that's no longer valid for this selection.
+    if (compareSelectedPeriod && !comparePeriodOptions.includes(compareSelectedPeriod)) {
+      compareSelectedPeriod = '';
+    }
+  } catch (e) {
+    comparePeriodOptions = [];
+  }
+}
+
+function setComparePeriod(period){
+  compareSelectedPeriod = period;
+  runCompare();
 }
 
 function addCompareFromSelect(){
@@ -2467,9 +2163,11 @@ function addCompareFromSelect(){
 function toggleCompareSelect(id, checked){
   if (checked) { if (!compareSelectedIds.includes(id) && compareSelectedIds.length < 6) compareSelectedIds.push(id); }
   else { compareSelectedIds = compareSelectedIds.filter(x => x !== id); }
-  renderCompareShell();
-  if (compareSelectedIds.length >= 2) runCompare();
-  else document.getElementById('compare-result').innerHTML = '';
+  refreshComparePeriodOptions().then(() => {
+    renderCompareShell();
+    if (compareSelectedIds.length >= 2) runCompare();
+    else document.getElementById('compare-result').innerHTML = '';
+  });
 }
 
 function compareBarChart(title, unitLabel, companies, getter, color, isPercent){
@@ -2490,12 +2188,14 @@ function compareBarChart(title, unitLabel, companies, getter, color, isPercent){
 
 async function runCompare(){
   if (compareSelectedIds.length < 2) return;
-  const res = await fetch(`/api/compare?ids=${compareSelectedIds.join(',')}`);
+  const periodParam = compareSelectedPeriod ? `&period=${encodeURIComponent(compareSelectedPeriod)}` : '';
+  const res = await fetch(`/api/compare?ids=${compareSelectedIds.join(',')}${periodParam}`);
   const companies = await res.json();
   const resultEl = document.getElementById('compare-result');
   if (!resultEl) return;
 
   const withData = companies.filter(c => c.latest);
+  const noData = companies.filter(c => !c.latest);
   const totalRevenue = withData.reduce((s, c) => s + (c.latest.revenue || 0), 0);
   const totalNetIncome = withData.reduce((s, c) => s + (c.latest.net_income || 0), 0);
   const margins = withData.filter(c => c.latest.net_margin !== null && c.latest.net_margin !== undefined);
@@ -2529,7 +2229,7 @@ async function runCompare(){
 
   const metricRows = [
     ['Sector', c => c.sector || '-'],
-    ['Latest Period', c => c.latest ? c.latest.period : '-'],
+    [compareSelectedPeriod ? 'Period' : 'Latest Period', c => c.latest ? c.latest.period : (compareSelectedPeriod ? `No data for ${escapeHtml(compareSelectedPeriod)}` : '-')],
     ['Revenue', c => c.latest ? fmtAmount(c.latest.revenue) : '-'],
     ['Net Income', c => c.latest ? fmtAmount(c.latest.net_income) : '-'],
     ['Net Margin', c => c.latest && c.latest.net_margin !== null ? fmt(c.latest.net_margin) + '%' : '-'],
@@ -3829,8 +3529,8 @@ function connectLiveUpdates(){
     try { msg = JSON.parse(evt.data); } catch { return; }
     if (msg.type !== 'data_changed') return;
 
-    // Don't yank the page out from under someone mid-review/edit.
-    if (nsePreviewState || (nseBatchState && nseBatchState.length)) return;
+    // Don't yank the page out from under someone mid-edit in the report builder.
+    if (builderRows && Object.values(builderRows).some(rows => rows.length)) return;
 
     // A batch auto-import can fire several events in a row - no need to
     // re-render on every single one.

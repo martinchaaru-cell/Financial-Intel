@@ -41,7 +41,7 @@ import re
 import sys
 
 from app import app, db, SourceDocument, FinancialPeriod, FinancialStatement, Company
-from nse_import import match_company, NSE_COMPANIES
+from company_directory import match_company, NSE_COMPANIES
 
 
 def _claimed_company_name(doc: SourceDocument):

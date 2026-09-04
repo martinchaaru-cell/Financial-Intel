@@ -1,23 +1,30 @@
 """
-Phase 3 — full statement-aware PDF extraction.
+Full statement-aware PDF extraction, used by the manual upload flow
+(/api/import/upload-batch in app.py - see there for the single adapter
+every company's uploads go through, regardless of the report's own
+format or layout).
 
-Upgrades the old "grab five numbers" parser into one that walks every
-page, buckets lines under whichever financial statement heading they fall
-under, and extracts EVERY numeric line on that statement - not just a
-five-item allowlist - preserving the page number and (where we recognize
-the label) a normalized_name for cross-company comparison.
+Walks every relevant page, buckets lines under whichever financial
+statement heading they fall under, and extracts EVERY numeric line on
+that statement - not just a five-item allowlist - preserving the page
+number and (where we recognize the label) a normalized_name for
+cross-company comparison.
 
-Still explicitly heuristic and best-effort: results are DRAFT and must go
-through human review before being saved (the /api/import/nse/scan ->
-/parse -> review -> /save flow is unchanged, /parse and /save just carry
-richer data now).
+Still explicitly heuristic and best-effort: every saved line item carries
+its own confidence score rather than being screened out before saving -
+see the module docstring on /api/import/upload-batch in app.py for how
+that's surfaced to the user (Source Evidence).
 """
 
 import re
 import io
 import json
-import requests
 import pdfplumber
+
+try:
+    import pypdf
+except ImportError:  # pragma: no cover - pypdf is in requirements.txt
+    pypdf = None
 
 # ---------- STATEMENT HEADING DETECTION ----------
 
@@ -426,10 +433,10 @@ def _match_canonical(stmt_type, label):
 
 
 # ---------- PERIOD DETECTION (for uploaded PDFs with no filing-title metadata) ----------
-# nse_import.py's extract_period() works off an NSE filing-page title like
-# "Equity Group Holdings Plc - ... For the period ended 30 June 2026" - a
-# locally-uploaded annual report PDF has no such title, so the year has to
-# come out of the statement pages themselves.
+# An uploaded annual report PDF has no filing-listing title to lean on (no
+# "Equity Group Holdings Plc - ... For the period ended 30 June 2026" to
+# parse), so the fiscal year has to come out of the statement pages
+# themselves - see detect_period_label() below.
 
 _MONTHS = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
            r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
@@ -438,6 +445,13 @@ _MONTHS = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
 _PERIOD_END_RES = [
     re.compile(rf"for\s+the\s+year\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
     re.compile(rf"for\s+the\s+period\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
+    # Same as the two above but without the leading "for the" - some
+    # reports head statement columns with just "Year ended 31 December
+    # 2025" (seen on Equity Group Holdings' 2025 integrated report,
+    # amongst others). Anchored to the start of the line so it doesn't
+    # also match "...for the year ended..." twice.
+    re.compile(rf"^\s*year\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
+    re.compile(rf"^\s*period\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
     # Balance-sheet-style "AT 31 DECEMBER 2022" heading - anchored to the
     # WHOLE line (not just "ends with", which .search() doesn't enforce on
     # its own) so it can't match "...at 2022" buried inside a wrapped
@@ -501,11 +515,26 @@ def detect_prior_period_label(period_label: str | None) -> str | None:
     return f"FY{year - 1}"
 
 
-def detect_company_name(pages_text, max_pages: int = 5) -> str | None:
+def detect_company_name(pages_text, max_pages: int = 400) -> str | None:
     """Best-effort company name from the first few pages - most annual
     reports repeat 'X PLC INTEGRATED REPORT AND FINANCIAL STATEMENTS' or
     similar as a running header, which is a more reliable signal than the
-    cover page's often stylised title text/graphics."""
+    cover page's often stylised title text/graphics.
+
+    Different reports lay out their first few pages very differently - a
+    plain annual report usually has a clean all-caps company banner right
+    on page 1, but a marketing-led "integrated report" (glossy cover,
+    theme tagline, table of contents) often doesn't, and the frequency
+    heuristic below can latch onto an unrelated all-caps heading instead
+    (e.g. a table-of-contents entry like "A MESSAGE FROM OUR GROUP
+    MANAGING DIRECTOR..." matching on the word "GROUP"). To guard against
+    that, every candidate found is scored against the known NSE company
+    roster (company_directory.match_company) and the best-scoring one
+    wins over the merely most-frequent one, whenever any candidate scores
+    highly enough to be a confident real match; only falls back to
+    "most frequent candidate" when nothing scores well (e.g. a company
+    not yet in the roster), same as before.
+    """
     name_re = re.compile(
         r"([A-Z][A-Z .&'\-]{3,60}?(?:PLC|LIMITED|LTD|GROUP|HOLDINGS))\b",
     )
@@ -520,6 +549,19 @@ def detect_company_name(pages_text, max_pages: int = 5) -> str | None:
                 counts[name] = counts.get(name, 0) + 1
     if not counts:
         return None
+
+    try:
+        from company_directory import match_company
+        best_candidate, best_candidate_score = None, 0.0
+        for candidate in counts:
+            _, score = match_company(candidate.title())
+            if score > best_candidate_score:
+                best_candidate, best_candidate_score = candidate, score
+        if best_candidate is not None and best_candidate_score >= 0.75:
+            return best_candidate.title()
+    except ImportError:
+        pass
+
     return max(counts, key=counts.get).title()
 
 
@@ -674,40 +716,154 @@ def parse_financials_text(pages_text) -> dict:
     }
 
 
-def parse_financials_pdf(pdf_bytes: bytes) -> dict:
-    """Extract text page-by-page (page number matters now, for provenance)
-    and run the statement-aware parser over it.
+# A "different report, different shape" guard: a scanned/image-only PDF
+# (no embedded text layer) will come back with empty or near-empty text on
+# every page no matter which extractor is used - there's no OCR here, so
+# that case can only be reported honestly, not silently "fixed".
+_MIN_CHARS_PER_PAGE_FOR_TEXT_LAYER = 20
 
-    NOTE on performance: this is the slow part of an import - measured
-    ~105s for a dense 298-page integrated report, almost entirely inside
-    pdfplumber's extract_text() (confirmed by timing that call alone).
-    A PyMuPDF swap was tried and reverted: PyMuPDF's plain get_text() is
-    ~55x faster but does NOT reconstruct table rows the way pdfplumber
-    does - "Interest income 6 188,329 185,344" (one line, one row) comes
-    back from PyMuPDF as four separate lines, one per column - which
-    silently breaks _split_label_and_numbers() and guts extraction rather
-    than just slowing it down. Fixing the speed properly means either
-    reconstructing rows from PyMuPDF's word-level coordinates (real work,
-    real new surface for bugs) or moving big-PDF imports off the request/
-    response cycle entirely (background worker + poll/webhook) - not a
-    one-line fix, so left alone for now rather than shipped half-tested.
-    Because of this, upload-batch requests with several large filings can
-    take minutes; size any timeout (proxy, gunicorn worker, frontend
-    fetch) accordingly, or reduce how many large files go in one batch.
+# Hard ceiling so a genuinely pathological upload (thousands of pages,
+# or a corrupt file that confuses page counting) fails fast with a clear
+# message instead of hanging the request indefinitely.
+_MAX_PAGES = 600
+
+
+def _fast_prefilter_pages(pdf_bytes: bytes, always_include: int = 5):
+    """First pass with pypdf - much faster than pdfplumber's extract_text()
+    but doesn't reliably reconstruct table rows (see the note on
+    extract_pdf_document below), so it's only used here to guess which
+    page numbers are worth the slow, accurate pass. Returns a sorted list
+    of 1-indexed candidate page numbers, or None if pypdf isn't available
+    (callers should fall back to scanning every page in that case, rather
+    than silently returning nothing).
+
+    Always includes the first `always_include` pages regardless of
+    whether a heading was found on them - detect_company_name() reads
+    from the first few pages (the cover/running header), which usually
+    has no statement heading of its own and would otherwise get dropped
+    by the prefilter entirely.
     """
-    pages_text = []
+    if pypdf is None:
+        return None
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        num_pages = len(reader.pages)
+    except Exception:
+        return None
+    if num_pages == 0:
+        return None
+
+    candidates = set(range(1, min(always_include, num_pages) + 1))
+    for i in range(num_pages):
+        try:
+            text = reader.pages[i].extract_text() or ""
+        except Exception:
+            # A single malformed page shouldn't sink the whole prefilter -
+            # just treat it as having no heading and move on.
+            continue
+        for line in text.splitlines():
+            if _classify_statement(line.strip()):
+                page_num = i + 1
+                # A statement's line items almost always run several pages
+                # past its own heading page (continuation pages, notes-free
+                # runs of numbers) - grab a generous window forward, plus
+                # one page back in case the heading itself sits just before
+                # the detected page due to text-extraction quirks.
+                for p in range(max(1, page_num - 1), min(num_pages, page_num + 6) + 1):
+                    candidates.add(p)
+    return sorted(candidates)
+
+
+def extract_pdf_document(pdf_bytes: bytes) -> dict:
+    """The one adapter every uploaded PDF goes through, regardless of
+    which company or report format it came from - a slim standalone
+    financial-statements PDF, a scanned image PDF, or a dense 300-page
+    integrated report all reach this same function, and it's the ONLY
+    place that runs pdfplumber's slow extract_text() over an uploaded
+    file. (Previously the upload route extracted page text once itself,
+    for company/period detection, and then parse_financials_pdf()
+    extracted it again from scratch for the actual statement parsing -
+    two full slow passes over the same PDF. That doubling was the biggest
+    single contributor to large uploads timing out; this function is the
+    fix - one slow pass, whose output feeds both detection and parsing.)
+
+    Returns {"pages_text": [(page_num, text), ...], "statements": {...}} -
+    "pages_text" covers whichever pages were actually read (see the
+    performance note below, not necessarily the full document) and is
+    what detect_company_name()/detect_period_label() should be called
+    with; "statements" is parse_financials_text()'s normal output.
+
+    NOTE on performance: page-by-page pdfplumber.extract_text() is the
+    slow part of an import - measured ~105s for a dense 298-page
+    integrated report, almost entirely inside that one call. A PyMuPDF
+    swap was tried and reverted: PyMuPDF's plain get_text() is ~55x
+    faster but does NOT reconstruct table rows the way pdfplumber does -
+    "Interest income 6 188,329 185,344" (one line, one row) comes back
+    from PyMuPDF as four separate lines, one per column - which silently
+    breaks _split_label_and_numbers() and guts extraction rather than
+    just slowing it down.
+
+    What IS done about it: pypdf (much faster, same row-splitting problem
+    as PyMuPDF) runs a first pass over every page just to spot statement
+    headings, then only that shortlist of candidate pages - typically a
+    few dozen out of a few hundred, plus the first few pages for company
+    detection - goes through the slow, accurate pdfplumber pass. A large
+    integrated report's ~280 pages of narrative, governance and
+    sustainability content never touch the slow extractor. If the fast
+    pass can't find any headings (pypdf missing, or a layout it can't
+    read at all), every page is scanned the slow way exactly as before -
+    correctness never depends on the fast pass succeeding.
+
+    This does NOT fully solve very large batches - moving big-PDF imports
+    off the request/response cycle entirely (background worker + poll)
+    is the real fix and hasn't been built; if a single file is still slow
+    enough to hit a platform-level request timeout, that's a proxy/worker
+    timeout setting to raise, not something this function can catch.
+    """
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for i, page in enumerate(pdf.pages, start=1):
-            pages_text.append((i, page.extract_text() or ""))
-    return parse_financials_text(pages_text)
+        num_pages = len(pdf.pages)
+        if num_pages == 0:
+            return {'pages_text': [], 'statements': {}}
+        if num_pages > _MAX_PAGES:
+            raise ValueError(
+                f"PDF has {num_pages} pages, over the {_MAX_PAGES}-page limit for a single upload. "
+                "Split it or upload the relevant section separately."
+            )
+
+        candidate_pages = _fast_prefilter_pages(pdf_bytes)
+        page_numbers = candidate_pages if candidate_pages else range(1, num_pages + 1)
+
+        pages_text = []
+        pages_with_text = 0
+        for i in page_numbers:
+            try:
+                text = pdf.pages[i - 1].extract_text() or ""
+            except Exception:
+                # One unreadable page (corrupt object, unsupported font)
+                # shouldn't abort the whole import - skip it and keep going.
+                text = ""
+            pages_text.append((i, text))
+            if len(text) >= _MIN_CHARS_PER_PAGE_FOR_TEXT_LAYER:
+                pages_with_text += 1
+
+        if pages_with_text == 0:
+            raise ValueError(
+                "No extractable text found on any scanned page - this looks like a scanned "
+                "image PDF with no embedded text layer, which isn't supported yet (no OCR)."
+            )
+
+    return {'pages_text': pages_text, 'statements': parse_financials_text(pages_text)['statements']}
 
 
-def fetch_and_parse_pdf(pdf_url: str, timeout: int = 30) -> dict:
-    """Download a filing PDF and parse it. Requires real internet access
-    (works from Replit; will fail in a sandboxed environment)."""
-    resp = requests.get(pdf_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
-    resp.raise_for_status()
-    return parse_financials_pdf(resp.content)
+def parse_financials_pdf(pdf_bytes: bytes) -> dict:
+    """Thin wrapper over extract_pdf_document() that returns just the
+    parsed statements - kept for the __main__ smoke test below and any
+    other caller that only needs statements, not page text. Callers that
+    also need company/period detection (i.e. the upload route) should
+    call extract_pdf_document() directly instead, so the PDF is only
+    read once - see its docstring.
+    """
+    return {'statements': extract_pdf_document(pdf_bytes)['statements']}
 
 
 if __name__ == "__main__":

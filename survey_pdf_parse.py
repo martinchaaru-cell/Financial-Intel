@@ -2,7 +2,7 @@
 Market survey parser - Executive & Non-Executive Directors' Remuneration
 Survey (NSE-wide benchmark report), not a per-company financial statement.
 
-This is deliberately a SEPARATE parser from nse_pdf_parse.py. That one is
+This is deliberately a SEPARATE parser from pdf_parse.py. That one is
 keyed to income-statement / balance-sheet / cash-flow headings and pulls
 one company's own reported figures. This one is keyed to the specific
 table/heading layout of the NSE remuneration survey and pulls aggregate,
