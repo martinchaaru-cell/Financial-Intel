@@ -2077,6 +2077,63 @@ def company_remuneration(company_id):
         'ceo_comp': [cc.to_dict() for cc in survey.ceo_comp],
     })
 
+@app.route('/api/admin/cleanup-stale-companies', methods=['POST'])
+def admin_cleanup_stale_companies():
+    """TEMPORARY one-time maintenance endpoint - delete after use.
+
+    Does exactly what remove_empty_companies.py / Cleanup_empty_periods.py
+    do (deletes ghost FinancialPeriod rows with 0 statements, then
+    Company rows with 0 remaining periods), but runs inside THIS live
+    process - so it's guaranteed to act on whatever database this
+    deployed app is actually connected to, sidestepping any mismatch
+    between the Workspace Shell's DATABASE_URL and the deployed
+    instance's DATABASE_URL (e.g. separate Replit dev/prod DB
+    provisioning).
+
+    Protected by a shared-secret query param (?key=...) checked against
+    the CLEANUP_ADMIN_KEY env var, so it can't be triggered by a random
+    visitor hitting the URL. Set CLEANUP_ADMIN_KEY as a Secret before
+    calling this, then call it once, e.g.:
+        curl -X POST "https://<your-deployed-url>/api/admin/cleanup-stale-companies?key=<the secret>"
+    Remove this whole route (and the CLEANUP_ADMIN_KEY secret) once
+    you've confirmed the Companies list looks right - it's a one-time
+    fix, not something that should stay live.
+    """
+    admin_key = os.environ.get('CLEANUP_ADMIN_KEY')
+    if not admin_key or request.args.get('key') != admin_key:
+        return jsonify({'error': 'Not authorized. Set CLEANUP_ADMIN_KEY as a Secret and pass ?key=<it>.'}), 403
+
+    # Step 1: ghost periods (0 statements attached)
+    periods = FinancialPeriod.query.all()
+    empty_periods = [p for p in periods if not p.statements]
+    deleted_periods = []
+    for p in empty_periods:
+        deleted_periods.append({
+            'company': p.company.name if p.company else f'company_id={p.company_id}',
+            'period': p.period_label,
+        })
+        db.session.delete(p)
+    db.session.commit()
+
+    # Step 2: companies with 0 periods left (re-queried fresh, after step 1's deletes)
+    companies = Company.query.all()
+    empty_companies = [c for c in companies if not c.periods]
+    deleted_companies = []
+    for c in empty_companies:
+        deleted_companies.append({'name': c.name, 'ticker': c.ticker, 'id': c.id})
+        Financials.query.filter_by(company_id=c.id).delete()
+        db.session.delete(c)
+    db.session.commit()
+
+    remaining = Company.query.count()
+    return jsonify({
+        'deleted_periods': deleted_periods,
+        'deleted_periods_count': len(deleted_periods),
+        'deleted_companies': deleted_companies,
+        'deleted_companies_count': len(deleted_companies),
+        'companies_remaining': remaining,
+    })
+
 @app.route('/api/companies/<int:company_id>/trends')
 def company_trends(company_id):
     """Every period's metrics for one company, oldest to newest, for the
