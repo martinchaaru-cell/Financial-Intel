@@ -2837,7 +2837,7 @@ async function renderCompanyOverviewTab(companyId){
       <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
       <div class="panel">
         <div class="empty">No financial periods recorded yet for ${escapeHtml(c.name)}.</div>
-        <button style="margin-top:10px;" onclick="openUploadReportsModal(${companyId}, ${JSON.stringify(c.name)})">⭱ Upload Documents</button>
+        <button style="margin-top:10px;" onclick="openUploadReportsModal(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">⭱ Upload Documents</button>
       </div>
       ${await renderCompanyDetailLegacyBody(companyId)}`;
     return;
@@ -2880,7 +2880,7 @@ async function renderCompanyOverviewTab(companyId){
           <div class="fy-label">Currency</div>
           <div style="font-size:15px;font-weight:700;">${escapeHtml((dv && dv.period && dv.period.currency) || 'KES')}</div>
         </div>
-        <button class="secondary" style="margin:0;" onclick="openUploadReportsModal(${companyId}, ${JSON.stringify(c.name)})">⭱ Upload Documents</button>
+        <button class="secondary" style="margin:0;" onclick="openUploadReportsModal(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">⭱ Upload Documents</button>
         <button class="secondary" style="margin:0;" onclick="toggleEditDataPanel()">✏️ Add / Edit Data</button>
         ${detailExportMenuHtml(companyId)}
         <button class="icon-btn" title="Delete company" onclick="deleteCurrentCompany()">🗑️</button>

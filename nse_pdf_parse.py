@@ -62,6 +62,19 @@ _SECTION_STOP_RES = [
         r"^\s*the\s+notes.*form\s+an\s+integral\s+part",
     ]
 ]
+# Section-title style notes markers - these need the same short/ALL-CAPS
+# heading test _classify_statement uses (via _looks_like_heading_line),
+# unlike the two patterns above which are meant to match ordinary
+# boilerplate sentences. Without that guard, a running header repeated on
+# every page of this document ("...STAKEHOLDERS NOTES OF THE BOD
+# INDEX...", the site nav reused as a page banner) or a stray mid-
+# sentence mention could trip these.
+_SECTION_STOP_HEADING_RES = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"financial\s+statements\s*[-\u2013\u2014]\s*notes",
+        r"^\s*notes\s*$",
+    ]
+]
 
 # ---------- CANONICAL LABEL -> normalized_name ----------
 # Anything not matched here is still extracted, just with
@@ -80,6 +93,17 @@ CANONICAL_LINE_ITEMS = {
         # comprehensive income" which also contain "income" but are a
         # different figure entirely.
         r"^total\s+income$": 'revenue',
+        # A bank's income statement sums net interest income + net fee
+        # income + other income into a single top-line subtotal labelled
+        # "Total net income" (see e.g. Equity Group's format) - it plays
+        # the same role "Total operating income" does for other banks,
+        # NOT the bottom-line profit figure. Ordered before the generic
+        # net_income patterns below so this specific subtotal always wins
+        # that match first; without it, "net\s+income" (deliberately kept
+        # broad, since plenty of filings really do just say "Net income")
+        # would grab it and both misreport revenue as missing and net
+        # income as the wrong (much larger, pre-expense) figure.
+        r"total\s+net\s+income": 'revenue',
         r"total\s+interest\s+and\s+similar\s+income": 'interest_income',
         r"interest\s+expense": 'interest_expense',
         r"cost\s+of\s+sales": 'cost_of_sales',
@@ -265,6 +289,108 @@ def _looks_like_label(label: str) -> bool:
     return True
 
 
+# A genuine statement heading in these filings is its own short, ALL-CAPS
+# line ("CONSOLIDATED STATEMENT OF FINANCIAL POSITION") - never a mid-
+# sentence mention. A long-form annual/integrated report runs 100-300+
+# pages of narrative (highlights, strategy, sustainability, governance)
+# before the actual statements, and that narrative routinely uses the
+# same words in passing - "...strong balance sheet momentum and healthy
+# liquidity...", "...give a true and fair view of the financial position
+# of the Group...". Those lines have no digit on them either (so the
+# TOC guard above doesn't catch them), and without this check one such
+# sentence anywhere in the front matter flips current_stmt on early and
+# every number on every page after it - for however many pages until the
+# real heading is reached - gets vacuumed up as if it were that
+# statement's own line items.
+_HEADING_MAX_WORDS = 10
+
+# A heading never trails off on a dangling connector - a genuine title is
+# a complete noun phrase ("... Statement of Financial Position"), while a
+# narrative sentence that got line-wrapped mid-clause ("...strong balance
+# sheet momentum and healthy liquidity across the") almost always ends on
+# one of these. This is what actually distinguishes the two, rather than
+# capitalization: headings are set in ALL CAPS in some filings' PDFs but
+# plain sentence-case ("Consolidated statement of ...", capital only on
+# the first word) in others, so a capitalization-ratio check can't be
+# relied on to hold across different filers/years.
+_HEADING_BAD_ENDINGS = {
+    'the', 'a', 'an', 'of', 'and', 'or', 'in', 'on', 'at', 'to', 'for',
+    'by', 'with', 'that', 'this', 'is', 'are', 'was', 'were', 'as',
+}
+
+def _dedupe_word(word: str):
+    if len(word) < 2 or len(word) % 2 != 0:
+        return None
+    even, odd = word[0::2], word[1::2]
+    return even if even == odd else None
+
+def _dedupe_char_doubled(line: str):
+    """Some filings' PDFs render bold headings as every character drawn
+    twice in the content stream - "CCoonnssoolliiddaatteedd" for
+    "Consolidated" - which pdfplumber then extracts literally; the single
+    space between words is untouched, so this has to de-duplicate word by
+    word rather than treating the whole line as one even/odd-index split
+    (a single un-doubled space anywhere shifts every following
+    character's parity and breaks a whole-line split). Requires nearly
+    every word in the line to fit the doubled pattern before returning
+    anything, so an ordinary line - short numeric fragment included -
+    is never mistaken for one."""
+    words = line.split(' ')
+    alpha_words = [w for w in words if any(ch.isalpha() for ch in w)]
+    if len(alpha_words) < 2:
+        return None
+    deduped, hits = [], 0
+    for w in words:
+        dw = _dedupe_word(w) if w else w
+        if dw is not None:
+            if any(ch.isalpha() for ch in w):
+                hits += 1
+            deduped.append(dw)
+        else:
+            deduped.append(w)
+    if hits < len(alpha_words) - 1:
+        return None
+    result = ' '.join(deduped)
+    if sum(1 for ch in result if ch.isalpha()) < 8:
+        return None
+    return result
+
+def _heading_candidate(line: str):
+    """The text a heading check should actually run against, and whether
+    it got there by collapsing a doubled-character bold heading -
+    (candidate_text, was_doubled)."""
+    deduped = _dedupe_char_doubled(line)
+    return (deduped, True) if deduped is not None else (line, False)
+
+def _looks_like_heading_line(line: str, was_doubled: bool = False) -> bool:
+    text = re.sub(r'\(continued\)\s*$', '', line.strip(), flags=re.IGNORECASE).strip()
+    words = text.split()
+    if not words or len(words) > _HEADING_MAX_WORDS:
+        return False
+    last_word = re.sub(r'[^a-zA-Z]', '', words[-1]).lower()
+    if last_word in _HEADING_BAD_ENDINGS:
+        return False
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return False
+    # Surviving the doubled-character check above is itself strong
+    # evidence this line is a specially-rendered (bold) heading, not body
+    # text - ordinary prose in these PDFs is never emitted that way - so
+    # a doubled line only needs the length/ending checks above. A normal
+    # (non-doubled) line still needs to pass the stricter ALL-CAPS test:
+    # that's what actually separates a real heading ("CONSOLIDATED
+    # STATEMENT OF FINANCIAL POSITION") from a short, capitalized,
+    # non-stopword-ending sentence START that just happens to mention the
+    # same words in passing ("Balance sheet resilience defined this
+    # year's results.") - which a length/ending/first-letter check alone
+    # doesn't reliably catch, as a genuinely glossy report's narrative
+    # front matter turned out to contain plenty of.
+    if was_doubled:
+        return True
+    upper_ratio = sum(1 for ch in letters if ch.isupper()) / len(letters)
+    return upper_ratio > 0.85
+
+
 def _classify_statement(line: str):
     # A TOC/contents-page entry repeats the exact heading text followed by
     # a page number or page range on the same line - reject those so the
@@ -272,9 +398,12 @@ def _classify_statement(line: str):
     # statement (see _HEADING_HAS_DIGIT_RE's comment above).
     if _HEADING_HAS_DIGIT_RE.search(line):
         return None
+    candidate, was_doubled = _heading_candidate(line)
+    if not _looks_like_heading_line(candidate, was_doubled):
+        return None
     for stmt, regexes in _HEADING_RES.items():
         for rx in regexes:
-            if rx.search(line):
+            if rx.search(candidate):
                 return stmt
     return None
 
@@ -469,6 +598,10 @@ def parse_financials_text(pages_text) -> dict:
             if any(rx.search(line) for rx in _SECTION_STOP_RES):
                 current_stmt = None
                 continue
+            stop_candidate, stop_was_doubled = _heading_candidate(line)
+            if _looks_like_heading_line(stop_candidate, stop_was_doubled) and any(rx.search(stop_candidate) for rx in _SECTION_STOP_HEADING_RES):
+                current_stmt = None
+                continue
 
             label, numbers = _split_label_and_numbers(line)
             if not numbers or not _looks_like_label(label):
@@ -543,7 +676,25 @@ def parse_financials_text(pages_text) -> dict:
 
 def parse_financials_pdf(pdf_bytes: bytes) -> dict:
     """Extract text page-by-page (page number matters now, for provenance)
-    and run the statement-aware parser over it."""
+    and run the statement-aware parser over it.
+
+    NOTE on performance: this is the slow part of an import - measured
+    ~105s for a dense 298-page integrated report, almost entirely inside
+    pdfplumber's extract_text() (confirmed by timing that call alone).
+    A PyMuPDF swap was tried and reverted: PyMuPDF's plain get_text() is
+    ~55x faster but does NOT reconstruct table rows the way pdfplumber
+    does - "Interest income 6 188,329 185,344" (one line, one row) comes
+    back from PyMuPDF as four separate lines, one per column - which
+    silently breaks _split_label_and_numbers() and guts extraction rather
+    than just slowing it down. Fixing the speed properly means either
+    reconstructing rows from PyMuPDF's word-level coordinates (real work,
+    real new surface for bugs) or moving big-PDF imports off the request/
+    response cycle entirely (background worker + poll/webhook) - not a
+    one-line fix, so left alone for now rather than shipped half-tested.
+    Because of this, upload-batch requests with several large filings can
+    take minutes; size any timeout (proxy, gunicorn worker, frontend
+    fetch) accordingly, or reduce how many large files go in one batch.
+    """
     pages_text = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
