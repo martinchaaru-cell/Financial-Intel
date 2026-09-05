@@ -233,11 +233,22 @@ class PeriodFinancialsView:
         self.total_assets = _line_item_amount(period, 'total_assets')
         self.total_liabilities = _line_item_amount(period, 'total_liabilities')
         self.total_equity = _line_item_amount(period, 'total_equity')
+        self.gross_profit = _line_item_amount(period, 'gross_profit')
+        self.operating_profit = _line_item_amount(period, 'operating_profit')
+        self.shares_outstanding = _line_item_amount(period, 'shares_outstanding')
         metrics = {m.metric_name: m.value for m in period.calculated_metrics}
         self._net_margin = metrics.get('net_margin')
         self._roe = metrics.get('roe')
         self._roa = metrics.get('roa')
         self._debt_equity = metrics.get('debt_equity')
+        # gross_margin/operating_margin/eps: only present in
+        # CalculatedMetric when ratios.py actually had the underlying
+        # line item to compute them from (see calculate_ratios) - stay
+        # None (never estimated) otherwise, same "honest absence" rule
+        # the rest of this view already follows for net_margin/roe/roa.
+        self._gross_margin = metrics.get('gross_margin')
+        self._operating_margin = metrics.get('operating_margin')
+        self._eps = metrics.get('eps')
         has_source = any(s.source_document_id for s in period.statements)
         self.source = 'pdf_upload' if has_source else 'manual'
 
@@ -251,7 +262,11 @@ class PeriodFinancialsView:
             'revenue': self.revenue, 'net_income': self.net_income,
             'total_assets': self.total_assets, 'total_liabilities': self.total_liabilities,
             'total_equity': self.total_equity, 'source': self.source,
+            'gross_profit': self.gross_profit, 'operating_profit': self.operating_profit,
+            'shares_outstanding': self.shares_outstanding,
             'net_margin': net_margin, 'roe': roe, 'roa': self._roa, 'debt_equity': debt_equity,
+            'gross_margin': self._gross_margin, 'operating_margin': self._operating_margin,
+            'eps': self._eps,
             'financial_score': score, 'score_band': score_band(score),
         }
 
@@ -1930,9 +1945,12 @@ def company_intelligence_report(company_id):
 
     key_ratios = [
         {'metric': 'Net Profit Margin', 'current': ld['net_margin'], 'prior': pd_['net_margin'] if pd_ else None, 'suffix': '%'},
+        {'metric': 'Gross Margin', 'current': ld['gross_margin'], 'prior': pd_['gross_margin'] if pd_ else None, 'suffix': '%'},
+        {'metric': 'Operating Margin', 'current': ld['operating_margin'], 'prior': pd_['operating_margin'] if pd_ else None, 'suffix': '%'},
         {'metric': 'ROE', 'current': ld['roe'], 'prior': pd_['roe'] if pd_ else None, 'suffix': '%'},
         {'metric': 'ROA', 'current': roa, 'prior': prior_roa, 'suffix': '%'},
         {'metric': 'Debt to Equity', 'current': ld['debt_equity'], 'prior': pd_['debt_equity'] if pd_ else None, 'suffix': ''},
+        {'metric': 'EPS', 'current': ld['eps'], 'prior': pd_['eps'] if pd_ else None, 'suffix': ''},
     ]
     for r in key_ratios:
         r['change'] = delta(r['current'], r['prior'])

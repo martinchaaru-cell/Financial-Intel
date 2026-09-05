@@ -57,10 +57,32 @@ def calculate_ratios(period: FinancialPeriod):
     total_assets = _find_amount(period, 'total_assets')
     total_liabilities = _find_amount(period, 'total_liabilities')
     total_equity = _find_amount(period, 'total_equity')
+    gross_profit = _find_amount(period, 'gross_profit')
+    operating_profit = _find_amount(period, 'operating_profit')
+    eps = _find_amount(period, 'eps')
+    shares_outstanding = _find_amount(period, 'shares_outstanding')
 
     if revenue:
         _upsert_metric(period, 'net_margin', (net_income / revenue * 100) if net_income is not None else None,
                         'net_income / revenue * 100')
+        # Only computed when the filing actually reported a gross_profit /
+        # operating_profit subtotal line - never derived by subtracting
+        # unrelated line items, since not every filing breaks out COGS or
+        # an operating-profit subtotal the same way.
+        _upsert_metric(period, 'gross_margin', (gross_profit / revenue * 100) if gross_profit is not None else None,
+                        'gross_profit / revenue * 100')
+        _upsert_metric(period, 'operating_margin', (operating_profit / revenue * 100) if operating_profit is not None else None,
+                        'operating_profit / revenue * 100')
+    # EPS: prefer the figure the filing reports directly (eps) - it's the
+    # audited number and may reflect diluted shares, buybacks mid-year, or
+    # other adjustments a simple net_income/shares_outstanding recompute
+    # would miss. Only fall back to computing it when the filing gave a
+    # shares count but no EPS line of its own.
+    if eps is not None:
+        _upsert_metric(period, 'eps', eps, 'as reported')
+    elif shares_outstanding:
+        _upsert_metric(period, 'eps', (net_income / shares_outstanding) if net_income is not None else None,
+                        'net_income / shares_outstanding')
     if total_equity:
         _upsert_metric(period, 'roe', (net_income / total_equity * 100) if net_income is not None else None,
                         'net_income / total_equity * 100')

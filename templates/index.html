@@ -2686,6 +2686,7 @@ const IR_TABS = [
   {id:'remuneration', label:'Remuneration', icon:'🧾'},
   {id:'outlook', label:'Outlook', icon:'🧭'},
   {id:'source-evidence', label:'Source Evidence', icon:'📁'},
+  {id:'raw-data', label:'Raw Data', icon:'🗂️'},
 ];
 
 let irChart1 = null, irChart2 = null;
@@ -2795,6 +2796,7 @@ function renderIRTabBody(){
   else if (irTab === 'remuneration') { el.innerHTML = `<div class="empty">Loading remuneration benchmark...</div>`; irRemunerationTab(ir); }
   else if (irTab === 'outlook') el.innerHTML = irOutlookTab(ir);
   else if (irTab === 'source-evidence') el.innerHTML = irSourceEvidenceTab(ir);
+  else if (irTab === 'raw-data') { el.innerHTML = `<div class="empty">Loading raw financial statements...</div>`; irRawDataTab(irCache.company.id); }
 }
 
 function irGauge(score, band){
@@ -2899,7 +2901,7 @@ function irFinancialAnalysisTab(ir){
           <tbody>${ratioRows}</tbody>
         </table>
         <div style="font-size:10.5px;color:var(--text-faint);margin-top:12px;line-height:1.5;">
-          Gross/operating margin and EPS aren't shown — this company's saved figures don't include gross profit, operating profit, or shares outstanding, so those ratios can't be computed without guessing.
+          Gross Margin, Operating Margin, and EPS show "-" for any period whose filing didn't report a gross profit, operating profit, or EPS/shares-outstanding line — never estimated in place of a real figure.
         </div>
       </div>
     </div>
@@ -3208,6 +3210,49 @@ async function renderFullStatementsPanel(companyId){
       <div class="panel-head"><h2>Full Financial Report</h2></div>
       ${jumpNav}
       <div id="report-panel-body">${periodSections}</div>
+    </div>`;
+}
+
+async function irRawDataTab(companyId){
+  // Raw Data tab: every statement type (income statement/balance sheet/
+  // cash flow/equity), every line item, at every depth, for every period
+  // on record - reuses the same per-period fetch + renderFullPeriodSection/
+  // renderLineItemRows the Company Detail page's "Full Financial Report"
+  // panel already uses, so the two never disagree about what a filing
+  // actually contained. Fetches its own period list independently (rather
+  // than relying on currentPeriodsCache) since the Intelligence Report can
+  // be reached straight from the nav without ever visiting the Company
+  // Detail page first, in which case that cache would still be empty.
+  const el = document.getElementById('ir-tab-body');
+  const periodsRes = await fetch(`/api/companies/${companyId}/periods`);
+  const periods = await safeJson(periodsRes, []);
+
+  if (!periods.length) {
+    el.innerHTML = `<div class="panel"><div class="empty">No financial statements recorded yet for this company.</div></div>`;
+    return;
+  }
+
+  const detailFetches = periods.map(p =>
+    fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(p.period_label)}`).then(r => r.ok ? r.json() : null)
+  );
+  const allPeriodDetails = (await Promise.all(detailFetches)).filter(Boolean);
+
+  const jumpNav = allPeriodDetails.length ? `
+    <div class="period-jump-nav">
+      ${allPeriodDetails.map(p => `<a href="#period-${escapeHtml(p.period_label)}">${escapeHtml(p.period_label)}</a>`).join('')}
+    </div>` : '';
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Raw Financial Statements</h2>
+        <button class="secondary" style="margin:0;" onclick="window.location.href='/api/companies/${companyId}/export/raw.csv'">🗂️ Export Raw (.csv)</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-faint);margin-bottom:12px;">
+        Every line item exactly as captured from the underlying filing, unrounded and unadjusted - this is the source data behind every ratio and chart elsewhere in this report.
+      </div>
+      ${jumpNav}
+      <div id="ir-raw-data-body">${allPeriodDetails.map(p => renderFullPeriodSection(p, companyId)).join('')}</div>
     </div>`;
 }
 

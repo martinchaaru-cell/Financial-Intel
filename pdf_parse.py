@@ -145,6 +145,18 @@ CANONICAL_LINE_ITEMS = {
         r"depreciation": 'depreciation',
         r"amortisation|amortization": 'amortisation',
         r"finance\s+costs?": 'finance_costs',
+        # "Operating profit" / "Profit from operations" - the pre-finance-
+        # cost, pre-tax subtotal a P&L reports before "profit before tax"
+        # (which is operating profit net of finance costs/income). Kept
+        # distinct from profit_before_tax below - anchored with a
+        # trailing \b so it doesn't also swallow "Operating profit margin"
+        # commentary lines, and ordered before profit_before_tax since a
+        # line literally reading "Operating profit before tax" (seen on
+        # some filings) should still resolve to operating_profit, not be
+        # shadowed by the narrower phrase.
+        r"operating\s+profit\b": 'operating_profit',
+        r"profit\s+from\s+operations": 'operating_profit',
+        r"results?\s+from\s+operating\s+activities": 'operating_profit',
         r"profit\s+before\s+tax": 'profit_before_tax',
         r"income\s+tax\s+expense": 'tax_expense',
         r"profit\s+for\s+the\s+(period|year)": 'net_income',
@@ -152,6 +164,14 @@ CANONICAL_LINE_ITEMS = {
         r"net\s+profit": 'net_income',
         r"net\s+income": 'net_income',
         r"earnings\s+per\s+share": 'eps',
+        # Weighted-average / basic shares outstanding - usually sits right
+        # next to the EPS line in the P&L or its accompanying note, stated
+        # as a share count rather than a currency amount. "Weighted
+        # average number of (ordinary )?shares" is the IFRS-standard
+        # phrasing; "shares in issue" is the more plain-language variant
+        # some filings use for the same figure.
+        r"weighted\s+average\s+number\s+of\s+(ordinary\s+)?shares": 'shares_outstanding',
+        r"number\s+of\s+shares\s+in\s+issue": 'shares_outstanding',
     },
     'balance_sheet': {
         r"total\s+assets": 'total_assets',
@@ -195,7 +215,7 @@ _CANONICAL_RES = {
 _SIGNED_ALLOWED = {
     'net_income', 'operating_cash_flow', 'investing_cash_flow',
     'financing_cash_flow', 'total_comprehensive_income', 'eps',
-    'dividends_paid',
+    'dividends_paid', 'operating_profit',
 }
 
 _NUMBER_RE = re.compile(r"\(?-?\d[\d,]*\.?\d*\)?")
