@@ -20,6 +20,7 @@ from company_directory import match_company
 from pdf_parse import (
     match_canonical_label, parse_financials_pdf, extract_pdf_document,
     detect_period_label, detect_prior_period_label, detect_company_name,
+    extract_director_remuneration,
 )
 from survey_pdf_parse import parse_survey_pdf
 from report_context import build_report_context
@@ -76,15 +77,14 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_recycle': 280,
 }
 
-# Hard cap on request body size, so an oversized upload is rejected up
-# front with a clear JSON error instead of being read into memory and
-# failing unpredictably later. 60 MB comfortably covers a batch of up to
-# 10 financial-statement PDFs (annual reports are usually under 5 MB;
-# even a dense 300-page integrated report with embedded images tends to
-# land well under 30 MB) while still catching a genuinely wrong upload.
-# Raise this (and the matching platform/proxy timeout - see pdf_parse.py's
-# parse_financials_pdf docstring) if legitimate reports start hitting it.
-app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
+# No hard cap on request body size: file COUNT is capped (10 per batch,
+# enforced client-side and, more importantly, server-side in
+# /api/import/upload-batch itself - see that route) but total MB is not,
+# since a batch of real integrated reports (dense, image-heavy, 200-300
+# pages) can comfortably exceed what any fixed MB number would assume.
+# MAX_CONTENT_LENGTH is intentionally left unset (Flask/Werkzeug default:
+# no limit) rather than raised to a new fixed number, so a future batch
+# of unusually large reports can't hit the same wall again.
 
 db.init_app(app)
 
@@ -1330,6 +1330,40 @@ def upload_documents_batch():
             if prior_status == 201:
                 saved += 1
                 periods_saved.append(prior_period_label)
+
+            # Director remuneration total (see extract_director_remuneration's
+            # docstring for scope: only the filing's OWN printed grand total,
+            # never a computed/summed one) - belongs to the CURRENT period
+            # specifically, not the derived prior-year comparative period,
+            # since the table's own "Total" column is for one reporting year
+            # at a time. Best-effort and non-fatal: a failure here should
+            # never turn an otherwise-successful statement import into a
+            # failed one, so it's wrapped separately from the save above.
+            try:
+                remuneration = extract_director_remuneration(pdf_bytes)
+                if remuneration and result.get('company_id'):
+                    period_row = FinancialPeriod.query.filter_by(
+                        company_id=result['company_id'], period_label=period_label
+                    ).first()
+                    if period_row:
+                        existing_metric = OperationalMetric.query.filter_by(
+                            period_id=period_row.id, metric_name='total_director_remuneration'
+                        ).first()
+                        if existing_metric:
+                            existing_metric.value = remuneration['total']
+                            existing_metric.unit = remuneration.get('currency_hint') or existing_metric.unit
+                        else:
+                            db.session.add(OperationalMetric(
+                                period_id=period_row.id,
+                                metric_name='total_director_remuneration',
+                                value=remuneration['total'],
+                                unit=remuneration.get('currency_hint') or 'KES thousands',
+                            ))
+                        db.session.commit()
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Director remuneration extraction failed for {filename} (non-fatal)')
+
             results.append({
                 'filename': filename, 'ok': True,
                 'company_id': result['company_id'],
@@ -2052,15 +2086,32 @@ def company_intelligence_report(company_id):
 
 @app.route('/api/companies/<int:company_id>/remuneration')
 def company_remuneration(company_id):
-    """Remuneration-tab data for one company: the latest imported market
-    survey's percentile tables, benefits, and CEO/MD comp, plus which
-    sector the survey itself placed this company in (for any sector-level
-    breakout). Independent of Financials/FinancialPeriod - this is
-    NSE-market benchmark context, never the company's own figures."""
+    """Remuneration-tab data for one company: this company's OWN filed
+    director remuneration totals (from OperationalMetric, one per period -
+    see extract_director_remuneration in pdf_parse.py for how these get
+    populated on upload) plus the latest imported market survey's
+    percentile tables, benefits, and CEO/MD comp for context, and which
+    sector the survey itself placed this company in. The two are
+    independent and clearly separated in the response - the company's own
+    filed total is never blended into or compared against the survey
+    numbers automatically, since the survey is a market-wide, not
+    per-company, disclosure."""
     c = Company.query.get_or_404(company_id)
+
+    own_remuneration = []
+    periods = _ordered_periods(company_id)
+    for p in periods:
+        metric = OperationalMetric.query.filter_by(
+            period_id=p.id, metric_name='total_director_remuneration'
+        ).first()
+        if metric:
+            own_remuneration.append({
+                'period_label': p.period_label, 'total': metric.value, 'unit': metric.unit,
+            })
+
     survey = _latest_survey()
     if not survey:
-        return jsonify({'has_survey': False})
+        return jsonify({'has_survey': False, 'own_remuneration': own_remuneration})
 
     matched_sector = _match_survey_sector(survey, c.name)
     remuneration_stats = {}
@@ -2069,6 +2120,7 @@ def company_remuneration(company_id):
 
     return jsonify({
         'has_survey': True,
+        'own_remuneration': own_remuneration,
         'survey': survey.to_dict(),
         'matched_sector': matched_sector,
         'remuneration_stats': remuneration_stats,

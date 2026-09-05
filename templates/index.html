@@ -1222,10 +1222,10 @@ function closeAddCompanyModal(){
 /* ---------- MULTI-FILE ANNUAL REPORT UPLOAD ---------- */
 
 const UPLOAD_MAX_FILES = 10;
-// Mirrors app.py's MAX_CONTENT_LENGTH (60 MB per request) - checked
-// client-side too so an oversized batch is caught before spending time
-// uploading it, not after.
-const UPLOAD_MAX_TOTAL_BYTES = 60 * 1024 * 1024;
+// No total-size cap - only the file-count cap above applies. A batch of
+// real integrated reports can comfortably exceed any fixed MB number
+// (dense annual reports commonly run past 15-20 MB each), and the
+// backend (app.py) no longer enforces one either.
 let uploadReportsFiles = [];
 // When set, every file in the batch is saved straight to this company
 // (no auto-detection/matching) - set by openUploadReportsModal(companyId)
@@ -1288,15 +1288,12 @@ function onUploadReportsFilesChosen(fileList){
   }
 
   const totalBytes = uploadReportsFiles.reduce((sum, f) => sum + f.size, 0);
-  const overLimit = totalBytes > UPLOAD_MAX_TOTAL_BYTES;
   const header = chosen.length > UPLOAD_MAX_FILES ? '' :
-    `<div style="color:${overLimit ? 'var(--red,#c0392b)' : 'var(--text-secondary,#666)'};margin-bottom:4px;">` +
-    `${uploadReportsFiles.length} of ${UPLOAD_MAX_FILES} file(s) selected — ${_formatBytes(totalBytes)} total` +
-    (overLimit ? ` (over the ${_formatBytes(UPLOAD_MAX_TOTAL_BYTES)} limit for one batch — remove a file or split into two uploads)` : '') +
-    `:</div>`;
+    `<div style="color:var(--text-secondary,#666);margin-bottom:4px;">` +
+    `${uploadReportsFiles.length} of ${UPLOAD_MAX_FILES} file(s) selected — ${_formatBytes(totalBytes)} total:</div>`;
   listEl.innerHTML = header +
     uploadReportsFiles.map(f => `<div>📄 ${escapeHtml(f.name)} <span style="color:var(--text-secondary,#666);">(${(f.size/1024/1024).toFixed(1)} MB)</span></div>`).join('');
-  submitBtn.disabled = overLimit;
+  submitBtn.disabled = false;
 }
 
 function _formatBytes(bytes){
@@ -3008,11 +3005,31 @@ async function irRemunerationTab(ir){
   const el = document.getElementById('ir-tab-body');
   if (irTab !== 'remuneration') return;
   const res = await fetch(`/api/companies/${currentCompanyId}/remuneration`);
-  const data = await safeJson(res, {has_survey: false});
+  const data = await safeJson(res, {has_survey: false, own_remuneration: []});
   if (irTab !== 'remuneration') return; // user may have switched tabs while this loaded
 
+  const ownRows = (data.own_remuneration || []);
+  const ownPanel = ownRows.length ? `
+    <div class="panel">
+      <div class="ir-panel-title">Total Director Remuneration — as filed (${escapeHtml(irCache.company.name)})</div>
+      <table>
+        <thead><tr><th>Period</th><th class="amount">Total</th></tr></thead>
+        <tbody>${ownRows.map(r => `<tr><td>${escapeHtml(r.period_label)}</td><td class="amount">${fmtAmount(r.total)}${r.unit ? ' ' + escapeHtml(r.unit) : ''}</td></tr>`).join('')}</tbody>
+      </table>
+      <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">
+        From this company's own Directors' Remuneration Report, as printed in its filing - a single filed total per
+        period, not a per-director breakdown and not computed/summed by this app. Some filings don't print one
+        explicit total (this app never estimates one in that case), so not every period will show a row here.
+      </div>
+    </div>` : `
+    <div class="panel">
+      <div class="ir-panel-title">Total Director Remuneration — as filed</div>
+      <div class="empty">No filed total found in this company's uploaded reports yet - either none has been
+        uploaded with a Directors' Remuneration Report, or that report didn't print one single total figure.</div>
+    </div>`;
+
   if (!data.has_survey) {
-    el.innerHTML = `
+    el.innerHTML = ownPanel + `
       <div class="panel">
         <div class="ir-panel-title">Director &amp; Executive Remuneration Benchmark</div>
         <div class="empty">No remuneration survey imported yet.</div>
@@ -3054,7 +3071,7 @@ async function irRemunerationTab(ir){
   const ceoRows = data.ceo_comp.map(cc => `
     <tr><td>${escapeHtml(cc.component_name)}</td><td class="amount">${fmtAmount(cc.p25)}</td><td class="amount">${fmtAmount(cc.p50)}</td><td class="amount">${fmtAmount(cc.p75)}</td><td class="amount">${fmtAmount(cc.average)}</td></tr>`).join('');
 
-  el.innerHTML = `
+  el.innerHTML = ownPanel + `
     <div class="panel">
       <div class="panel-head">
         <h2>${escapeHtml(data.survey.title)} ${data.survey.edition ? '· ' + escapeHtml(data.survey.edition) : ''}</h2>

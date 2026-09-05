@@ -39,7 +39,11 @@ STATEMENT_HEADINGS = {
         r"balance\s+sheet",
     ],
     'cash_flow': [
-        r"statement\s+of\s+cash\s+flows?",
+        # \s* (not \s+) between "cash" and "flow(s)" - confirmed on a
+        # real KCB filing that prints this heading as one word,
+        # "Consolidated statement of cashflows", alongside other filings
+        # that space it normally ("statement of cash flows").
+        r"statement\s+of\s+cash\s*flows?",
     ],
     'equity': [
         r"statement\s+of\s+changes\s+in\s+equity",
@@ -76,6 +80,27 @@ _SECTION_STOP_RES = [
 # every page of this document ("...STAKEHOLDERS NOTES OF THE BOD
 # INDEX...", the site nav reused as a page banner) or a stray mid-
 # sentence mention could trip these.
+# A numbered note heading ("1. Reporting entity", "2. Material accounting
+# policies", "36. Deposits from customers") - confirmed on a real KCB
+# filing to be the ONLY signal that the notes section has started on
+# filings that never print a standalone "Notes to the Financial
+# Statements" banner line at all (the numbered notes just start directly
+# after the primary statements). Checked against every page of that
+# filing's real statements (pages 73-78) with zero false positives - the
+# numbering only starts exactly where the notes do. Still run through
+# the same short-line heading guard as _SECTION_STOP_HEADING_RES so a
+# numbered list item deep inside ordinary body prose (rare, but possible)
+# doesn't trip it.
+_NUMBERED_NOTE_HEADING_RE = re.compile(r"^\s*\d{1,2}\.\s+[A-Z]")
+
+
+def _is_numbered_note_heading(line: str) -> bool:
+    if not _NUMBERED_NOTE_HEADING_RE.match(line):
+        return False
+    candidate, was_doubled = _heading_candidate(line)
+    return _looks_like_heading_line(candidate, was_doubled)
+
+
 _SECTION_STOP_HEADING_RES = [
     re.compile(p, re.IGNORECASE) for p in [
         r"financial\s+statements\s*[-\u2013\u2014]\s*notes",
@@ -383,19 +408,25 @@ def _looks_like_heading_line(line: str, was_doubled: bool = False) -> bool:
     # Surviving the doubled-character check above is itself strong
     # evidence this line is a specially-rendered (bold) heading, not body
     # text - ordinary prose in these PDFs is never emitted that way - so
-    # a doubled line only needs the length/ending checks above. A normal
-    # (non-doubled) line still needs to pass the stricter ALL-CAPS test:
-    # that's what actually separates a real heading ("CONSOLIDATED
-    # STATEMENT OF FINANCIAL POSITION") from a short, capitalized,
-    # non-stopword-ending sentence START that just happens to mention the
-    # same words in passing ("Balance sheet resilience defined this
-    # year's results.") - which a length/ending/first-letter check alone
-    # doesn't reliably catch, as a genuinely glossy report's narrative
-    # front matter turned out to contain plenty of.
+    # a doubled line only needs the length/ending checks above.
     if was_doubled:
         return True
-    upper_ratio = sum(1 for ch in letters if ch.isupper()) / len(letters)
-    return upper_ratio > 0.85
+    # NOTE: an ALL-CAPS line is a strong positive signal but is NOT
+    # required - confirmed on real filings (KCB 2024/2025) that print
+    # their genuine statement headings in plain sentence-case
+    # ("Consolidated statement of comprehensive income", capital only on
+    # the first word). Requiring upper_ratio > 0.85 here silently
+    # dropped every statement in those filings down to the fast
+    # prefilter's 5-page fallback. The length + bad-ending checks above
+    # are deliberately NOT enough on their own to call this a heading
+    # (a narrative fragment like "Balance sheet resilience defined this
+    # year's results." also passes them) - callers that go on to treat a
+    # match as the start of a real statement section (parse_financials_text)
+    # must additionally corroborate with _has_nearby_note_column() before
+    # trusting it; the fast prefilter (_fast_prefilter_pages) doesn't need
+    # that corroboration since it only produces a candidate-page shortlist,
+    # not the final parse.
+    return True
 
 
 def _classify_statement(line: str):
@@ -413,6 +444,57 @@ def _classify_statement(line: str):
             if rx.search(candidate):
                 return stmt
     return None
+
+
+# A real audited statement's heading is followed within a line or two by
+# a "Note" column header (alongside the year columns) - confirmed on
+# every real KCB/NSE-convention filing checked. A pre-statement summary
+# table that reuses the SAME heading wording (e.g. a "Five-Year Review"
+# page in the front matter, confirmed on a real KCB filing: "Consolidated
+# statement of financial position" sitting over a 5-year, no-Note-column
+# KPI table, not the actual balance sheet) never has this column, because
+# it isn't tied to numbered notes to the accounts at all. This is what
+# lets _looks_like_heading_line() safely accept sentence-case headings
+# without reopening that false positive - see its docstring note.
+# A real statement's column-header line names the "Note" column on its
+# own (optionally alongside a currency-unit column, e.g. " Note Kshs
+# million Kshs million") - confirmed across every real statement page
+# checked (KCB 2024/2025). This must NOT match a bare cross-reference
+# like "(Note 46)" inside ordinary notes prose (confirmed on a real KCB
+# filing: "Off balance sheet letters of credit and guarantees (Note 46)"
+# sits a few lines under an unrelated "(d) Off balance sheet items"
+# sub-heading that otherwise false-matches the balance_sheet pattern -
+# see _has_nearby_note_column's docstring). The distinction: a genuine
+# column-header line is SHORT (just column labels, no sentence content)
+# and starts with "Note" as its own word, rather than merely containing
+# "Note" anywhere in a longer sentence.
+_NOTE_COLUMN_RE = re.compile(r"^\s*note\b", re.IGNORECASE)
+
+
+def _has_nearby_note_column(lines: list, heading_idx: int, lookahead: int = 4) -> bool:
+    for line in lines[heading_idx + 1: heading_idx + 1 + lookahead]:
+        stripped = line.strip()
+        # Column-header line only - short (a handful of column labels,
+        # never a full sentence) and starting with "Note" as its own
+        # word. The word-count cap is what rules out a "(Note 46)"
+        # cross-reference sitting inside an otherwise-long sentence.
+        if _NOTE_COLUMN_RE.match(stripped) and len(stripped.split()) <= 6:
+            return True
+    return False
+
+
+# "statement of changes in equity" is specific enough on its own -
+# confirmed across real filings checked, this exact phrase never turns
+# up loosely in narrative/notes prose the way "balance sheet", "income
+# statement" or "statement of cash flows" do (see _has_nearby_note_column's
+# docstring for those). Its own real heading also often has no Note
+# column in the next few lines (the statement's column headers are share
+# capital/premium/retained earnings/etc, not a notes reference) so
+# requiring corroboration here would create false NEGATIVES instead -
+# missing the real section - without meaningfully reducing false
+# positives, since there's essentially no false-positive risk for this
+# heading in the first place.
+_HEADINGS_NOT_REQUIRING_CORROBORATION = {'equity'}
 
 
 def match_canonical_label(statement_type, label):
@@ -716,14 +798,28 @@ def parse_financials_text(pages_text) -> dict:
     seen_raw = {stmt: set() for stmt in STATEMENT_HEADINGS}
 
     for page_num, page_text in pages_text:
-        for raw_line in page_text.splitlines():
-            line = raw_line.strip()
+        page_lines = [l.strip() for l in page_text.splitlines()]
+        for line_idx, line in enumerate(page_lines):
             if not line:
                 continue
 
             heading_match = _classify_statement(line)
             if heading_match:
-                current_stmt = heading_match
+                # Corroborate with a nearby "Note" column before trusting
+                # this as the real statement's start - see
+                # _has_nearby_note_column's docstring for why (a
+                # front-matter summary table, or a narrative sentence
+                # that happens to say e.g. "balance sheet", can otherwise
+                # match now that sentence-case headings are accepted -
+                # see _looks_like_heading_line's note). Without that
+                # corroboration, just skip this line rather than starting
+                # (or ending) a section on a false positive - a real
+                # statement heading appears again, correctly corroborated,
+                # once the actual statement page is reached. 'equity' is
+                # exempt - see _HEADINGS_NOT_REQUIRING_CORROBORATION.
+                if (heading_match in _HEADINGS_NOT_REQUIRING_CORROBORATION
+                        or _has_nearby_note_column(page_lines, line_idx)):
+                    current_stmt = heading_match
                 continue
 
             if current_stmt is None:
@@ -734,6 +830,9 @@ def parse_financials_text(pages_text) -> dict:
                 continue
             stop_candidate, stop_was_doubled = _heading_candidate(line)
             if _looks_like_heading_line(stop_candidate, stop_was_doubled) and any(rx.search(stop_candidate) for rx in _SECTION_STOP_HEADING_RES):
+                current_stmt = None
+                continue
+            if _is_numbered_note_heading(line):
                 current_stmt = None
                 continue
 
@@ -945,6 +1044,285 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict:
             )
 
     return {'pages_text': pages_text, 'statements': parse_financials_text(pages_text)['statements']}
+
+
+# ---------- DIRECTOR REMUNERATION (totals-only) ----------
+#
+# Deliberately scoped to ONE figure: the report's own printed grand total
+# for director/executive remuneration for the period, taken only when the
+# filing prints that total explicitly as its own row. Some filings (seen
+# in the wild: NSE's own report) split remuneration across multiple
+# tables/subtotals with no single printed grand total - reconstructing
+# one there would mean deciding which subtotals to add, which is a
+# judgement call this function deliberately does NOT make silently, since
+# a wrong guess here would look just as authoritative as a real filed
+# number. Those filings simply return no total - "not available", never
+# a computed guess presented as if the company printed it.
+#
+# Also deliberately does NOT attempt per-director rows: names in this
+# section come out individually letter-reversed on at least one real
+# filing (Equity Group) in a way that doesn't reliably self-correct
+# (foreign/Kenyan surnames aren't in any general English wordlist), so
+# a per-director breakdown would risk showing a boardroom name garbled -
+# worse than not showing it. The totals row's numbers are unaffected by
+# that corruption either way (see _REMUNERATION_HEADING_RES below), so
+# this is a purely lower-risk scope than the per-director table would be.
+_REMUNERATION_HEADING_RES = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"directors?\W{0,3}remuneration\s+report",
+        r"single\s+figure\s+remuneration",
+    ]
+]
+
+# Some filings (confirmed on a real Equity Group filing) render this
+# specific section's text with every word doubled-then-reversed by a
+# pdfplumber-specific font/encoding quirk - "Directors' remuneration
+# report" comes out as "’’ssrroottcceerriiDD ttrrooppeerr
+# nnooiittaarreennuummeerr". pypdf reads the SAME page's text layer
+# correctly (confirmed against that filing), so it's tried first here
+# specifically for this section; pdfplumber is only a fallback for
+# environments without pypdf installed, or pages pypdf can't read at all.
+# (extract_pdf_document(), by contrast, has to use pdfplumber for the
+# main statements because pypdf doesn't preserve table row structure -
+# see that function's docstring - so this is a deliberate, narrow
+# exception just for this section, not a wider reader swap.)
+_TOTAL_ROW_LABEL_RE = re.compile(r"^\s*(?:grand\s+)?total\b", re.IGNORECASE)
+
+
+def _normalize_currency_hint(raw: str) -> str:
+    """'Kshs'/'Ksh'/'Shs' all mean KES - normalize to that. Previously
+    did .replace('KSH','KES').replace('SHS','KES') on the upper-cased
+    match, which left 'KSHS' (from 'Kshs') as 'KESS' - the first
+    .replace only strips the 'KSH' prefix, and the trailing 'S' from
+    the plural survives untouched. An explicit membership check avoids
+    that partial-replace bug entirely."""
+    up = raw.upper()
+    if up in ('KSHS', 'KSH', 'SHS'):
+        return 'KES'
+    return up
+
+
+def _looks_like_labeled_total_row(line: str) -> bool:
+    """True if `line` starts with an explicit 'Total' / 'Grand Total'
+    label followed by several numbers - e.g. 'GRAND TOTAL 39,165 54,510
+    6,835 2,736 103,246' (confirmed on a real KCB filing). This is a
+    STRONGER signal than the bare-numeric-row heuristic below - the
+    filing is telling us directly which row is the total, so this is
+    checked first and, when found, wins outright over any bare numeric
+    row further down the page."""
+    if not _TOTAL_ROW_LABEL_RE.search(line):
+        return False
+    numbers = [_parse_amount_token(t) for t in line.split()]
+    return sum(1 for n in numbers if n is not None) >= 3
+
+
+def _looks_like_all_numeric_row(line: str, min_numbers: int = 5) -> bool:
+    """True if `line` is (almost) entirely numbers/dashes/currency
+    punctuation - the shape of a table data row with no name attached,
+    which on every real total row seen is exactly what's left once the
+    row has no director name in it. min_numbers defaults to 5 (not just
+    "more than one or two") specifically to avoid matching a table of
+    contents' bare page numbers/ranges ("128", "129 - 132") as if they
+    were a totals row - a real remuneration total row has one number per
+    disclosed component (salary, fees, pension, bonus, ...) which is
+    never fewer than about 5 columns on any real filing checked."""
+    tokens = line.split()
+    if not tokens:
+        return False
+    numeric_like = 0
+    for t in tokens:
+        stripped = t.strip(",-\u2013()")
+        if stripped == '' or stripped == '-':
+            numeric_like += 1
+            continue
+        if re.fullmatch(r"[\d,.\u2019']+", stripped):
+            numeric_like += 1
+    return numeric_like >= min_numbers and numeric_like == len(tokens)
+
+
+def _parse_amount_token(tok: str):
+    cleaned = re.sub(r"[^\d.]", "", tok)
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def extract_director_remuneration(pdf_bytes: bytes) -> dict | None:
+    """Best-effort: the filing's OWN printed grand total for director/
+    executive remuneration for its reporting period, from a "Directors'
+    remuneration report" / "single figure remuneration" section.
+
+    Returns {'total': float, 'currency_hint': str|None, 'page': int} or
+    None if no such section, or no explicit total row within it, was
+    found - callers should show that as "not available in this filing",
+    never fall back to summing rows themselves (see module note above
+    for why).
+    """
+    reader = None
+    if pypdf is not None:
+        try:
+            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        except Exception:
+            reader = None
+
+    page_texts = []
+    if reader is not None:
+        for i, page in enumerate(reader.pages):
+            try:
+                page_texts.append((i + 1, page.extract_text() or ""))
+            except Exception:
+                page_texts.append((i + 1, ""))
+    else:
+        # Fallback path - only reached if pypdf isn't installed at all.
+        # Will NOT recover the reversed-text case described above, but
+        # still works for filings (like NSE's) with no such corruption.
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for i, page in enumerate(pdf.pages):
+                page_texts.append((i + 1, page.extract_text() or ""))
+
+    heading_pages = []
+    for pg, text in page_texts:
+        lines = text.splitlines()
+        for idx, line in enumerate(lines):
+            if _HEADING_HAS_DIGIT_RE.search(line):
+                continue  # e.g. a same-line TOC entry with a trailing page range
+            if not any(rx.search(line) for rx in _REMUNERATION_HEADING_RES):
+                continue
+            # Guard against a TOC layout where the heading and its page
+            # range are on separate lines (confirmed on a real filing:
+            # "Directors' remuneration report" \n " 125 - 127") - if the
+            # next non-empty line is just a bare number/page-range, this
+            # is a contents entry, not the section itself.
+            next_line = next((l for l in lines[idx + 1:idx + 2]), "")
+            if re.fullmatch(r"\s*\d+\s*(-\s*\d+\s*)?", next_line):
+                continue
+            heading_pages.append(pg)
+            break
+    heading_pages = sorted(set(heading_pages))
+    if not heading_pages:
+        return None
+
+    # Group heading hits into clusters of genuinely adjacent pages (the
+    # real section) rather than treating every hit as its own independent
+    # +3-page search - a passing mention of "Directors' remuneration
+    # report" on an unrelated page (confirmed on a real KCB filing: an
+    # auditor's-report sentence a few pages after the real table) must
+    # NOT extend the scan into pages that have nothing to do with the
+    # section, which is exactly how an earlier version of this function
+    # picked up an unrelated statement-of-changes-in-equity row as if it
+    # were the remuneration total. A gap of more than 1 page between
+    # consecutive heading hits starts a new cluster.
+    clusters = []
+    current = [heading_pages[0]]
+    for pg in heading_pages[1:]:
+        if pg - current[-1] <= 1:
+            current.append(pg)
+        else:
+            clusters.append(current)
+            current = [pg]
+    clusters.append(current)
+
+    text_by_page = dict(page_texts)
+    best = None
+    for cluster in clusters:
+        # Scan the cluster's own pages plus one page past the end, to
+        # cover a table that starts right at the bottom of the heading
+        # page and finishes just past it - not a wide, drift-prone
+        # forward window from every individual hit.
+        scan_pages = list(range(cluster[0], min(cluster[-1] + 1, len(page_texts)) + 1))
+
+        # First, count labeled-total rows across the WHOLE cluster (not
+        # just one page at a time) - a split-table filing (confirmed on
+        # both a real NSE and a real KCB filing) prints a Non-Executive
+        # Directors total on one page and a separate Executive Directors
+        # total on the very next page, so a same-page-only check misses
+        # that split. More than one labeled total anywhere in this
+        # cluster means picking any single one of them would silently
+        # under-report the real combined figure - exactly the ambiguity
+        # this function declines to resolve on its own (see module note
+        # above) - so the whole cluster yields no total rather than a
+        # partial one.
+        cluster_labeled_rows = []
+        for pg in scan_pages:
+            text = text_by_page.get(pg, "")
+            if not text:
+                continue
+            for line in (l.strip() for l in text.splitlines() if l.strip()):
+                if _looks_like_labeled_total_row(line):
+                    cluster_labeled_rows.append((pg, line))
+        if len(cluster_labeled_rows) > 1:
+            continue
+        if len(cluster_labeled_rows) == 1:
+            pg, line = cluster_labeled_rows[0]
+            lines = [l.strip() for l in text_by_page.get(pg, "").splitlines() if l.strip()]
+            numbers = [_parse_amount_token(t) for t in line.split()]
+            numbers = [n for n in numbers if n is not None]
+            total_value = max(numbers)
+            currency_hint = None
+            idx_in_lines = lines.index(line)
+            for j in range(max(0, idx_in_lines - 12), idx_in_lines):
+                m = re.search(r"(Shs|KES|Kshs|USD|Ksh)\W*(?:\d|0{2,3})", lines[j], re.IGNORECASE)
+                if m:
+                    currency_hint = _normalize_currency_hint(m.group(1))
+                    break
+            best = {'total': total_value, 'currency_hint': currency_hint, 'page': pg}
+            break
+
+        # No labeled total row anywhere in this cluster - fall back to
+        # the bare-numeric-row heuristic (see _looks_like_all_numeric_row's
+        # docstring) on each page in the cluster.
+        for pg in scan_pages:
+            text = text_by_page.get(pg, "")
+            if not text:
+                continue
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            for i in range(len(lines) - 1, -1, -1):
+                if not _looks_like_all_numeric_row(lines[i]):
+                    continue
+                is_boundary = (i == len(lines) - 1) or not _looks_like_all_numeric_row(lines[i + 1])
+                if not is_boundary:
+                    continue
+                # A subtotal (e.g. "all Non-Executive Directors" summed,
+                # before the Executive Directors' own rows) has this exact
+                # same shape - all-numeric, immediately followed by a
+                # named row rather than another numeric row - so the
+                # boundary check above alone can't tell a subtotal from
+                # the real grand total (confirmed on a real NSE filing: a
+                # NED subtotal is followed by two more named executive
+                # rows, not narrative). Guard against that: if a
+                # currency-unit row (e.g. "Kshs Kshs Kshs Kshs Kshs")
+                # appears within the next few lines, the table is still
+                # going - a real total row is always the LAST thing
+                # before the table's closing narrative/footnote, with no
+                # more currency-column marker after it.
+                lookahead = lines[i + 1:i + 5]
+                still_in_table = any(
+                    re.fullmatch(r"(?:kshs|shs\W*000|kes)(?:\s*(?:kshs|shs\W*000|kes))*", l, re.IGNORECASE)
+                    for l in lookahead
+                )
+                if still_in_table:
+                    continue
+                numbers = [_parse_amount_token(t) for t in lines[i].split()]
+                numbers = [n for n in numbers if n is not None]
+                if not numbers:
+                    continue
+                total_value = max(numbers)  # the Total column is always the largest figure in its own row
+                currency_hint = None
+                for j in range(max(0, i - 12), i):
+                    m = re.search(r"(Shs|KES|Kshs|USD|Ksh)\W*\W*0{2,3}", lines[j], re.IGNORECASE)
+                    if m:
+                        currency_hint = _normalize_currency_hint(m.group(1))
+                        break
+                best = {'total': total_value, 'currency_hint': currency_hint, 'page': pg}
+                break  # first (bottom-most) qualifying row on this page is the one we want
+            if best:
+                break
+        if best:
+            break
+    return best
 
 
 def parse_financials_pdf(pdf_bytes: bytes) -> dict:
