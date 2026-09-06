@@ -607,12 +607,12 @@ tr.li-child td:first-child{color:var(--text-dim);}
       <span class="modal-close" onclick="closeUploadReportsModal()">✕</span>
     </div>
     <p id="uploadReportsDesc" style="color:var(--text-secondary,#666);font-size:13px;margin:0 0 12px;">
-      Select up to 10 annual report PDFs — any mix of companies and years.
-      Each file is auto-identified by its own content (company name, fiscal year)
-      and saved directly, no review step. Re-uploading a report for a company/year
-      already on file updates that period instead of duplicating it.
+      Select up to 10 annual report PDFs (or condensed-format .txt files) — any mix of
+      companies and years. Each file is auto-identified by its own content (company name,
+      fiscal year) and saved directly, no review step. Re-uploading a report for a
+      company/year already on file updates that period instead of duplicating it.
     </p>
-    <input type="file" id="uploadReportsInput" accept="application/pdf,.pdf" multiple
+    <input type="file" id="uploadReportsInput" accept="application/pdf,.pdf,text/plain,.txt" multiple
            style="display:block;width:100%;margin-bottom:12px;"
            onchange="onUploadReportsFilesChosen(this.files)">
     <div id="uploadReportsFileList" style="font-size:13px;margin-bottom:12px;"></div>
