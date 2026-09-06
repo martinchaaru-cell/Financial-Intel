@@ -429,3 +429,143 @@ class SurveyCEOComp(db.Model):
     def to_dict(self):
         return {'component_name': self.component_name,
                 'p25': self.p25, 'p50': self.p50, 'p75': self.p75, 'average': self.average}
+
+
+# ---------- MARKET DATA / PRINCIPAL RISKS / MANAGEMENT GUIDANCE ----------
+# Added for the Intelligence Report's Peer Comparison, Risk Analysis, and
+# Outlook tabs. Every field here is something an integrated report/annual
+# report genuinely discloses on its own Investor Information, "Management
+# of Principal Risks", and "Outlook/Guidance" pages - never a derived or
+# invented figure. Each row keeps page provenance like FinancialLineItem
+# does, so Source Evidence can point back to exactly where it came from.
+
+class MarketDataSnapshot(db.Model):
+    """One company's own-share market data for one period, as disclosed in
+    its Investor Information section (share price, market cap, dividend,
+    shareholder structure). Only NSE-listed KCB-style disclosures populate
+    this - not derived from financial statements."""
+    __tablename__ = 'market_data_snapshots'
+    id = db.Column(db.Integer, primary_key=True)
+    period_id = db.Column(db.Integer, db.ForeignKey('financial_periods.id'), nullable=False)
+    source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
+
+    share_price = db.Column(db.Float)                  # end of period, in currency units (not thousands)
+    prior_share_price = db.Column(db.Float)             # as printed alongside current, for YoY without a second row lookup
+    market_cap = db.Column(db.Float)                    # same unit as financial statements (e.g. KES billions)
+    shares_issued = db.Column(db.Float)
+    shares_authorized = db.Column(db.Float)
+    free_float_pct = db.Column(db.Float)
+    shareholder_count = db.Column(db.Integer)
+    prior_shareholder_count = db.Column(db.Integer)
+
+    dividend_per_share = db.Column(db.Float)
+    interim_dividend_per_share = db.Column(db.Float)
+    final_dividend_per_share = db.Column(db.Float)
+    dividend_yield = db.Column(db.Float)                # % - only stored if the filing states it directly
+    total_shareholder_return = db.Column(db.Float)       # % - only stored if the filing states it directly
+
+    local_institutional_pct = db.Column(db.Float)
+    local_individual_pct = db.Column(db.Float)
+    foreign_investor_pct = db.Column(db.Float)
+
+    page = db.Column(db.Integer)
+    confidence = db.Column(db.Float)
+
+    def to_dict(self):
+        return {k: getattr(self, k) for k in (
+            'share_price', 'prior_share_price', 'market_cap', 'shares_issued', 'shares_authorized',
+            'free_float_pct', 'shareholder_count', 'prior_shareholder_count',
+            'dividend_per_share', 'interim_dividend_per_share', 'final_dividend_per_share',
+            'dividend_yield', 'total_shareholder_return',
+            'local_institutional_pct', 'local_individual_pct', 'foreign_investor_pct',
+            'page', 'confidence',
+        )}
+
+
+class PrincipalRisk(db.Model):
+    """One named, qualitative principal-risk category as disclosed in the
+    report's own Risk Management section (e.g. Credit Risk, Technology &
+    Cybersecurity, Compliance, Climate, Reputational). Holds the company's
+    own description and mitigation narrative verbatim - never a numeric
+    score, since filed reports don't publish one for these categories."""
+    __tablename__ = 'principal_risks'
+    id = db.Column(db.Integer, primary_key=True)
+    period_id = db.Column(db.Integer, db.ForeignKey('financial_periods.id'), nullable=False)
+    source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
+
+    category = db.Column(db.String(100), nullable=False)   # "Credit Risk", "Technology and Cybersecurity", ...
+    order_index = db.Column(db.Integer, default=0)          # preserve the report's own ordering (I, II, III...)
+    description = db.Column(db.Text)                        # what the risk is
+    mitigation = db.Column(db.Text)                          # "Our Mitigations" bullet text, as printed
+
+    page = db.Column(db.Integer)
+    confidence = db.Column(db.Float)
+
+    def to_dict(self):
+        return {'category': self.category, 'order_index': self.order_index,
+                'description': self.description, 'mitigation': self.mitigation,
+                'page': self.page, 'confidence': self.confidence}
+
+
+class ManagementGuidance(db.Model):
+    """One forward-looking KPI guidance row as disclosed in the report's
+    own Outlook section (e.g. "ROE: 2025 performance 22.5%, 2026 guidance
+    20.0% - 22.0%"). guidance_low/high come straight from the printed
+    range - this is management's own stated target, not a model output."""
+    __tablename__ = 'management_guidance'
+    id = db.Column(db.Integer, primary_key=True)
+    period_id = db.Column(db.Integer, db.ForeignKey('financial_periods.id'), nullable=False)
+    source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
+
+    metric_name = db.Column(db.String(100), nullable=False)   # "Return on equity", "Cost-to-income ratio", ...
+    guidance_period_label = db.Column(db.String(20))           # "FY2026"
+    current_value = db.Column(db.Float)                        # this period's actual, for comparison
+    guidance_low = db.Column(db.Float)
+    guidance_high = db.Column(db.Float)
+    commentary = db.Column(db.Text)                             # driver text printed alongside the range
+    order_index = db.Column(db.Integer, default=0)
+
+    page = db.Column(db.Integer)
+    confidence = db.Column(db.Float)
+
+    def to_dict(self):
+        return {'metric_name': self.metric_name, 'guidance_period_label': self.guidance_period_label,
+                'current_value': self.current_value, 'guidance_low': self.guidance_low,
+                'guidance_high': self.guidance_high, 'commentary': self.commentary,
+                'order_index': self.order_index, 'page': self.page, 'confidence': self.confidence}
+
+
+class DirectorRemunerationRow(db.Model):
+    """One director's own filed remuneration row from the "Directors'
+    Remuneration Report" (Non-Executive Directors' fees table, or
+    Executive Directors' remuneration table) - real per-director figures
+    with the filing's own component breakdown and total, never summed or
+    estimated by this app. A "GRAND TOTAL" row (is_grand_total=True,
+    director_name left as printed, e.g. "GRAND TOTAL") is stored the same
+    way when the filing prints one for the NED table - see
+    extract_director_remuneration_detail's docstring for why an
+    Executive Directors' table with only 1-2 named rows and no such
+    total isn't treated as missing data."""
+    __tablename__ = 'director_remuneration_rows'
+    id = db.Column(db.Integer, primary_key=True)
+    period_id = db.Column(db.Integer, db.ForeignKey('financial_periods.id'), nullable=False)
+    source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
+
+    director_name = db.Column(db.String(150), nullable=False)
+    role = db.Column(db.String(30))                 # 'non_executive' | 'executive'
+    is_grand_total = db.Column(db.Boolean, default=False)
+    total = db.Column(db.Float, nullable=False)      # this row's own printed Total column, in Ksh '000 as filed
+    components = db.Column(db.Text)                   # JSON dict of the other printed columns (fees, salary, bonus, etc.) - display-only detail, never re-derived
+    order_index = db.Column(db.Integer, default=0)
+
+    page = db.Column(db.Integer)
+    confidence = db.Column(db.Float)
+
+    def to_dict(self):
+        import json as _json
+        return {
+            'director_name': self.director_name, 'role': self.role,
+            'is_grand_total': self.is_grand_total, 'total': self.total,
+            'components': _json.loads(self.components) if self.components else None,
+            'order_index': self.order_index, 'page': self.page, 'confidence': self.confidence,
+        }

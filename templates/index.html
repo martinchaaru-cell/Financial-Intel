@@ -277,6 +277,13 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 @media(max-width:900px){.ir-bench-grid{grid-template-columns:1fr 1fr;} .ir-sector-grid{grid-template-columns:1fr 1fr 1fr;} .ir-snapshot-grid{grid-template-columns:1fr;}}
 .ir-sro-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
 @media(max-width:900px){.ir-sro-grid{grid-template-columns:1fr;}}
+.ir-risk-cat-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media(max-width:900px){.ir-risk-cat-grid{grid-template-columns:1fr;}}
+.ir-risk-cat-card{border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--panel-alt,#fafafa);}
+.ir-risk-cat-title{font-weight:700;font-size:13px;margin-bottom:8px;}
+.ir-risk-cat-desc{font-size:12px;line-height:1.5;color:var(--text-secondary,#444);margin-bottom:8px;}
+.ir-risk-cat-mitigation{font-size:11.5px;line-height:1.5;color:var(--text-secondary,#444);background:rgba(0,0,0,0.03);border-radius:6px;padding:8px 10px;}
+.ir-risk-cat-page{font-size:10px;color:var(--text-faint);margin-top:8px;}
 .ir-sro-col h3{font-size:12px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px;}
 .ir-sro-col.strengths h3{color:var(--green);}
 .ir-sro-col.risks h3{color:var(--amber);}
@@ -2690,6 +2697,7 @@ const IR_TABS = [
 ];
 
 let irChart1 = null, irChart2 = null;
+let irPtChart1 = null, irPtChart2 = null, irPtChart3 = null, irPtChart4 = null, irPtChart5 = null;
 
 async function renderIntelligenceReport(companyId, opts){
   const standalone = !!(opts && opts.standalone);
@@ -2791,7 +2799,7 @@ function renderIRTabBody(){
   if (irTab === 'executive-summary') el.innerHTML = irExecutiveSummaryTab(ir);
   else if (irTab === 'financial-analysis') { el.innerHTML = irFinancialAnalysisTab(ir); irMountFinancialCharts(ir); }
   else if (irTab === 'performance-trends') { el.innerHTML = irPerformanceTrendsTab(ir); irMountTrendCharts(ir); }
-  else if (irTab === 'peer-comparison') el.innerHTML = irPeerComparisonTab(ir);
+  else if (irTab === 'peer-comparison') { el.innerHTML = irPeerComparisonTab(ir); irMountPeerChart(ir); }
   else if (irTab === 'risk-analysis') el.innerHTML = irRiskAnalysisTab(ir);
   else if (irTab === 'remuneration') { el.innerHTML = `<div class="empty">Loading remuneration benchmark...</div>`; irRemunerationTab(ir); }
   else if (irTab === 'outlook') el.innerHTML = irOutlookTab(ir);
@@ -2799,13 +2807,14 @@ function renderIRTabBody(){
   else if (irTab === 'raw-data') { el.innerHTML = `<div class="empty">Loading raw financial statements...</div>`; irRawDataTab(irCache.company.id); }
 }
 
-function irGauge(score, band){
+function irGauge(score, band, displayOverride){
   const pct = Math.max(0, Math.min(100, score || 0));
   const color = band === 'strong' ? 'var(--green)' : band === 'moderate' ? 'var(--amber)' : 'var(--red)';
   const style = `background:conic-gradient(${color} 0 ${pct * 3.6}deg, var(--bg-panel-2) ${pct * 3.6}deg 360deg);`;
+  const shown = displayOverride !== undefined ? displayOverride : score;
   return `
     <div class="ir-gauge" style="${style}">
-      <div class="ir-gauge-hole"><div class="n">${score ?? '-'}</div><div class="l">/100</div></div>
+      <div class="ir-gauge-hole"><div class="n">${shown ?? '-'}</div><div class="l">/100</div></div>
     </div>`;
 }
 
@@ -2820,7 +2829,31 @@ function irExecutiveSummaryTab(ir){
   const bench = ir.nse_benchmark;
   const sectorsCov = ir.sectors_covered;
 
+  const kpis = [
+    {label: 'Revenue', value: fmtAmount(s.revenue), delta: s.revenue_yoy, color: 'blue', icon: '💰'},
+    {label: 'Net Profit', value: fmtAmount(s.net_income), delta: s.net_income_yoy, color: 'green', icon: '💵'},
+    {label: 'ROE', value: s.roe !== null ? fmt(s.roe) + '%' : '-', delta: s.roe_delta, deltaSuffix: 'pp', color: 'purple', icon: '📊'},
+    {label: 'Total Assets', value: fmtAmount(s.total_assets), delta: s.total_assets_yoy, color: 'blue', icon: '🏦'},
+    {label: 'Net Profit Margin', value: s.net_margin !== null ? fmt(s.net_margin) + '%' : '-', delta: s.net_margin_delta, deltaSuffix: 'pp', color: 'amber', icon: '📈'},
+    {label: 'Financial Health Score', value: fh.score !== null ? `${fh.score}/100` : '-', color: 'green', icon: '🛡️'},
+  ];
+  const kpiCards = kpis.map(k => statCard(k.color, k.icon, k.value,
+    k.label, k.delta !== undefined && k.delta !== null ? `<div class="stat-trend">${deltaSpan(k.delta, {suffix: k.deltaSuffix || '%'})} vs prior period</div>` : '')).join('');
+
+  // Financial Position Snapshot: only real, filed-data-derived ratios -
+  // current ratio, debt/equity, interest coverage, net debt/EBITDA. Each
+  // renders "Not available" (not a bar) when the underlying line items
+  // weren't captured, rather than defaulting to a misleading 0.
+  const posRows = [
+    {label: 'Current Ratio', value: s.current_ratio, max: 3, good: v => v >= 1.2, fmtV: v => fmt(v, 2) + 'x'},
+    {label: 'Debt to Equity', value: s.debt_equity, max: 2, good: v => v <= 1, invert: true, fmtV: v => fmt(v, 2) + 'x'},
+    {label: 'Interest Coverage', value: s.interest_coverage, max: 20, good: v => v >= 5, fmtV: v => fmt(v, 1) + 'x'},
+    {label: 'Net Debt to EBITDA', value: s.net_debt_to_ebitda, max: 3, good: v => v <= 1.5, invert: true, fmtV: v => fmt(v, 2) + 'x'},
+  ];
+
   return `
+    <div class="stat-grid" style="margin-bottom:16px;">${kpiCards}</div>
+
     <div class="row row-3" style="grid-template-columns:1fr 1.1fr 1.3fr;align-items:start;">
       <div class="panel">
         <div class="ir-panel-title">Financial Health Score</div>
@@ -2847,12 +2880,21 @@ function irExecutiveSummaryTab(ir){
 
     <div class="row row-3" style="grid-template-columns:1.4fr 1.1fr;">
       <div class="panel">
-        <div class="ir-panel-title">Financial Snapshot — ${escapeHtml(ir.period)}</div>
-        <div class="ir-snapshot-grid">
-          <div class="ir-snapshot-cell"><div class="sn-label">Revenue</div><div class="sn-value">${fmtAmount(s.revenue)}</div>${s.revenue_yoy !== null ? `<div class="sn-delta">${deltaSpan(s.revenue_yoy)} vs prior period</div>` : ''}</div>
-          <div class="ir-snapshot-cell"><div class="sn-label">Net Profit</div><div class="sn-value">${fmtAmount(s.net_income)}</div>${s.net_income_yoy !== null ? `<div class="sn-delta">${deltaSpan(s.net_income_yoy)} vs prior period</div>` : ''}</div>
-          <div class="ir-snapshot-cell"><div class="sn-label">ROE</div><div class="sn-value">${fmt(s.roe)}%</div>${s.roe_delta !== null ? `<div class="sn-delta">${deltaSpan(s.roe_delta, {suffix:'pp'})} vs prior period</div>` : ''}</div>
-          <div class="ir-snapshot-cell"><div class="sn-label">Net Margin</div><div class="sn-value">${fmt(s.net_margin)}%</div>${s.net_margin_delta !== null ? `<div class="sn-delta">${deltaSpan(s.net_margin_delta, {suffix:'pp'})} vs prior period</div>` : ''}</div>
+        <div class="ir-panel-title">Financial Position Snapshot — ${escapeHtml(ir.period)}</div>
+        <div class="ir-kv-list">
+          ${posRows.map(r => {
+            if (r.value === null || r.value === undefined) {
+              return `<div class="ir-kv-row"><span class="k">${r.label}</span>${naSpan()}</div>`;
+            }
+            const pct = Math.max(0, Math.min(100, (r.value / r.max) * 100));
+            const isGood = r.good(r.value);
+            const color = isGood ? 'var(--green)' : 'var(--amber)';
+            return `
+              <div class="ir-kv-row" style="flex-direction:column;align-items:stretch;gap:4px;">
+                <div style="display:flex;justify-content:space-between;"><span class="k">${r.label}</span><span style="font-weight:700;">${r.fmtV(r.value)}</span></div>
+                <div style="height:6px;background:var(--bg-panel-2);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${color};border-radius:3px;"></div></div>
+              </div>`;
+          }).join('')}
         </div>
       </div>
       <div class="panel">
@@ -2880,34 +2922,86 @@ function irExecutiveSummaryTab(ir){
 }
 
 function irFinancialAnalysisTab(ir){
+  const s = ir.snapshot;
+  const eps = ir.key_ratios.find(r => r.metric === 'EPS');
+  const roe = ir.key_ratios.find(r => r.metric === 'ROE');
+  const topCards = [
+    {label: 'Total Revenue', value: fmtAmount(s.revenue), delta: s.revenue_yoy, color: 'blue', icon: '📈'},
+    {label: 'Gross Profit', value: s.gross_profit != null ? fmtAmount(s.gross_profit) : naSpan(), delta: null, color: 'green', icon: '💰'},
+    {label: 'Operating Profit', value: fmtAmount(s.operating_profit), delta: s.operating_profit_yoy, color: 'purple', icon: '💼'},
+    {label: 'Net Profit', value: fmtAmount(s.net_income), delta: s.net_income_yoy, color: 'green', icon: '💵'},
+    {label: 'EPS', value: eps && eps.current !== null ? fmt(eps.current, 2) : naSpan(), delta: eps ? eps.change : null, deltaSuffix: '', color: 'amber', icon: '🧮'},
+    {label: 'ROE', value: roe && roe.current !== null ? fmt(roe.current) + '%' : naSpan(), delta: roe ? roe.change : null, deltaSuffix: 'pp', color: 'blue', icon: '📊'},
+  ];
+  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label,
+    (k.delta !== undefined && k.delta !== null) ? `<div class="stat-trend">${deltaSpan(k.delta, {suffix: k.deltaSuffix !== undefined ? k.deltaSuffix : '%'})} vs prior period</div>` : '')).join('');
+
+  const incomeRows = (ir.income_statement_rows || []).map(r => `
+    <tr>
+      <td>${escapeHtml(r.label)}</td>
+      <td class="amount">${fmtAmount(r.values[0])}</td>
+      <td class="amount">${fmtAmount(r.values[1])}</td>
+      <td class="amount">${r.yoy_change_pct !== null ? deltaSpan(r.yoy_change_pct) : '-'}</td>
+    </tr>`).join('');
+
+  const cashFlowRows = (ir.cash_flow_rows || []).map(r => `
+    <tr>
+      <td>${escapeHtml(r.label)}</td>
+      <td class="amount">${fmtAmount(r.values[0])}</td>
+      <td class="amount">${fmtAmount(r.values[1])}</td>
+      <td class="amount">${r.yoy_change_pct !== null ? deltaSpan(r.yoy_change_pct) : '-'}</td>
+    </tr>`).join('');
+
   const ratioRows = ir.key_ratios.map(r => `
     <tr>
       <td>${escapeHtml(r.metric)}</td>
-      <td class="amount">${r.current !== null ? fmt(r.current, r.suffix === '%' ? 1 : 2) + r.suffix : '-'}</td>
+      <td class="amount">${r.current !== null ? fmt(r.current, r.suffix === '%' ? 1 : 2) + r.suffix : naSpan()}</td>
       <td class="amount">${r.prior !== null ? fmt(r.prior, r.suffix === '%' ? 1 : 2) + r.suffix : '-'}</td>
       <td class="amount">${r.change !== null ? deltaSpan(r.change, {suffix: r.suffix === '%' ? 'pp' : '', decimals: r.suffix === '%' ? 1 : 2}) : '-'}</td>
     </tr>`).join('');
 
   return `
-    <div class="row" style="grid-template-columns:1.5fr 1fr;align-items:start;">
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Revenue vs Net Profit Trend (${escapeHtml(ir.currency)})</h3></div>
-        <div class="chart-wrap" style="height:260px;"><canvas id="ir-chart-1"></canvas></div>
-      </div>
+    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
+
+    <div class="row" style="grid-template-columns:1.4fr 1fr;align-items:start;">
       <div class="panel">
-        <div class="ir-panel-title">Key Ratios — ${escapeHtml(ir.period)} vs prior period</div>
+        <div class="ir-panel-title">Income Statement — ${escapeHtml(ir.period)} vs prior period (${escapeHtml(ir.currency)})</div>
+        ${incomeRows ? `
         <table>
-          <thead><tr><th>Metric</th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">Change</th></tr></thead>
-          <tbody>${ratioRows}</tbody>
-        </table>
-        <div style="font-size:10.5px;color:var(--text-faint);margin-top:12px;line-height:1.5;">
-          Gross Margin, Operating Margin, and EPS show "-" for any period whose filing didn't report a gross profit, operating profit, or EPS/shares-outstanding line — never estimated in place of a real figure.
-        </div>
+          <thead><tr><th>Line Item</th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">YoY %</th></tr></thead>
+          <tbody>${incomeRows}</tbody>
+        </table>` : `<div class="empty">No income statement line items recorded for this period.</div>`}
+      </div>
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Revenue &amp; Profit Trend (${escapeHtml(ir.currency)})</h3></div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ir-chart-1"></canvas></div>
       </div>
     </div>
-    <div class="chart-panel">
-      <div class="chart-head"><h3>Profit Margin Trend</h3></div>
-      <div class="chart-wrap" style="height:220px;"><canvas id="ir-chart-2"></canvas></div>
+
+    <div class="row" style="grid-template-columns:1fr 1fr;align-items:start;margin-top:16px;">
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Margin Analysis (%)</h3></div>
+        <div class="chart-wrap" style="height:220px;"><canvas id="ir-chart-2"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Cash Flow Summary — ${escapeHtml(ir.period)} vs prior period (${escapeHtml(ir.currency)})</div>
+        ${cashFlowRows ? `
+        <table>
+          <thead><tr><th></th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">YoY %</th></tr></thead>
+          <tbody>${cashFlowRows}</tbody>
+        </table>` : `<div class="empty">No cash flow statement line items recorded for this period.</div>`}
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="ir-panel-title">Profitability Ratios — ${escapeHtml(ir.period)} vs prior period</div>
+      <table>
+        <thead><tr><th>Metric</th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">Change</th></tr></thead>
+        <tbody>${ratioRows}</tbody>
+      </table>
+      <div style="font-size:10.5px;color:var(--text-faint);margin-top:12px;line-height:1.5;">
+        Any metric marked "Not available" means this company's filing didn't report the underlying line item needed to compute it — never estimated in place of a real figure.
+      </div>
     </div>
   `;
 }
@@ -2937,53 +3031,304 @@ function irMountFinancialCharts(ir){
   if (c2) irChart2 = new Chart(c2, {
     type: 'line',
     data: { labels, datasets: [
-      { label: 'Net Margin %', data: ir.trend.map(t => t.net_margin), borderColor: '#ffb020', backgroundColor: 'rgba(255,176,32,.15)', tension: .3 },
+      { label: 'Gross Margin %', data: ir.trend.map(t => t.gross_margin), borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.1)', tension: .3, spanGaps: true },
+      { label: 'Operating Margin %', data: ir.trend.map(t => t.operating_margin), borderColor: '#3ddc84', backgroundColor: 'rgba(61,220,132,.1)', tension: .3, spanGaps: true },
+      { label: 'Net Margin %', data: ir.trend.map(t => t.net_margin), borderColor: '#ffb020', backgroundColor: 'rgba(255,176,32,.1)', tension: .3, spanGaps: true },
     ]},
     options: chartOpts,
   });
 }
 
 function irPerformanceTrendsTab(ir){
+  const s = ir.snapshot;
+  const fy = ir.five_year_summary || {};
+  const topCards = [
+    {label: 'Revenue', value: fmtAmount(s.revenue), delta: s.revenue_yoy, color: 'blue', icon: '📈'},
+    {label: 'Net Profit', value: fmtAmount(s.net_income), delta: s.net_income_yoy, color: 'green', icon: '💵'},
+    {label: 'Operating Profit', value: fmtAmount(s.operating_profit), delta: s.operating_profit_yoy, color: 'purple', icon: '💼'},
+    {label: 'ROE', value: s.roe !== null ? fmt(s.roe) + '%' : naSpan(), delta: s.roe_delta, deltaSuffix: 'pp', color: 'blue', icon: '📊'},
+    {label: 'Net Profit Margin', value: s.net_margin !== null ? fmt(s.net_margin) + '%' : naSpan(), delta: s.net_margin_delta, deltaSuffix: 'pp', color: 'amber', icon: '🧮'},
+    {label: 'EPS', value: s.eps !== null ? fmt(s.eps, 2) : naSpan(), delta: s.eps_yoy, color: 'green', icon: '💠'},
+  ];
+  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label,
+    (k.delta !== undefined && k.delta !== null) ? `<div class="stat-trend">${deltaSpan(k.delta, {suffix: k.deltaSuffix || '%'})} vs prior period</div>` : '')).join('');
+
+  const summaryRows = [
+    {label: 'Revenue', key: 'revenue', cagr: fy.revenue_cagr},
+    {label: 'Operating Profit', key: 'operating_profit', cagr: fy.operating_profit_cagr},
+    {label: 'Net Profit', key: 'net_income', cagr: fy.net_income_cagr},
+    {label: 'EPS', key: 'eps', cagr: fy.eps_cagr},
+    {label: 'Net Profit Margin (%)', key: 'net_margin', cagr: null},
+    {label: 'ROE (%)', key: 'roe', cagr: null},
+  ];
+
   return `
-    <div class="chart-panel">
-      <div class="chart-head"><h3>Revenue vs Net Profit Trend (${escapeHtml(ir.currency)})</h3><span class="chart-select">${ir.trend.length} periods on record</span></div>
-      <div class="chart-wrap" style="height:280px;"><canvas id="ir-chart-1"></canvas></div>
+    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
+
+    <div class="row" style="grid-template-columns:1fr 1fr 1fr;align-items:start;">
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Revenue Trend (${escapeHtml(ir.currency)})</h3></div>
+        <div class="chart-wrap" style="height:220px;"><canvas id="ir-pt-chart-1"></canvas></div>
+      </div>
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Net Profit Trend (${escapeHtml(ir.currency)})</h3></div>
+        <div class="chart-wrap" style="height:220px;"><canvas id="ir-pt-chart-2"></canvas></div>
+      </div>
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Operating Profit Trend (${escapeHtml(ir.currency)})</h3></div>
+        <div class="chart-wrap" style="height:220px;"><canvas id="ir-pt-chart-3"></canvas></div>
+      </div>
     </div>
-    <div class="chart-panel">
-      <div class="chart-head"><h3>Net Margin Trend</h3></div>
-      <div class="chart-wrap" style="height:220px;"><canvas id="ir-chart-2"></canvas></div>
+
+    <div class="row" style="grid-template-columns:1fr 1fr;align-items:start;margin-top:16px;">
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Key Ratio Trends (%)</h3></div>
+        <div class="chart-wrap" style="height:240px;"><canvas id="ir-pt-chart-4"></canvas></div>
+      </div>
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Return Trends — ROE / ROA / ROIC (%)</h3></div>
+        <div class="chart-wrap" style="height:240px;"><canvas id="ir-pt-chart-5"></canvas></div>
+      </div>
     </div>
-    ${ir.trend.length < 3 ? `<div class="empty">Only ${ir.trend.length} period(s) on record — add more financial years on the Company page for a fuller trend.</div>` : ''}
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="ir-panel-title">${fy.years_on_record || ir.trend.length}-Year Performance Summary (${escapeHtml(ir.currency)})</div>
+      <table>
+        <thead><tr><th>Metric</th>${ir.trend.map(t => `<th class="amount">${escapeHtml(t.period)}</th>`).join('')}<th class="amount">CAGR</th></tr></thead>
+        <tbody>
+          ${summaryRows.map(r => `
+            <tr>
+              <td>${r.label}</td>
+              ${ir.trend.map(t => `<td class="amount">${t[r.key] !== null && t[r.key] !== undefined ? (r.label.includes('%') ? fmt(t[r.key]) + '%' : fmtAmount(t[r.key])) : '-'}</td>`).join('')}
+              <td class="amount">${r.cagr !== null && r.cagr !== undefined ? fmt(r.cagr) + '%' : (r.cagr === null && r.key !== 'net_margin' && r.key !== 'roe' ? naSpan() : '-')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${ir.trend.length < 3 ? `<div class="empty" style="margin-top:12px;">Only ${ir.trend.length} period(s) on record — add more financial years on the Company page for a fuller trend.</div>` : ''}
   `;
 }
-function irMountTrendCharts(ir){ irMountFinancialCharts(ir); }
+function irMountTrendCharts(ir){
+  const labels = ir.trend.map(t => t.period);
+  [irPtChart1, irPtChart2, irPtChart3, irPtChart4, irPtChart5].forEach(c => c && c.destroy());
+  const chartOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { labels: { color: '#aab4cc' } } },
+    scales: {
+      x: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+      y: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
+    },
+  };
+  const mk = (id, cfg) => { const el = document.getElementById(id); return el ? new Chart(el, cfg) : null; };
+  irPtChart1 = mk('ir-pt-chart-1', { type: 'line', data: { labels, datasets: [
+    { label: 'Revenue', data: ir.trend.map(t => t.revenue), borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.12)', tension: .3, fill: true, spanGaps: true },
+  ]}, options: chartOpts });
+  irPtChart2 = mk('ir-pt-chart-2', { type: 'line', data: { labels, datasets: [
+    { label: 'Net Profit', data: ir.trend.map(t => t.net_income), borderColor: '#3ddc84', backgroundColor: 'rgba(61,220,132,.12)', tension: .3, fill: true, spanGaps: true },
+  ]}, options: chartOpts });
+  irPtChart3 = mk('ir-pt-chart-3', { type: 'line', data: { labels, datasets: [
+    { label: 'Operating Profit', data: ir.trend.map(t => t.operating_profit), borderColor: '#b06bff', backgroundColor: 'rgba(176,107,255,.12)', tension: .3, fill: true, spanGaps: true },
+  ]}, options: chartOpts });
+  irPtChart4 = mk('ir-pt-chart-4', { type: 'line', data: { labels, datasets: [
+    { label: 'Gross Margin', data: ir.trend.map(t => t.gross_margin), borderColor: '#5b9bff', tension: .3, spanGaps: true },
+    { label: 'Operating Margin', data: ir.trend.map(t => t.operating_margin), borderColor: '#3ddc84', tension: .3, spanGaps: true },
+    { label: 'Net Margin', data: ir.trend.map(t => t.net_margin), borderColor: '#ffb020', tension: .3, spanGaps: true },
+  ]}, options: chartOpts });
+  irPtChart5 = mk('ir-pt-chart-5', { type: 'line', data: { labels, datasets: [
+    { label: 'ROE', data: ir.trend.map(t => t.roe), borderColor: '#5b9bff', tension: .3, spanGaps: true },
+    { label: 'ROA', data: ir.trend.map(t => t.roa), borderColor: '#3ddc84', tension: .3, spanGaps: true },
+    { label: 'ROIC', data: ir.trend.map(t => t.roic), borderColor: '#b06bff', tension: .3, spanGaps: true },
+  ]}, options: chartOpts });
+}
 
 function irPeerComparisonTab(ir){
   const pc = ir.peer_comparison;
   if (!pc.sector || pc.peer_count <= 1) {
     return `<div class="panel"><div class="empty">${pc.sector ? `No other tracked companies in the ${escapeHtml(pc.sector)} sector yet.` : 'This company has no sector assigned, so peer comparison is unavailable.'}</div></div>`;
   }
+  const scoreM = pc.metrics.find(m => m.label === 'Financial Health Score');
+  const marginM = pc.metrics.find(m => m.label === 'Net Profit Margin');
+  const roeM = pc.metrics.find(m => m.label === 'ROE');
+  const deM = pc.metrics.find(m => m.label === 'Debt to Equity');
+  const topCards = [
+    {label: 'Financial Health Score', value: scoreM && scoreM.company !== null ? `${fmt(scoreM.company,0)} / 100` : naSpan(), sub: scoreM && scoreM.rank ? `Rank ${scoreM.rank} / ${pc.peer_count}` : ''},
+    {label: 'Net Profit Margin', value: marginM && marginM.company !== null ? fmt(marginM.company) + '%' : naSpan(), sub: marginM && marginM.rank ? `Rank ${marginM.rank} / ${pc.peer_count}` : ''},
+    {label: 'ROE', value: roeM && roeM.company !== null ? fmt(roeM.company) + '%' : naSpan(), sub: roeM && roeM.rank ? `Rank ${roeM.rank} / ${pc.peer_count}` : ''},
+    {label: 'Debt to Equity', value: deM && deM.company !== null ? fmt(deM.company, 2) + 'x' : naSpan(), sub: deM && deM.rank ? `Rank ${deM.rank} / ${pc.peer_count}` : ''},
+  ];
+
   const rows = pc.metrics.map(m => `
     <tr>
       <td>${escapeHtml(m.label)}</td>
-      <td class="amount">${m.company !== null ? (m.suffix === '%' ? fmt(m.company) + '%' : m.suffix === '' && m.label.includes('Revenue') ? fmtAmount(m.company) : fmt(m.company, 2)) : '-'}</td>
+      <td class="amount">${m.company !== null ? (m.suffix === '%' ? fmt(m.company) + '%' : m.suffix === '' && m.label.includes('Revenue') ? fmtAmount(m.company) : fmt(m.company, 2)) : naSpan()}</td>
       <td class="amount">${m.sector_avg !== null ? (m.suffix === '%' ? fmt(m.sector_avg) + '%' : m.label.includes('Revenue') ? fmtAmount(m.sector_avg) : fmt(m.sector_avg, 2)) : '-'}</td>
       <td class="amount">${m.top !== null ? (m.suffix === '%' ? fmt(m.top) + '%' : m.label.includes('Revenue') ? fmtAmount(m.top) : fmt(m.top, 2)) : '-'}</td>
+      <td>${m.top_name ? escapeHtml(m.top_name) : '-'}</td>
       <td class="amount">${m.rank ? `<span class="ir-peer-badge ${m.rank === 1 ? 'rank1' : ''}">${m.rank} / ${pc.peer_count}</span>` : '-'}</td>
     </tr>`).join('');
+
+  const peerRows = (pc.peers_table || []).map(p => `
+    <tr${p.id === irCache.company.id ? ' style="background:var(--bg-hover);"' : ''}>
+      <td>${escapeHtml(p.name)}${p.id === irCache.company.id ? ' <span style="color:var(--text-faint);font-size:10px;">(this company)</span>' : ''}</td>
+      <td class="amount">${p.net_margin !== null ? fmt(p.net_margin) + '%' : '-'}</td>
+      <td class="amount">${p.roe !== null ? fmt(p.roe) + '%' : '-'}</td>
+      <td class="amount">${p.debt_equity !== null ? fmt(p.debt_equity, 2) + 'x' : '-'}</td>
+      <td class="amount">${p.eps !== null ? fmt(p.eps, 2) : naSpan()}</td>
+      <td class="amount">${p.financial_score !== null ? fmt(p.financial_score, 0) : '-'}</td>
+    </tr>`).join('');
+
   return `
-    <div class="panel">
-      <div class="ir-panel-title">Peer Comparison — ${escapeHtml(pc.sector)} (${pc.peer_count} companies tracked)</div>
+    <div class="stat-grid" style="margin-bottom:16px;">
+      ${topCards.map(c => `
+        <div class="stat-card"><div class="stat-card-body">
+          <div class="stat-label">${escapeHtml(c.label)}</div>
+          <div class="stat-value">${c.value}</div>
+          ${c.sub ? `<div class="stat-trend">${escapeHtml(c.sub)}</div>` : ''}
+        </div></div>`).join('')}
+    </div>
+
+    <div class="row" style="grid-template-columns:1fr 1fr;align-items:start;">
+      <div class="panel">
+        <div class="ir-panel-title">Key Financial Metrics Comparison — ${escapeHtml(pc.sector)}</div>
+        <table>
+          <thead><tr><th>Metric</th><th class="amount">${escapeHtml(irCache.company.name)}</th><th class="amount">Sector Avg</th><th class="amount">Top</th><th>Top Performer</th><th class="amount">Rank</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">Dividend Yield/TSR aren't part of this sector comparison table since peer companies' own share-price data isn't captured for all of them yet — see this company's own figures below.</div>
+      </div>
+      <div class="chart-panel">
+        <div class="chart-head"><h3>Performance Snapshot</h3></div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="ir-peer-radar"></canvas></div>
+      </div>
+    </div>
+
+    ${ir.market_data && (ir.market_data.dividend_yield !== null || ir.market_data.total_shareholder_return !== null || ir.market_data.dividend_per_share !== null) ? `
+    <div class="panel" style="margin-top:16px;">
+      <div class="ir-panel-title">${escapeHtml(irCache.company.name)} — Own Market Data, as filed</div>
+      <div class="stat-grid">
+        ${ir.market_data.dividend_yield !== null ? statCard('purple', '💧', fmt(ir.market_data.dividend_yield,1) + '%', 'Dividend Yield', '') : ''}
+        ${ir.market_data.dividend_per_share !== null ? statCard('amber', '💰', fmtAmount(ir.market_data.dividend_per_share), 'Dividend Per Share', '') : ''}
+        ${ir.market_data.total_shareholder_return !== null ? statCard('green', '📈', fmt(ir.market_data.total_shareholder_return,1) + '%', 'Total Shareholder Return', '') : ''}
+        ${ir.market_data.market_cap !== null ? statCard('blue', '🏦', fmtAmount(ir.market_data.market_cap), 'Market Capitalization', '') : ''}
+      </div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:10px;">Source: filing's own Investor Information section, page ${ir.market_data.page || '—'}. Not part of the sector comparison above since it isn't captured for every peer yet.</div>
+    </div>` : ''}
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="ir-panel-title">Peer Comparison Table — ${escapeHtml(pc.sector)} (${pc.peer_count} companies)</div>
       <table>
-        <thead><tr><th>Metric</th><th class="amount">${escapeHtml(irCache.company.name)}</th><th class="amount">Sector Avg</th><th class="amount">Top Performer</th><th class="amount">Rank</th></tr></thead>
-        <tbody>${rows}</tbody>
+        <thead><tr><th>Company</th><th class="amount">Net Profit Margin</th><th class="amount">ROE</th><th class="amount">Debt to Equity</th><th class="amount">EPS</th><th class="amount">Financial Health Score</th></tr></thead>
+        <tbody>${peerRows}</tbody>
       </table>
     </div>`;
 }
+let irPeerRadarChart = null;
+function irMountPeerChart(ir){
+  const pc = ir.peer_comparison;
+  if (irPeerRadarChart) irPeerRadarChart.destroy();
+  const el = document.getElementById('ir-peer-radar');
+  if (!el || !pc.sector || pc.peer_count <= 1) return;
+  const marginM = pc.metrics.find(m => m.label === 'Net Profit Margin');
+  const roeM = pc.metrics.find(m => m.label === 'ROE');
+  const scoreM = pc.metrics.find(m => m.label === 'Financial Health Score');
+  // Normalize each axis to 0-100 against the sector's own top value so the
+  // radar is readable regardless of each metric's native scale - this is
+  // a display transform only, not a fabricated figure (the underlying
+  // company/sector_avg values are the real ones already shown in the
+  // table alongside it).
+  const axes = [
+    {label: 'Profitability', m: marginM},
+    {label: 'Returns (ROE)', m: roeM},
+    {label: 'Financial Strength', m: scoreM},
+  ].filter(a => a.m && a.m.top);
+  if (!axes.length) return;
+  const norm = (m) => m.company !== null ? Math.max(0, Math.min(100, (m.company / m.top) * 100)) : 0;
+  const normAvg = (m) => m.sector_avg !== null ? Math.max(0, Math.min(100, (m.sector_avg / m.top) * 100)) : 0;
+  irPeerRadarChart = new Chart(el, {
+    type: 'radar',
+    data: {
+      labels: axes.map(a => a.label),
+      datasets: [
+        { label: irCache.company.name, data: axes.map(a => norm(a.m)), borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.2)' },
+        { label: 'Sector Average', data: axes.map(a => normAvg(a.m)), borderColor: '#7986a3', backgroundColor: 'rgba(121,134,163,.1)' },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#aab4cc' } } },
+      scales: { r: { angleLines: { color: 'rgba(255,255,255,.08)' }, grid: { color: 'rgba(255,255,255,.08)' }, pointLabels: { color: '#aab4cc' }, ticks: { display: false } } },
+    },
+  });
+}
 
 function irRiskAnalysisTab(ir){
+  const overallScore = ir.overall_risk_score;
+  const overallBand = ir.overall_risk_band;
+  const cats = ir.risk_categories || [];
+  const qualitativeCats = cats.filter(c => c.qualitative);
+  const scoredCats = cats.filter(c => !c.qualitative);
+
   return `
-    <div class="ir-sro-grid">
+    <div class="row row-3" style="grid-template-columns:1fr 1.4fr;align-items:start;">
+      <div class="panel">
+        <div class="ir-panel-title">Overall Risk Score</div>
+        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;">
+          ${overallScore !== null ? irGauge(100 - overallScore, overallBand === 'Very Low Risk' || overallBand === 'Low Risk' ? 'strong' : (overallBand === 'Moderate Risk' ? 'moderate' : 'weak'), overallScore) : `<div style="padding:24px 0;">${naSpan('No debt/equity, current ratio, or interest coverage data captured for this period')}</div>`}
+          ${overallScore !== null ? `<div class="ir-band-pill ${overallBand === 'Very Low Risk' || overallBand === 'Low Risk' ? 'strong' : (overallBand === 'Moderate Risk' ? 'moderate' : 'weak')}">${overallBand.toUpperCase()}</div>` : ''}
+        </div>
+        <div style="font-size:10.5px;color:var(--text-faint);margin-top:12px;line-height:1.5;text-align:center;">
+          Built only from the Financial risk category (the one this app can score numerically from filed statements). The
+          ${qualitativeCats.length || 'other'} qualitative categories below are real disclosed risks, not blended into this score,
+          since the filing itself never scores them numerically.
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Scored Risk Categories</div>
+        <table>
+          <thead><tr><th>Category</th><th class="amount">Risk Score</th><th>Basis</th></tr></thead>
+          <tbody>
+            ${scoredCats.map(c => `
+              <tr>
+                <td>${escapeHtml(c.label)}</td>
+                <td class="amount">${c.score !== null ? `${fmt(c.score,0)} / 100` : naSpan()}</td>
+                <td style="font-size:11px;color:var(--text-faint);">${c.basis ? escapeHtml(c.basis) : 'No basis available for this period'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="ir-panel-title">Principal Risks — as disclosed in the filing</div>
+      ${qualitativeCats.length ? `
+        <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
+          These ${qualitativeCats.length} categories and their descriptions/mitigations come directly from the company's own
+          "Management of Principal Risks" section. None are numerically scored here — the filing itself doesn't score them,
+          so showing a 0–100 number would be invented, not extracted.
+        </div>
+        <div class="ir-risk-cat-grid">
+          ${qualitativeCats.map(c => `
+            <div class="ir-risk-cat-card">
+              <div class="ir-risk-cat-title">${escapeHtml(c.label)}</div>
+              ${c.qualitative.description ? `<div class="ir-risk-cat-desc">${escapeHtml(c.qualitative.description)}</div>` : ''}
+              ${c.qualitative.mitigation ? `<div class="ir-risk-cat-mitigation"><b>Our Mitigations:</b> ${escapeHtml(c.qualitative.mitigation)}</div>` : ''}
+              ${c.qualitative.page ? `<div class="ir-risk-cat-page">Source: filing, page ${c.qualitative.page}</div>` : ''}
+            </div>`).join('')}
+        </div>` : `<div class="empty">No "Management of Principal Risks" section was extracted from this company's uploaded filing for this period — either the filing wasn't uploaded, or it uses a layout this app's parser doesn't yet recognize.</div>`}
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="ir-panel-title">Top Risk Exposures</div>
+      ${(ir.risk_exposures && ir.risk_exposures.length) ? `
+        <table>
+          <thead><tr><th>Risk</th><th>Description</th></tr></thead>
+          <tbody>
+            ${ir.risk_exposures.map(r => `<tr><td><b>${escapeHtml(r.risk)}</b></td><td>${escapeHtml(r.description)}</td></tr>`).join('')}
+          </tbody>
+        </table>` : `<div class="empty">No leverage, liquidity, coverage, or margin-compression flags for this period based on filed figures.</div>`}
+    </div>
+
+    <div class="ir-sro-grid" style="margin-top:16px;">
       <div class="ir-sro-col strengths">
         <h3>✅ Strengths</h3>
         ${ir.strengths.length ? ir.strengths.map(t => `<div class="ir-highlight-item"><span class="ic">✅</span><span>${escapeHtml(t)}</span></div>`).join('') : `<div class="empty">None identified this period.</div>`}
@@ -3007,11 +3352,44 @@ async function irRemunerationTab(ir){
   const el = document.getElementById('ir-tab-body');
   if (irTab !== 'remuneration') return;
   const res = await fetch(`/api/companies/${currentCompanyId}/remuneration`);
-  const data = await safeJson(res, {has_survey: false, own_remuneration: []});
+  const data = await safeJson(res, {has_survey: false, own_remuneration: [], director_rows_by_period: {}});
   if (irTab !== 'remuneration') return; // user may have switched tabs while this loaded
 
+  const byPeriod = data.director_rows_by_period || {};
+  const periodsWithRows = Object.keys(byPeriod);
   const ownRows = (data.own_remuneration || []);
-  const ownPanel = ownRows.length ? `
+
+  const componentLabel = (key) => key.replace(/_ksh'000$/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  const directorDetailPanel = periodsWithRows.length ? `
+    <div class="panel">
+      <div class="ir-panel-title">Director Remuneration — per-director, as filed</div>
+      <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
+        Each row is the director's own printed Total from the company's Directors' Remuneration Report (figures in Ksh '000
+        as filed). The Non-Executive Directors row is the report's own printed GRAND TOTAL across all NEDs — individual NED
+        rows aren't broken out here since some filings wrap director names across lines in a way this app can't reliably
+        separate; the Executive Directors are each their own named row.
+      </div>
+      ${periodsWithRows.map(period => `
+        <div style="margin-bottom:${period === periodsWithRows[periodsWithRows.length-1] ? '0' : '20px'};">
+          <div style="font-weight:700;font-size:12.5px;margin-bottom:8px;">${escapeHtml(period)}</div>
+          <table>
+            <thead><tr><th>Director</th><th>Role</th><th class="amount">Total (Ksh '000)</th><th>Components</th></tr></thead>
+            <tbody>
+              ${byPeriod[period].map(r => `
+                <tr>
+                  <td>${r.is_grand_total ? `<b>${escapeHtml(r.director_name)}</b>` : escapeHtml(r.director_name)}</td>
+                  <td>${r.role === 'executive' ? 'Executive Director' : 'Non-Executive Directors'}</td>
+                  <td class="amount"><b>${fmtAmount(r.total)}</b></td>
+                  <td style="font-size:10.5px;color:var(--text-faint);">${r.components ? Object.entries(r.components).filter(([,v]) => v !== null).map(([k,v]) => `${componentLabel(k)}: ${fmtAmount(v)}`).join(' · ') : ''}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`).join('')}
+      <div style="font-size:10px;color:var(--text-faint);margin-top:12px;">Source: filing's own Directors' Remuneration Report, page numbers as captured per row.</div>
+    </div>` : '';
+
+  const ownPanel = (!periodsWithRows.length && ownRows.length) ? `
     <div class="panel">
       <div class="ir-panel-title">Total Director Remuneration — as filed (${escapeHtml(irCache.company.name)})</div>
       <table>
@@ -3023,15 +3401,17 @@ async function irRemunerationTab(ir){
         period, not a per-director breakdown and not computed/summed by this app. Some filings don't print one
         explicit total (this app never estimates one in that case), so not every period will show a row here.
       </div>
-    </div>` : `
+    </div>` : (!periodsWithRows.length ? `
     <div class="panel">
       <div class="ir-panel-title">Total Director Remuneration — as filed</div>
       <div class="empty">No filed total found in this company's uploaded reports yet - either none has been
         uploaded with a Directors' Remuneration Report, or that report didn't print one single total figure.</div>
-    </div>`;
+    </div>` : '');
+
+  const summaryPanel = directorDetailPanel || ownPanel;
 
   if (!data.has_survey) {
-    el.innerHTML = ownPanel + `
+    el.innerHTML = summaryPanel + `
       <div class="panel">
         <div class="ir-panel-title">Director &amp; Executive Remuneration Benchmark</div>
         <div class="empty">No remuneration survey imported yet.</div>
@@ -3073,7 +3453,7 @@ async function irRemunerationTab(ir){
   const ceoRows = data.ceo_comp.map(cc => `
     <tr><td>${escapeHtml(cc.component_name)}</td><td class="amount">${fmtAmount(cc.p25)}</td><td class="amount">${fmtAmount(cc.p50)}</td><td class="amount">${fmtAmount(cc.p75)}</td><td class="amount">${fmtAmount(cc.average)}</td></tr>`).join('');
 
-  el.innerHTML = ownPanel + `
+  el.innerHTML = summaryPanel + `
     <div class="panel">
       <div class="panel-head">
         <h2>${escapeHtml(data.survey.title)} ${data.survey.edition ? '· ' + escapeHtml(data.survey.edition) : ''}</h2>
@@ -3132,29 +3512,90 @@ async function uploadIRSurvey(companyId){
 
 function irOutlookTab(ir){
   const fh = ir.financial_health;
+  const s = ir.snapshot;
+  const topCards = [
+    {label: 'Overall Outlook', value: fh.outlook, color: fh.outlook === 'Positive' ? 'green' : (fh.outlook === 'Negative' ? 'red' : 'amber'), icon: '🧭'},
+    {label: 'Revenue Trend', value: s.revenue_yoy !== null ? (s.revenue_yoy >= 0 ? '↑' : '↓') + ' ' + fmt(Math.abs(s.revenue_yoy)) + '%' : naSpan(), color: 'blue', icon: '📈'},
+    {label: 'Net Profit Trend', value: s.net_income_yoy !== null ? (s.net_income_yoy >= 0 ? '↑' : '↓') + ' ' + fmt(Math.abs(s.net_income_yoy)) + '%' : naSpan(), color: 'green', icon: '💵'},
+    {label: 'Confidence', value: fh.confidence, color: fh.confidence === 'High' ? 'green' : (fh.confidence === 'Medium' ? 'amber' : 'red'), icon: '🎯'},
+  ];
+  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label, '')).join('');
+
   return `
+    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
+
     <div class="ir-outlook-banner ${fh.outlook}">
       <div class="ob-label">${fh.outlook} Outlook</div>
       <div class="ob-sub">Based on ${ir.outlook_drivers.length} year-over-year signal(s) vs ${ir.available_periods[1] || 'the prior period on record'} — not a forecast, a read of the trend already in the data.</div>
     </div>
-    <div class="panel">
-      <div class="ir-panel-title">What's Driving This</div>
-      ${ir.outlook_drivers.length ? ir.outlook_drivers.map(d => `<div class="ir-highlight-item"><span class="ic">→</span><span>${escapeHtml(d)}</span></div>`).join('') : `<div class="empty">Not enough period-over-period data yet to identify drivers.</div>`}
-    </div>
-    <div class="panel">
-      <div class="ir-panel-title">Confidence</div>
-      <div style="font-size:12.5px;color:var(--text-dim);line-height:1.6;">
-        Rated <b>${fh.confidence}</b> — based on ${ir.available_periods.length} recorded period(s) for this company.
-        ${fh.confidence !== 'High' ? ' Add more historical financial years on the Company page for a more reliable read.' : ''}
+    <div class="row" style="grid-template-columns:1.4fr 1fr;align-items:start;">
+      <div class="panel">
+        <div class="ir-panel-title">What's Driving This</div>
+        ${ir.outlook_drivers.length ? ir.outlook_drivers.map(d => `<div class="ir-highlight-item"><span class="ic">→</span><span>${escapeHtml(d)}</span></div>`).join('') : `<div class="empty">Not enough period-over-period data yet to identify drivers.</div>`}
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Confidence</div>
+        <div style="font-size:12.5px;color:var(--text-dim);line-height:1.6;">
+          Rated <b>${fh.confidence}</b> — based on ${ir.available_periods.length} recorded period(s) for this company.
+          ${fh.confidence !== 'High' ? ' Add more historical financial years on the Company page for a more reliable read.' : ''}
+        </div>
       </div>
     </div>
+    <div class="panel">
+      <div class="ir-panel-title">Scenario Analysis (${ir.scenario_analysis && ir.scenario_analysis.length ? escapeHtml(ir.scenario_analysis[0].guidance_period_label || 'Next FY') : 'Next FY'})</div>
+      ${(ir.scenario_analysis && ir.scenario_analysis.length) ? `
+        <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
+          Bear/Base/Bull are the low end, midpoint, and high end of management's own printed guidance range for next year —
+          not a modeled forecast. Current is this period's actual result for comparison.
+        </div>
+        <table>
+          <thead><tr><th>Metric</th><th class="amount">Current</th><th class="amount">Bear Case</th><th class="amount">Base Case</th><th class="amount">Bull Case</th><th>Commentary</th></tr></thead>
+          <tbody>
+            ${ir.scenario_analysis.map(g => `
+              <tr>
+                <td>${escapeHtml(g.metric_name)}</td>
+                <td class="amount">${g.current_value !== null ? fmt(g.current_value,1) + '%' : naSpan()}</td>
+                <td class="amount">${g.bear_case !== null ? fmt(g.bear_case,1) + '%' : naSpan()}</td>
+                <td class="amount"><b>${g.base_case !== null ? fmt(g.base_case,1) + '%' : naSpan()}</b></td>
+                <td class="amount">${g.bull_case !== null ? fmt(g.bull_case,1) + '%' : naSpan()}</td>
+                <td style="font-size:11px;color:var(--text-faint);">${g.commentary ? escapeHtml(g.commentary) : ''}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:10px;">
+          Source: filing, page ${ir.scenario_analysis[0].page || '—'}. A numeric sensitivity/elasticity analysis and a composite
+          "confidence" score aren't shown here since the filing doesn't publish either — inventing one would look precise
+          while being fiction.
+        </div>` : `<div class="empty">${naSpan("No management guidance table was extracted from this company's uploaded filing for this period")}</div>`}
+    </div>
+    ${ir.market_data ? `
+    <div class="panel" style="margin-top:16px;">
+      <div class="ir-panel-title">Market &amp; Shareholder Outlook — as filed</div>
+      <div class="stat-grid">
+        ${statCard('blue', '💹', ir.market_data.share_price !== null ? fmtAmount(ir.market_data.share_price) : naSpan(), 'Share Price (period end)', ir.market_data.prior_share_price !== null ? `vs ${fmtAmount(ir.market_data.prior_share_price)} prior` : '')}
+        ${statCard('green', '🏦', ir.market_data.market_cap !== null ? fmtAmount(ir.market_data.market_cap) : naSpan(), 'Market Capitalization', '')}
+        ${statCard('amber', '💰', ir.market_data.dividend_per_share !== null ? fmtAmount(ir.market_data.dividend_per_share) : naSpan(), 'Dividend Per Share', '')}
+        ${statCard('purple', '📊', ir.market_data.total_shareholder_return !== null ? fmt(ir.market_data.total_shareholder_return,1) + '%' : naSpan(), 'Total Shareholder Return', '')}
+      </div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:10px;">Source: filing's own Investor Information section, page ${ir.market_data.page || '—'}.</div>
+    </div>` : ''}
   `;
 }
 
 function irSourceEvidenceTab(ir){
   const docs = ir.source_documents || [];
   const jobs = ir.import_jobs || [];
+  const successJobs = jobs.filter(j => j.status === 'success' || j.status === 'completed').length;
+  const topCards = [
+    {label: 'Source Documents', value: String(docs.length), color: 'blue', icon: '📄'},
+    {label: 'Periods on Record', value: String((ir.available_periods || []).length), color: 'green', icon: '📅'},
+    {label: 'Successful Imports', value: String(successJobs), color: 'green', icon: '✅'},
+    {label: 'Total Import Jobs', value: String(jobs.length), color: 'amber', icon: '⚙️'},
+  ];
+  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label, '')).join('');
+
   return `
+    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
     <div class="panel">
       <div class="ir-panel-title">Source Documents</div>
       ${docs.length ? docs.map(d => `
@@ -3181,6 +3622,9 @@ function irSourceEvidenceTab(ir){
             </tr>`).join('')}
           </tbody>
         </table>` : `<div class="empty">No import jobs recorded for this company.</div>`}
+    </div>
+    <div style="font-size:10.5px;color:var(--text-faint);margin-top:4px;">
+      A per-data-point confidence percentage isn't shown — this app doesn't score individual extractions that granularly, so a number there would be invented rather than measured.
     </div>
   `;
 }
@@ -3512,6 +3956,14 @@ async function saveBuilderReport(){
 
 function fmt(val, decimals = 1){
   return (val === null || val === undefined) ? '-' : Number(val).toFixed(decimals);
+}
+function naSpan(label){
+  // Shared "genuinely not computable from filed data" marker - used
+  // throughout the Intelligence Report instead of a fabricated number
+  // wherever the backend sends null for a field it has no honest basis
+  // to estimate (market cap, dividend yield, forward-looking risk
+  // categories, scenario forecasts, etc).
+  return `<span style="color:var(--text-faint);font-style:italic;" title="${escapeHtml(label || 'Not available from filed data')}">Not available</span>`;
 }
 function fmtAmount(val){
   if (val === null || val === undefined || val === '') return '-';

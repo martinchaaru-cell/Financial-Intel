@@ -2,6 +2,7 @@ import os
 import csv
 import io
 import re
+import json
 import hashlib
 from flask import Flask, render_template, request, jsonify, send_file
 from datetime import datetime
@@ -14,6 +15,7 @@ from models import (
     OperationalMetric, FinancialNote,
     MarketSurvey, SurveyMarketMetric, SurveySectorCompany,
     SurveyRemunerationStat, SurveySectorAllowance, SurveyBenefit, SurveyCEOComp,
+    MarketDataSnapshot, PrincipalRisk, ManagementGuidance, DirectorRemunerationRow,
 )
 from ratios import calculate_ratios
 from company_directory import match_company
@@ -21,6 +23,8 @@ from pdf_parse import (
     match_canonical_label, parse_financials_pdf, extract_pdf_document,
     detect_period_label, detect_prior_period_label, detect_company_name,
     extract_director_remuneration,
+    extract_market_data, extract_management_guidance, extract_principal_risks,
+    extract_director_remuneration_detail,
 )
 from survey_pdf_parse import parse_survey_pdf
 from report_context import build_report_context
@@ -249,6 +253,13 @@ class PeriodFinancialsView:
         self._gross_margin = metrics.get('gross_margin')
         self._operating_margin = metrics.get('operating_margin')
         self._eps = metrics.get('eps')
+        self._current_ratio = metrics.get('current_ratio')
+        self._interest_coverage = metrics.get('interest_coverage')
+        self._net_debt_to_ebitda = metrics.get('net_debt_to_ebitda')
+        self._ebitda = metrics.get('ebitda')
+        self._free_cash_flow = metrics.get('free_cash_flow')
+        self._ocf_margin = metrics.get('ocf_margin')
+        self._roic = metrics.get('roic')
         has_source = any(s.source_document_id for s in period.statements)
         self.source = 'pdf_upload' if has_source else 'manual'
 
@@ -266,7 +277,11 @@ class PeriodFinancialsView:
             'shares_outstanding': self.shares_outstanding,
             'net_margin': net_margin, 'roe': roe, 'roa': self._roa, 'debt_equity': debt_equity,
             'gross_margin': self._gross_margin, 'operating_margin': self._operating_margin,
-            'eps': self._eps,
+            'eps': self._eps, 'current_ratio': self._current_ratio,
+            'interest_coverage': self._interest_coverage,
+            'net_debt_to_ebitda': self._net_debt_to_ebitda, 'ebitda': self._ebitda,
+            'free_cash_flow': self._free_cash_flow, 'ocf_margin': self._ocf_margin,
+            'roic': self._roic,
             'financial_score': score, 'score_band': score_band(score),
         }
 
@@ -494,6 +509,78 @@ def assess_company_opportunity(c, latest, prior):
     if revenue_change is not None and revenue_change > 20:
         return (f"Revenue ↑ {round(revenue_change)}%",)
     return None
+
+# Risk categories a real annual filing's numbers can actually speak to
+# vs ones that genuinely can't be scored from financial statements alone
+# (regulatory change, competitive intensity, technology/cyber exposure,
+# ESG) - those require qualitative/external research this app has no
+# data source for, so they're listed as categories with score=None
+# ('Not available') rather than a fabricated number. Only 'financial'
+# and 'operational' (to the extent operational risk shows up as
+# liquidity/leverage strain) get a real computed score here.
+RISK_CATEGORY_LABELS = {
+    'financial': 'Financial',
+    'operational': 'Operational',
+    'regulatory': 'Regulatory & Compliance',
+    'competitive': 'Competitive',
+    'technology': 'Technology & Innovation',
+    'strategic': 'Strategic',
+    'esg': 'ESG & Reputational',
+}
+
+def _risk_band(score):
+    if score is None:
+        return None
+    if score <= 20:
+        return 'Very Low Risk'
+    if score <= 40:
+        return 'Low Risk'
+    if score <= 60:
+        return 'Moderate Risk'
+    if score <= 80:
+        return 'High Risk'
+    return 'Very High Risk'
+
+def compute_financial_risk_score(latest_dict, prior_dict):
+    """0-100 risk score (higher = riskier) built ONLY from ratios this
+    period's own filed figures support: debt/equity, current ratio,
+    interest coverage, and net margin direction vs prior period. Any
+    input that's missing simply doesn't contribute to the blend (weights
+    renormalize over whatever's actually present) rather than being
+    treated as a bad value - a company with an unusually clean balance
+    sheet that omits, say, a current-liabilities breakdown shouldn't be
+    penalized for a gap in what got extracted from its filing."""
+    components = []  # (weight, risk_0_100)
+
+    de = latest_dict.get('debt_equity')
+    if de is not None:
+        # 0 at D/E=0, 100 at D/E>=4 - linear, capped
+        components.append((0.35, max(0, min(100, de / 4 * 100))))
+
+    cr = latest_dict.get('current_ratio')
+    if cr is not None:
+        # Risk falls as current ratio rises above 1; a ratio below 1
+        # (current liabilities exceed current assets) is treated as
+        # maximum risk on this component.
+        components.append((0.25, max(0, min(100, (1.5 - min(cr, 1.5)) / 1.5 * 100))))
+
+    ic = latest_dict.get('interest_coverage')
+    if ic is not None:
+        # Coverage of 8x+ treated as effectively riskless on this
+        # component; below 1x (can't cover interest from operating
+        # profit) treated as maximum risk.
+        components.append((0.25, max(0, min(100, (8 - min(ic, 8)) / 8 * 100))))
+
+    if prior_dict and latest_dict.get('net_margin') is not None and prior_dict.get('net_margin') is not None:
+        margin_delta = latest_dict['net_margin'] - prior_dict['net_margin']
+        # A margin that narrowed meaningfully raises risk; one that held
+        # or improved doesn't add risk on this component (floored at 0).
+        components.append((0.15, max(0, min(100, -margin_delta * 10))))
+
+    if not components:
+        return None
+    total_weight = sum(w for w, _ in components)
+    return round(sum(w * s for w, s in components) / total_weight, 0)
 
 @app.route('/api/overview/charts')
 def overview_charts():
@@ -1379,6 +1466,104 @@ def upload_documents_batch():
                 db.session.rollback()
                 app.logger.exception(f'Director remuneration extraction failed for {filename} (non-fatal)')
 
+            # Market data (share price, market cap, dividend, TSR,
+            # shareholding structure) - same non-fatal, best-effort
+            # pattern as remuneration above, and same current-period-only
+            # scope (this is the filing's own point-in-time investor
+            # information, not something with a prior-period comparative
+            # to also save).
+            try:
+                market_data = extract_market_data(pdf_bytes)
+                if market_data and result.get('company_id'):
+                    period_row = FinancialPeriod.query.filter_by(
+                        company_id=result['company_id'], period_label=period_label
+                    ).first()
+                    if period_row:
+                        existing_md = MarketDataSnapshot.query.filter_by(period_id=period_row.id).first()
+                        if existing_md is None:
+                            existing_md = MarketDataSnapshot(period_id=period_row.id)
+                            db.session.add(existing_md)
+                        for field in (
+                            'share_price', 'prior_share_price', 'market_cap', 'shares_issued',
+                            'shares_authorized', 'free_float_pct', 'shareholder_count',
+                            'prior_shareholder_count', 'dividend_per_share', 'interim_dividend_per_share',
+                            'final_dividend_per_share', 'dividend_yield', 'total_shareholder_return',
+                            'local_institutional_pct', 'local_individual_pct', 'foreign_investor_pct',
+                            'page',
+                        ):
+                            if field in market_data:
+                                setattr(existing_md, field, market_data[field])
+                        db.session.commit()
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Market data extraction failed for {filename} (non-fatal)')
+
+            # Management guidance (forward-looking KPI ranges, as printed
+            # in the filing's own Outlook table) - belongs to the CURRENT
+            # period since it's this filing's forecast for the year ahead
+            # of it, not a historical figure with a prior-year comparative.
+            try:
+                guidance_rows = extract_management_guidance(pdf_bytes)
+                if guidance_rows and result.get('company_id'):
+                    period_row = FinancialPeriod.query.filter_by(
+                        company_id=result['company_id'], period_label=period_label
+                    ).first()
+                    if period_row:
+                        ManagementGuidance.query.filter_by(period_id=period_row.id).delete()
+                        for row in guidance_rows:
+                            db.session.add(ManagementGuidance(period_id=period_row.id, **row))
+                        db.session.commit()
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Management guidance extraction failed for {filename} (non-fatal)')
+
+            # Principal risks (named qualitative risk categories with the
+            # filing's own description/mitigation text, no numeric score -
+            # see extract_principal_risks' docstring for why a short list
+            # is treated as "not extracted" rather than saved partially).
+            try:
+                risk_rows = extract_principal_risks(pdf_bytes)
+                if risk_rows and result.get('company_id'):
+                    period_row = FinancialPeriod.query.filter_by(
+                        company_id=result['company_id'], period_label=period_label
+                    ).first()
+                    if period_row:
+                        PrincipalRisk.query.filter_by(period_id=period_row.id).delete()
+                        for row in risk_rows:
+                            db.session.add(PrincipalRisk(period_id=period_row.id, **row))
+                        db.session.commit()
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Principal risks extraction failed for {filename} (non-fatal)')
+
+            # Director remuneration detail (per-director rows, real
+            # filed totals - see extract_director_remuneration_detail's
+            # docstring for why target_period_label matters here: the
+            # filing prints both this year's and last year's tables
+            # together, and only this upload's own period_label's rows
+            # are kept, so a separate upload of the prior year's own
+            # filing owns that year's rows instead of duplicating them).
+            try:
+                rem_rows = extract_director_remuneration_detail(pdf_bytes, target_period_label=period_label)
+                if rem_rows and result.get('company_id'):
+                    period_row = FinancialPeriod.query.filter_by(
+                        company_id=result['company_id'], period_label=period_label
+                    ).first()
+                    if period_row:
+                        DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
+                        for row in rem_rows:
+                            fiscal_year = row.pop('fiscal_year', None)  # already implied by period_id; not its own column
+                            components = row.pop('components', None)
+                            db.session.add(DirectorRemunerationRow(
+                                period_id=period_row.id,
+                                components=json.dumps(components) if components else None,
+                                **row,
+                            ))
+                        db.session.commit()
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Director remuneration detail extraction failed for {filename} (non-fatal)')
+
             results.append({
                 'filename': filename, 'ok': True,
                 'company_id': result['company_id'],
@@ -1551,6 +1736,55 @@ def get_period_detail(company_id, period_label):
     ).first_or_404()
     return jsonify(period.to_dict())
 
+def flat_statement_rows(period, statement_type):
+    """label/normalized_name -> {'label', 'amount'} for every line item
+    (top level and children) of one statement type in one period - keyed
+    by normalized_name when set else the raw label text, so rows align
+    across periods even if a filing's exact wording drifted year to
+    year. Shared by get_period_detail_view (income_statement, 3-year
+    comparison table) and the Intelligence Report endpoint (income
+    statement AND cash_flow, single period) so both read the exact same
+    way and can never disagree about what a filing's line items were."""
+    if period is None:
+        return {}
+    stmt = period.statement(statement_type)
+    if not stmt:
+        return {}
+    rows = {}
+    def walk(items):
+        for li in items:
+            key = li.normalized_name or li.label
+            rows[key] = {'label': li.label, 'amount': li.amount}
+            walk(li.children)
+    walk([li for li in stmt.line_items if li.parent_id is None])
+    return rows
+
+def build_comparison_rows(cols):
+    """cols: a list of flat_statement_rows() dicts, latest period first.
+    Returns ordered rows (order of first appearance, latest-first column)
+    with a value per column and YoY% between columns 0 and 1 - the same
+    reshaping get_period_detail_view already did for income_statement,
+    generalized so the Intelligence Report can reuse it for cash_flow
+    too without duplicating the logic."""
+    seen_order = []
+    for col in cols:
+        for key in col:
+            if key not in seen_order:
+                seen_order.append(key)
+    rows = []
+    for key in seen_order:
+        latest_cell = cols[0].get(key) if cols else None
+        prior_cell = cols[1].get(key) if len(cols) > 1 else None
+        rows.append({
+            'label': (latest_cell or prior_cell or {}).get('label', key),
+            'values': [c.get(key, {}).get('amount') if c else None for c in cols],
+            'yoy_change_pct': pct_change(
+                latest_cell['amount'] if latest_cell else None,
+                prior_cell['amount'] if prior_cell else None
+            ),
+        })
+    return rows
+
 @app.route('/api/companies/<int:company_id>/periods/<period_label>/detail-view')
 def get_period_detail_view(company_id, period_label):
     """Company Detail page data: the selected period's income statement
@@ -1579,44 +1813,8 @@ def get_period_detail_view(company_id, period_label):
     while len(window) < 3:
         window.append(None)
 
-    def flat_income_rows(p):
-        """label -> amount for every income-statement line item (top level
-        and children), keyed by normalized_name when set else the label
-        text, so rows align across years even if wording drifted."""
-        if p is None:
-            return {}
-        stmt = p.statement('income_statement')
-        if not stmt:
-            return {}
-        rows = {}
-        def walk(items):
-            for li in items:
-                key = li.normalized_name or li.label
-                rows[key] = {'label': li.label, 'amount': li.amount}
-                walk(li.children)
-        walk([li for li in stmt.line_items if li.parent_id is None])
-        return rows
-
-    cols = [flat_income_rows(p) for p in window]
-    # Preserve the order line items first appear in, latest period first
-    seen_order = []
-    for col in cols:
-        for key in col:
-            if key not in seen_order:
-                seen_order.append(key)
-
-    income_rows = []
-    for key in seen_order:
-        latest_cell = cols[0].get(key)
-        prior_cell = cols[1].get(key) if len(cols) > 1 else None
-        income_rows.append({
-            'label': (latest_cell or prior_cell or {}).get('label', key),
-            'values': [c.get(key, {}).get('amount') if c else None for c in cols],
-            'yoy_change_pct': pct_change(
-                latest_cell['amount'] if latest_cell else None,
-                prior_cell['amount'] if prior_cell else None
-            ),
-        })
+    cols = [flat_statement_rows(p, 'income_statement') for p in window]
+    income_rows = build_comparison_rows(cols)
 
     metrics = {m.metric_name: m.value for m in period.calculated_metrics}
     source_doc = None
@@ -1905,8 +2103,11 @@ def company_intelligence_report(company_id):
     the Company Detail page and the PDF import pipeline use - so this
     reflects everything actually captured from an imported filing, not
     just the 5 fields the old flat Financials table tracked. Fields the
-    schema genuinely has no data for (gross/operating margin, EPS, stock
-    return/market cap) are left out rather than estimated."""
+    schema genuinely has no data for (market cap, share price, dividend
+    yield, 5-year risk-score history, forward-looking bull/base/bear
+    scenario forecasts) are left as null/omitted rather than estimated -
+    the frontend renders those as "Not available", never a guessed
+    number."""
     c = Company.query.get_or_404(company_id)
     periods = _ordered_periods(company_id)
     rows = [PeriodFinancialsView(p) for p in periods]
@@ -1934,14 +2135,48 @@ def company_intelligence_report(company_id):
     snapshot = {
         'revenue': ld['revenue'], 'revenue_yoy': pct_change(ld['revenue'], pd_['revenue']) if pd_ else None,
         'net_income': ld['net_income'], 'net_income_yoy': pct_change(ld['net_income'], pd_['net_income']) if pd_ else None,
+        'operating_profit': ld['operating_profit'], 'operating_profit_yoy': pct_change(ld['operating_profit'], pd_['operating_profit']) if pd_ else None,
+        'total_assets': ld['total_assets'], 'total_assets_yoy': pct_change(ld['total_assets'], pd_['total_assets']) if pd_ else None,
         'roe': ld['roe'], 'roe_delta': delta(ld['roe'], pd_['roe'] if pd_ else None),
         'net_margin': ld['net_margin'], 'net_margin_delta': delta(ld['net_margin'], pd_['net_margin'] if pd_ else None),
         'roa': roa, 'roa_delta': delta(roa, prior_roa),
+        'eps': ld['eps'], 'eps_yoy': pct_change(ld['eps'], pd_['eps']) if pd_ else None,
+        'debt_equity': ld['debt_equity'], 'current_ratio': ld['current_ratio'],
+        'interest_coverage': ld['interest_coverage'], 'net_debt_to_ebitda': ld['net_debt_to_ebitda'],
+        'gross_profit': ld['gross_profit'],
     }
 
+    # Full trend series (up to 5 years, oldest first) with every ratio the
+    # Performance Trends / Financial Analysis tabs chart - not just
+    # revenue/net_income/net_margin as before.
     trend_rows = list(reversed(rows[:5]))
-    trend = [{'period': r.period, 'revenue': r.revenue, 'net_income': r.net_income,
-               'net_margin': r.to_dict()['net_margin']} for r in trend_rows]
+    trend = [{
+        'period': r.period, 'revenue': r.revenue, 'net_income': r.net_income,
+        'operating_profit': r.operating_profit, 'total_assets': r.total_assets,
+        **{k: r.to_dict()[k] for k in (
+            'net_margin', 'gross_margin', 'operating_margin', 'roe', 'roa', 'roic', 'eps'
+        )},
+    } for r in trend_rows]
+
+    # 5-year summary table (Performance Trends) with simple CAGR where at
+    # least 2 real data points exist - never an assumed/rounded growth
+    # rate, just the actual compound rate between the first and last
+    # period actually on record (which may be fewer than 5 years).
+    def cagr(series_key):
+        vals = [(t['period'], t[series_key]) for t in trend if t.get(series_key) is not None]
+        if len(vals) < 2:
+            return None
+        (p0, v0), (p1, v1) = vals[0], vals[-1]
+        years = len(vals) - 1
+        if v0 in (None, 0) or v0 < 0 or years <= 0:
+            return None
+        return (((v1 / v0) ** (1 / years)) - 1) * 100
+
+    five_year_summary = {
+        'revenue_cagr': cagr('revenue'), 'net_income_cagr': cagr('net_income'),
+        'operating_profit_cagr': cagr('operating_profit'), 'eps_cagr': cagr('eps'),
+        'years_on_record': len(trend),
+    }
 
     key_ratios = [
         {'metric': 'Net Profit Margin', 'current': ld['net_margin'], 'prior': pd_['net_margin'] if pd_ else None, 'suffix': '%'},
@@ -1949,11 +2184,90 @@ def company_intelligence_report(company_id):
         {'metric': 'Operating Margin', 'current': ld['operating_margin'], 'prior': pd_['operating_margin'] if pd_ else None, 'suffix': '%'},
         {'metric': 'ROE', 'current': ld['roe'], 'prior': pd_['roe'] if pd_ else None, 'suffix': '%'},
         {'metric': 'ROA', 'current': roa, 'prior': prior_roa, 'suffix': '%'},
+        {'metric': 'ROIC', 'current': ld['roic'], 'prior': pd_['roic'] if pd_ else None, 'suffix': '%'},
         {'metric': 'Debt to Equity', 'current': ld['debt_equity'], 'prior': pd_['debt_equity'] if pd_ else None, 'suffix': ''},
+        {'metric': 'Current Ratio', 'current': ld['current_ratio'], 'prior': pd_['current_ratio'] if pd_ else None, 'suffix': ''},
+        {'metric': 'Interest Coverage', 'current': ld['interest_coverage'], 'prior': pd_['interest_coverage'] if pd_ else None, 'suffix': ''},
+        {'metric': 'Net Debt / EBITDA', 'current': ld['net_debt_to_ebitda'], 'prior': pd_['net_debt_to_ebitda'] if pd_ else None, 'suffix': ''},
         {'metric': 'EPS', 'current': ld['eps'], 'prior': pd_['eps'] if pd_ else None, 'suffix': ''},
     ]
     for r in key_ratios:
         r['change'] = delta(r['current'], r['prior'])
+
+    # ---- Income statement + cash flow, real line items, current vs prior period ----
+    period_obj = latest.period_obj
+    prior_period_obj = prior.period_obj if prior else None
+    income_statement_rows = build_comparison_rows([
+        flat_statement_rows(period_obj, 'income_statement'),
+        flat_statement_rows(prior_period_obj, 'income_statement'),
+    ])
+    cash_flow_rows = build_comparison_rows([
+        flat_statement_rows(period_obj, 'cash_flow'),
+        flat_statement_rows(prior_period_obj, 'cash_flow'),
+    ])
+
+    # ---- Risk Analysis: only 'financial' gets a real computed score;
+    # every other category is listed with score=None ('Not available')
+    # since scoring regulatory/competitive/technology/strategic/ESG risk
+    # needs qualitative or external data this app has no source for. ----
+    financial_risk_score = compute_financial_risk_score(ld, pd_)
+    risk_categories = [{
+        'key': 'financial', 'label': RISK_CATEGORY_LABELS['financial'],
+        'score': financial_risk_score, 'band': _risk_band(financial_risk_score),
+        'basis': 'Debt/Equity, Current Ratio, Interest Coverage, Net Margin trend' if financial_risk_score is not None else None,
+        'qualitative': None,
+    }]
+    # Qualitative risk categories (Credit, Capital Adequacy, Technology &
+    # Cybersecurity, Data Protection, Market, Operational, Fraud,
+    # Compliance, AML/CFT/CPF, Climate, Strategic, Conduct, Reputational)
+    # come from the filing's own "Management of Principal Risks" section
+    # when it was extracted (see PrincipalRisk/extract_principal_risks) -
+    # real disclosed categories with the company's own description and
+    # mitigation text, but deliberately no numeric score: the filing
+    # itself never scores these, so inventing a 0-100 number here would
+    # be indistinguishable from a real figure while being pure fiction.
+    principal_risks = PrincipalRisk.query.filter_by(period_id=latest.id).order_by(
+        PrincipalRisk.order_index
+    ).all()
+    for pr in principal_risks:
+        risk_categories.append({
+            'key': pr.category.lower().replace(' ', '_').replace('/', '_'),
+            'label': pr.category, 'score': None, 'band': None, 'basis': None,
+            'qualitative': {'description': pr.description, 'mitigation': pr.mitigation, 'page': pr.page},
+        })
+    if not principal_risks:
+        # Section not extracted for this filing (unsupported layout, or
+        # not uploaded) - keep the tab's 6 generic placeholder categories
+        # rather than showing nothing, but every one explicitly says why
+        # it's empty rather than looking like a zero-risk score.
+        for key in ('operational', 'regulatory', 'competitive', 'technology', 'strategic', 'esg'):
+            risk_categories.append({
+                'key': key, 'label': RISK_CATEGORY_LABELS[key],
+                'score': None, 'band': None, 'basis': None, 'qualitative': None,
+            })
+    overall_risk_score = financial_risk_score  # only real scored component; qualitative categories are narrative-only, not blended in
+
+    risk_exposures = []
+    if ld['debt_equity'] is not None and ld['debt_equity'] > 2.0:
+        risk_exposures.append({
+            'risk': 'High Leverage', 'description': f"Debt/Equity of {round(ld['debt_equity'],2)}x",
+            'metric': 'debt_equity', 'value': ld['debt_equity'],
+        })
+    if ld['current_ratio'] is not None and ld['current_ratio'] < 1.0:
+        risk_exposures.append({
+            'risk': 'Liquidity Strain', 'description': f"Current ratio of {round(ld['current_ratio'],2)}x (below 1.0)",
+            'metric': 'current_ratio', 'value': ld['current_ratio'],
+        })
+    if ld['interest_coverage'] is not None and ld['interest_coverage'] < 2.0:
+        risk_exposures.append({
+            'risk': 'Weak Interest Coverage', 'description': f"Operating profit covers interest {round(ld['interest_coverage'],1)}x",
+            'metric': 'interest_coverage', 'value': ld['interest_coverage'],
+        })
+    if pd_ and snapshot['net_margin_delta'] is not None and snapshot['net_margin_delta'] < -2:
+        risk_exposures.append({
+            'risk': 'Margin Compression', 'description': f"Net margin narrowed {round(abs(snapshot['net_margin_delta']),1)}pp vs prior period",
+            'metric': 'net_margin_delta', 'value': snapshot['net_margin_delta'],
+        })
 
     risk_candidates = assess_company_risks(c, latest, prior)
     opp = assess_company_opportunity(c, latest, prior)
@@ -1992,6 +2306,10 @@ def company_intelligence_report(company_id):
         vals = [p[key] for p in peer_rows if p.get(key) is not None]
         return (max(vals) if reverse else min(vals)) if vals else None
 
+    def sector_top_name(key, reverse=True):
+        vals = sorted([p for p in peer_rows if p.get(key) is not None], key=lambda p: p[key], reverse=reverse)
+        return vals[0]['name'] if vals else None
+
     def rank_of(key, reverse=True):
         vals = sorted([p for p in peer_rows if p.get(key) is not None], key=lambda p: p[key], reverse=reverse)
         for i, p in enumerate(vals):
@@ -2001,12 +2319,19 @@ def company_intelligence_report(company_id):
 
     peer_comparison = {
         'sector': sector, 'peer_count': peer_count,
+        'peers_table': [{
+            'id': p['id'], 'name': p['name'], 'revenue_yoy': None,
+            'net_margin': p.get('net_margin'), 'roe': p.get('roe'),
+            'debt_equity': p.get('debt_equity'), 'eps': p.get('eps'),
+            'financial_score': p.get('financial_score'),
+        } for p in sorted(peer_rows, key=lambda p: -(p.get('financial_score') or 0))],
         'metrics': [
-            {'label': 'Revenue', 'company': ld['revenue'], 'sector_avg': sector_avg('revenue'), 'top': sector_top_val('revenue'), 'rank': rank_of('revenue'), 'suffix': ''},
-            {'label': 'Net Profit Margin', 'company': ld['net_margin'], 'sector_avg': sector_avg('net_margin'), 'top': sector_top_val('net_margin'), 'rank': rank_of('net_margin'), 'suffix': '%'},
-            {'label': 'ROE', 'company': ld['roe'], 'sector_avg': sector_avg('roe'), 'top': sector_top_val('roe'), 'rank': rank_of('roe'), 'suffix': '%'},
-            {'label': 'Debt to Equity', 'company': ld['debt_equity'], 'sector_avg': sector_avg('debt_equity'), 'top': sector_top_val('debt_equity', reverse=False), 'rank': rank_of('debt_equity', reverse=False), 'suffix': ''},
-            {'label': 'Financial Health Score', 'company': ld['financial_score'], 'sector_avg': sector_avg('financial_score'), 'top': sector_top_val('financial_score'), 'rank': rank_of('financial_score'), 'suffix': ''},
+            {'label': 'Revenue', 'company': ld['revenue'], 'sector_avg': sector_avg('revenue'), 'top': sector_top_val('revenue'), 'top_name': sector_top_name('revenue'), 'rank': rank_of('revenue'), 'suffix': ''},
+            {'label': 'Net Profit Margin', 'company': ld['net_margin'], 'sector_avg': sector_avg('net_margin'), 'top': sector_top_val('net_margin'), 'top_name': sector_top_name('net_margin'), 'rank': rank_of('net_margin'), 'suffix': '%'},
+            {'label': 'ROE', 'company': ld['roe'], 'sector_avg': sector_avg('roe'), 'top': sector_top_val('roe'), 'top_name': sector_top_name('roe'), 'rank': rank_of('roe'), 'suffix': '%'},
+            {'label': 'Debt to Equity', 'company': ld['debt_equity'], 'sector_avg': sector_avg('debt_equity'), 'top': sector_top_val('debt_equity', reverse=False), 'top_name': sector_top_name('debt_equity', reverse=False), 'rank': rank_of('debt_equity', reverse=False), 'suffix': ''},
+            {'label': 'EPS', 'company': ld['eps'], 'sector_avg': sector_avg('eps'), 'top': sector_top_val('eps'), 'top_name': sector_top_name('eps'), 'rank': rank_of('eps'), 'suffix': ''},
+            {'label': 'Financial Health Score', 'company': ld['financial_score'], 'sector_avg': sector_avg('financial_score'), 'top': sector_top_val('financial_score'), 'top_name': sector_top_name('financial_score'), 'rank': rank_of('financial_score'), 'suffix': ''},
         ],
     }
 
@@ -2050,7 +2375,12 @@ def company_intelligence_report(company_id):
     source_docs = SourceDocument.query.filter_by(company_id=company_id).order_by(SourceDocument.uploaded_at.desc()).all()
     jobs = ImportJob.query.filter_by(company_id=company_id).order_by(ImportJob.started_at.desc()).limit(20).all()
 
-    # ---- Outlook (rule-based: counts real positive vs negative YoY signals) ----
+    # ---- Outlook: only ever a Positive/Negative/Neutral LABEL derived by
+    # counting real YoY signals, plus the same driver sentences already
+    # shown elsewhere - never a numeric forward-looking forecast (no
+    # bull/base/bear revenue range, no confidence score) since projecting
+    # FY+1 figures isn't something historical filed data alone supports
+    # without modeling assumptions this app has no basis to assert. ----
     signal_values = [snapshot['revenue_yoy'], snapshot['net_income_yoy'], snapshot['roe_delta'], snapshot['net_margin_delta']]
     pos_signals = sum(1 for x in signal_values if x is not None and x > 0)
     neg_signals = sum(1 for x in signal_values if x is not None and x < 0)
@@ -2080,6 +2410,37 @@ def company_intelligence_report(company_id):
         outlook_drivers.append(f"{market_position} vs {peer_count - 1} other {sector or 'sector'} peer(s) on Financial Health Score")
     outlook_drivers = [d for d in outlook_drivers if d]
 
+    # Scenario analysis (Bull/Base/Bear) - built only from the filing's
+    # own printed Management Guidance range for next FY (see
+    # ManagementGuidance/extract_management_guidance's docstring). Bear =
+    # the guidance range's low end, Bull = its high end, Base = the
+    # midpoint - a purely mechanical min/mid/max mapping of management's
+    # own stated target range, never a modeled or estimated projection.
+    # Returns [] (shown as "not disclosed in this filing") when no
+    # guidance table was extracted, rather than falling back to a
+    # historical-trend extrapolation that management didn't actually say.
+    guidance_rows = ManagementGuidance.query.filter_by(period_id=latest.id).order_by(
+        ManagementGuidance.order_index
+    ).all()
+    scenario_analysis = [{
+        'metric_name': g.metric_name,
+        'guidance_period_label': g.guidance_period_label,
+        'current_value': g.current_value,
+        'bear_case': g.guidance_low,
+        'base_case': round((g.guidance_low + g.guidance_high) / 2, 2) if (g.guidance_low is not None and g.guidance_high is not None) else None,
+        'bull_case': g.guidance_high,
+        'commentary': g.commentary,
+        'page': g.page,
+    } for g in guidance_rows]
+
+    # Market data (share price, market cap, dividend, shareholding
+    # structure, total shareholder return) - only ever the filing's own
+    # printed Investor Information figures (see MarketDataSnapshot /
+    # extract_market_data's docstring). None/omitted per-field when the
+    # filing didn't print it - never derived or estimated.
+    market_data_row = MarketDataSnapshot.query.filter_by(period_id=latest.id).first()
+    market_data = market_data_row.to_dict() if market_data_row else None
+
     return jsonify({
         'company': c.to_dict(),
         'has_data': True,
@@ -2092,14 +2453,21 @@ def company_intelligence_report(company_id):
         },
         'snapshot': snapshot,
         'trend': trend,
+        'five_year_summary': five_year_summary,
         'key_ratios': key_ratios,
+        'income_statement_rows': income_statement_rows,
+        'cash_flow_rows': cash_flow_rows,
         'strengths': strengths, 'risks': risks, 'opportunities': opportunities,
+        'risk_categories': risk_categories, 'overall_risk_score': overall_risk_score,
+        'overall_risk_band': _risk_band(overall_risk_score), 'risk_exposures': risk_exposures,
         'peer_comparison': peer_comparison,
         'nse_benchmark': benchmark, 'sectors_covered': sectors_covered,
         'source_documents': [d.to_dict() for d in source_docs],
         'import_jobs': [{**j.to_dict(), 'source_url': (SourceDocument.query.get(j.source_document_id).url if j.source_document_id else None)} for j in jobs],
         'legacy_source': latest.source,
         'outlook_drivers': outlook_drivers,
+        'scenario_analysis': scenario_analysis,
+        'market_data': market_data,
     })
 
 @app.route('/api/companies/<int:company_id>/remuneration')
@@ -2127,9 +2495,26 @@ def company_remuneration(company_id):
                 'period_label': p.period_label, 'total': metric.value, 'unit': metric.unit,
             })
 
+    # Per-director rows (NED grand total + each Executive Director's own
+    # printed total, with the filing's own component breakdown) - see
+    # DirectorRemunerationRow/extract_director_remuneration_detail's
+    # docstrings. Independent of own_remuneration above (which comes
+    # from a single-total-only extraction and may be empty for a filing
+    # like this one that never prints one combined grand total).
+    director_rows_by_period = {}
+    for p in periods:
+        rows = DirectorRemunerationRow.query.filter_by(period_id=p.id).order_by(
+            DirectorRemunerationRow.order_index
+        ).all()
+        if rows:
+            director_rows_by_period[p.period_label] = [r.to_dict() for r in rows]
+
     survey = _latest_survey()
     if not survey:
-        return jsonify({'has_survey': False, 'own_remuneration': own_remuneration})
+        return jsonify({
+            'has_survey': False, 'own_remuneration': own_remuneration,
+            'director_rows_by_period': director_rows_by_period,
+        })
 
     matched_sector = _match_survey_sector(survey, c.name)
     remuneration_stats = {}
@@ -2139,6 +2524,7 @@ def company_remuneration(company_id):
     return jsonify({
         'has_survey': True,
         'own_remuneration': own_remuneration,
+        'director_rows_by_period': director_rows_by_period,
         'survey': survey.to_dict(),
         'matched_sector': matched_sector,
         'remuneration_stats': remuneration_stats,

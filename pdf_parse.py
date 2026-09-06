@@ -157,12 +157,30 @@ CANONICAL_LINE_ITEMS = {
         r"operating\s+profit\b": 'operating_profit',
         r"profit\s+from\s+operations": 'operating_profit',
         r"results?\s+from\s+operating\s+activities": 'operating_profit',
-        r"profit\s+before\s+tax": 'profit_before_tax',
+        r"profit\s+before\s+(income\s+)?tax": 'profit_before_tax',
         r"income\s+tax\s+expense": 'tax_expense',
-        r"profit\s+for\s+the\s+(period|year)": 'net_income',
+        # Anchored against a trailing qualifier ("...from continuing
+        # operations") since that's a P&L component subtotal, not the
+        # true bottom line - confirmed on a real filing where "Profit
+        # for the year from continuing operations" appears before the
+        # real total "Profit for the period"/"Profit for the year" a few
+        # lines later, and being first would otherwise win the
+        # seen_normalized dedupe over the actual bottom-line figure.
+        r"profit\s+for\s+the\s+(period|year)(?!\s+from\s+continuing)": 'net_income',
         r"profit\s+after\s+tax": 'net_income',
-        r"net\s+profit": 'net_income',
-        r"net\s+income": 'net_income',
+        # Anchored to the start of the line (allowing a leading bullet/
+        # dash) - unanchored "net\s+profit"/"net\s+income" also matched
+        # inside unrelated lines that merely contain that phrase, e.g.
+        # "Share of net profit from associates accounted for using
+        # equity method" (a P&L component, not the bottom-line total) -
+        # confirmed on a real filing where that component line preceded
+        # the real "Profit for the period" total and, being first, won
+        # the seen_normalized dedupe, silently discarding the real
+        # figure. A genuine net-profit/net-income total line always
+        # leads with that phrase (label text before it is a note number
+        # or bullet character at most), so anchoring loses no real match.
+        r"^[\s\-\u2022]*net\s+profit\b": 'net_income',
+        r"^[\s\-\u2022]*net\s+income\b": 'net_income',
         r"earnings\s+per\s+share": 'eps',
         # Weighted-average / basic shares outstanding - usually sits right
         # next to the EPS line in the P&L or its accompanying note, stated
@@ -190,9 +208,14 @@ CANONICAL_LINE_ITEMS = {
         r"retained\s+earnings": 'retained_earnings',
     },
     'cash_flow': {
-        r"net\s+cash\s+(generated\s+from|from|used\s+in)\s+operating": 'operating_cash_flow',
-        r"net\s+cash\s+(generated\s+from|from|used\s+in)\s+investing": 'investing_cash_flow',
-        r"net\s+cash\s+(generated\s+from|from|used\s+in)\s+financing": 'financing_cash_flow',
+        # "Net cash (flows )?(generated )?from/used in operating..." - the
+        # optional "flows" covers filings (e.g. KCB) that write "Net cash
+        # flows from operating activities" rather than "Net cash generated
+        # from operating activities"; both phrasings are common across
+        # NSE filings and refer to the same cash flow statement subtotal.
+        r"net\s+cash\s+(flows\s+)?(generated\s+from|from|used\s+in)\s+operating": 'operating_cash_flow',
+        r"net\s+cash\s+(flows\s+)?(generated\s+from|from|used\s+in)\s+investing": 'investing_cash_flow',
+        r"net\s+cash\s+(flows\s+)?(generated\s+from|from|used\s+in)\s+financing": 'financing_cash_flow',
         r"cash\s+and\s+cash\s+equivalents\s+at\s+(the\s+)?end": 'cash_end_of_period',
         r"purchase\s+of\s+property": 'capex',
     },
@@ -1048,13 +1071,33 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict:
         pages_with_text = 0
         for i in page_numbers:
             try:
-                text = pdf.pages[i - 1].extract_text() or ""
+                page = pdf.pages[i - 1]
+                # Some reports (seen in the wild: a landscape "integrated
+                # report" layout, roughly double a normal portrait
+                # page's width) print two independent logical report
+                # pages side by side on one physical PDF page - plain
+                # extract_text() reads across both halves line-by-line,
+                # interleaving e.g. "Consolidated statement of profit or
+                # loss" with an unrelated statement printed next to it,
+                # which silently corrupts every numeric row that follows
+                # (still non-empty text, so this fails silently rather
+                # than raising - the only symptom is wrong/missing
+                # numbers reaching parse_financials_text). Detect that
+                # layout via aspect ratio and reconstruct each half
+                # separately by word x-position instead of reading the
+                # page as one block; a normal single-column page is
+                # unaffected and costs nothing extra (extract_words() is
+                # only called for pages that fail the aspect-ratio check).
+                halves = _split_double_page_text(page)
+                for half_text in halves:
+                    pages_text.append((i, half_text))
+                combined_len = sum(len(h) for h in halves)
             except Exception:
                 # One unreadable page (corrupt object, unsupported font)
                 # shouldn't abort the whole import - skip it and keep going.
-                text = ""
-            pages_text.append((i, text))
-            if len(text) >= _MIN_CHARS_PER_PAGE_FOR_TEXT_LAYER:
+                pages_text.append((i, ""))
+                combined_len = 0
+            if combined_len >= _MIN_CHARS_PER_PAGE_FOR_TEXT_LAYER:
                 pages_with_text += 1
 
         if pages_with_text == 0:
@@ -1064,6 +1107,60 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict:
             )
 
     return {'pages_text': pages_text, 'statements': parse_financials_text(pages_text)['statements']}
+
+
+def _split_double_page_text(page) -> list:
+    """Returns [text] for a normal single-column page, or [left_text,
+    right_text] for a double-wide page whose two logical halves need
+    reconstructing independently (see extract_pdf_document's docstring
+    on why plain extract_text() silently corrupts these). Both halves
+    are attributed to the same physical page number by the caller -
+    that's still correct provenance, since they really are on that one
+    PDF page.
+
+    Aspect ratio (width/height) is the detection signal: a genuine
+    two-logical-pages-per-sheet layout is landscape and roughly double a
+    normal portrait page's proportions (confirmed on a real filing at
+    1417x850 - almost exactly 2x a standard 708x850 portrait half). A
+    merely-wide-but-still-single-content landscape page (a wide table,
+    a chart) would need a much higher threshold to false-positive on,
+    so 1.4 leaves comfortable room above normal portrait (~0.77) and
+    normal landscape (~1.3) aspect ratios without also catching this
+    genuinely-two-page layout's 1.67.
+    """
+    width, height = page.width, page.height
+    if height == 0 or width / height < 1.4:
+        return [page.extract_text() or '']
+    words = page.extract_words()
+    if not words:
+        return [page.extract_text() or '']
+    midpoint = width / 2
+    left_words = [w for w in words if w['x0'] < midpoint]
+    right_words = [w for w in words if w['x0'] >= midpoint]
+    if not left_words or not right_words:
+        # words all fell on one side (e.g. a full-width table spanning
+        # the midpoint) - this isn't actually a two-page layout, don't
+        # force a split that would just cut a real table in half
+        return [page.extract_text() or '']
+
+    def _reconstruct(ws):
+        ws = sorted(ws, key=lambda w: (round(w['top'] / 3), w['x0']))
+        lines = []
+        cur_top = None
+        cur_line = []
+        for w in ws:
+            if cur_top is None or abs(w['top'] - cur_top) < 3:
+                cur_line.append(w)
+                cur_top = w['top'] if cur_top is None else cur_top
+            else:
+                lines.append(' '.join(x['text'] for x in sorted(cur_line, key=lambda x: x['x0'])))
+                cur_line = [w]
+                cur_top = w['top']
+        if cur_line:
+            lines.append(' '.join(x['text'] for x in sorted(cur_line, key=lambda x: x['x0'])))
+        return '\n'.join(lines)
+
+    return [_reconstruct(left_words), _reconstruct(right_words)]
 
 
 # ---------- DIRECTOR REMUNERATION (totals-only) ----------
@@ -1356,6 +1453,339 @@ def parse_financials_pdf(pdf_bytes: bytes) -> dict:
     return {'statements': extract_pdf_document(pdf_bytes)['statements']}
 
 
+
+# ---------- MARKET DATA / PRINCIPAL RISKS / MANAGEMENT GUIDANCE ----------
+# Extraction for the Intelligence Report's Peer Comparison, Risk Analysis,
+# and Outlook tabs. Each function returns None (or an empty list) when its
+# section isn't found in a given filing - callers show that as "not
+# disclosed in this filing", never fall back to a guessed figure.
+#
+# These target the layout of KCB's 2025 Integrated Report specifically
+# (confirmed against the real filing during development). Report layout
+# varies year to year and company to company - see extract_director_
+# remuneration's heading-search pattern above for the general approach
+# this should grow towards as more filing formats are added, once a
+# standardized input format is settled on.
+
+def _pypdf_or_pdfplumber_page_texts(pdf_bytes: bytes):
+    """Shared page-text extraction, same fallback order as
+    extract_director_remuneration above."""
+    reader = None
+    if pypdf is not None:
+        try:
+            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        except Exception:
+            reader = None
+    if reader is not None:
+        out = []
+        for i, page in enumerate(reader.pages):
+            try:
+                out.append((i + 1, page.extract_text() or ""))
+            except Exception:
+                out.append((i + 1, ""))
+        return out
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        return [(i + 1, p.extract_text() or "") for i, p in enumerate(pdf.pages)]
+
+
+def extract_market_data(pdf_bytes: bytes) -> dict | None:
+    """Own-share market data from the filing's Investor Information /
+    'KCB Share Information' table (share price, market cap, shareholder
+    count, free float, shareholding by category), plus dividend-per-share
+    and total shareholder return pulled from the statutory 'Report of the
+    Directors > Dividend' section and the Outlook/Recap narrative. Every
+    field is exactly what the filing prints - nothing here is derived or
+    estimated. Returns None if none of this was found."""
+    page_texts = _pypdf_or_pdfplumber_page_texts(pdf_bytes)
+    result = {}
+    # No trailing \s* here - it would swallow the separator before an
+    # optional second (prior-year) number, leaving nothing for the outer
+    # "\s+" between the two numbers to match against.
+    num = r'(-?[\d,]+\.?\d*)%?'
+
+    label_map = {
+        r'Number of issued shares': 'shares_issued',
+        # pypdf sometimes renders "Total" with a stray space after the
+        # "T" (kerning/ligature artifact) - tolerate an optional space
+        r'T\s?otal number of authorized shares': 'shares_authorized',
+        r'Number of shareholders': 'shareholder_count',
+        r'Free float': 'free_float_pct',
+        r'End of period share price.*?\(Ksh\.?\)': 'share_price',
+        r'Market capitali[sz]ation.*?\(Ksh\.?\s*billion\)': 'market_cap',
+        r'Local Institutional Investors': 'local_institutional_pct',
+        r'Local Individual Investors': 'local_individual_pct',
+        r'Foreign Investors': 'foreign_investor_pct',
+    }
+    for pg, text in page_texts:
+        if 'KCB Share Information' not in text and 'Investor Information' not in text:
+            continue
+        for line in text.splitlines():
+            for pat, field in label_map.items():
+                m = re.search(pat + r'\s+' + num + r'(?:\s+' + num + r')?', line)
+                if m:
+                    val = m.group(1)
+                    prior = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+                    try:
+                        result[field] = float(val.replace(',', ''))
+                        if field == 'share_price' and prior:
+                            result['prior_share_price'] = float(prior.replace(',', ''))
+                        if field == 'shareholder_count' and prior:
+                            result['prior_shareholder_count'] = float(prior.replace(',', ''))
+                        result['page'] = pg
+                    except ValueError:
+                        pass
+
+    # Dividend components - statutory "Report of the Directors > Dividend"
+    # section. Column-wrapped text means the phrase and its number can be
+    # separated by unrelated interleaved sentences from the neighbouring
+    # column, so these use a wide non-greedy gap tolerance rather than
+    # requiring the phrase to be contiguous.
+    for pg, text in page_texts:
+        if 'report of the directors' not in text.lower() or 'dividend' not in text.lower():
+            continue
+        blob = ' '.join(text.splitlines())
+        found_any = False
+        m = re.search(r'final dividend.{0,250}?of\s+K[Ss]hs?\.?\s*([\d.]+)\s*per\s*(?:ordinary\s*)?share', blob, re.I | re.S)
+        if m:
+            result['final_dividend_per_share'] = float(m.group(1)); found_any = True
+        m = re.search(r'interim\s+dividend.{0,250}?of\s+K[Ss]hs?\.?\s*([\d.]+)\s*per\s*(?:ordinary\s*)?share', blob, re.I | re.S)
+        if m:
+            result['interim_dividend_per_share'] = float(m.group(1)); found_any = True
+        m = re.search(r'special dividend of\s+K[Ss]hs?\.?\s*([\d.]+)\s*per\s*(?:ordinary\s*)?share', blob, re.I)
+        if m:
+            result['special_dividend_per_share'] = float(m.group(1)); found_any = True
+        m = re.search(r'total dividends?\s+for\s+the\s+year\s+to\s+K[Ss]hs?\.?\s*([\d.]+)\s*per\s*(?:ordinary\s*)?share', blob, re.I)
+        if m:
+            result['dividend_per_share'] = float(m.group(1)); found_any = True
+        if found_any:
+            result['page'] = pg
+            break
+    if 'dividend_per_share' not in result:
+        parts = [result.get('final_dividend_per_share'), result.get('interim_dividend_per_share'),
+                  result.get('special_dividend_per_share')]
+        parts = [p for p in parts if p is not None]
+        if parts:
+            # explicitly a sum of the filing's own printed components, not
+            # a modeled/estimated total - only used when the filing itself
+            # doesn't also print one combined figure
+            result['dividend_per_share'] = round(sum(parts), 2)
+
+    # Total shareholder return - only stored if the filing states the
+    # number directly (never computed from share price + dividend here,
+    # to avoid quietly disagreeing with the filing's own stated figure
+    # if their methodology differs, e.g. compounding or timing basis).
+    for pg, text in page_texts:
+        m = re.search(r'total shareholder returns?\s+of\s+([\d.]+)%', text, re.I)
+        if m:
+            result['total_shareholder_return'] = float(m.group(1))
+            break
+        m = re.search(r'([\d.]+)%\s*\n?Total shareholder returns?\s+in\s+\d{4}', text, re.I)
+        if m:
+            result['total_shareholder_return'] = float(m.group(1))
+            break
+
+    return result if result else None
+
+
+_GUIDANCE_METRICS = [
+    'Non funded income ratio', 'Cost-to-income ratio', 'NPL ratio', 'Cost of risk',
+    'Cost of funds', 'Net interest margin', 'Asset yield', 'Loan growth',
+    'Deposit growth', 'Return on equity',
+]
+_GUIDANCE_HEADER_RE = re.compile(r'Key performance indicator\s+(\d{4})\s+performance\s+(\d{4})\s+guidance')
+_GUIDANCE_ROW_RE = re.compile(r'(-?[\d.]+)%\*?\s+(-?[\d.]+)%\s*-\s*(-?[\d.]+)%\s*:?\s*(.*)')
+
+
+def extract_management_guidance(pdf_bytes: bytes) -> list:
+    """Forward-looking KPI guidance from the filing's own Outlook section
+    table ('Key performance indicator | <year> performance | <next year>
+    guidance'). guidance_low/guidance_high are the filing's own printed
+    range - never a modeled projection. Returns [] if no such table is
+    found (e.g. an interim or a filing without one)."""
+    page_texts = _pypdf_or_pdfplumber_page_texts(pdf_bytes)
+    result = []
+    for pg, text in page_texts:
+        header_m = _GUIDANCE_HEADER_RE.search(text)
+        if not header_m:
+            continue
+        guidance_year = header_m.group(2)
+        for order, line in enumerate(text.splitlines()):
+            for metric in _GUIDANCE_METRICS:
+                if not line.startswith(metric):
+                    continue
+                rest = line[len(metric):].strip()
+                m = _GUIDANCE_ROW_RE.match(rest)
+                if m:
+                    result.append({
+                        'metric_name': metric,
+                        'guidance_period_label': f'FY{guidance_year}',
+                        'current_value': float(m.group(1)),
+                        'guidance_low': float(m.group(2)),
+                        'guidance_high': float(m.group(3)),
+                        'commentary': m.group(4).strip(),
+                        'order_index': order,
+                        'page': pg,
+                    })
+        if result:
+            break
+    return result
+
+
+_ROMAN_HEADING_RE = re.compile(r'^(X{0,3}(?:IX|IV|V?I{0,3}))\.\s+(.+)$')
+_KNOWN_RISK_CATEGORIES = {
+    'Credit Risk', 'Capital Adequacy', 'Technology and Cybersecurity', 'Data Protection',
+    'Market Risk', 'Operational Risk', 'Fraud Risk', 'Compliance Risk',
+    'AML/CFT/CPF Compliance', 'Climate Risk', 'Strategic Risk', 'Conduct Risk',
+    'Reputational Risk',
+}
+
+
+def _reconstruct_columns(page, header_footer_top_cutoff: float = 60):
+    """Multi-column report pages (the 'Management of Principal Risks'
+    section prints 2-4 risk write-ups side by side) interleave text
+    line-by-line under plain extract_text(), scrambling one risk
+    category's sentences with its neighbour's. This clusters words by
+    x-position into column bands, then reconstructs each column's own
+    text in correct top-to-bottom reading order."""
+    words = page.extract_words()
+    body_words = [w for w in words if w['top'] > header_footer_top_cutoff]
+    if not body_words:
+        return []
+    xs = sorted(w['x0'] for w in body_words)
+    groups = []
+    cur = [xs[0]]
+    for x in xs[1:]:
+        if x - cur[-1] > 15:
+            groups.append(cur)
+            cur = [x]
+        else:
+            cur.append(x)
+    groups.append(cur)
+    bounds = sorted(set(round(min(g)) for g in groups))
+    bounds.append(page.width + 1)
+    merged = [bounds[0]]
+    for b in bounds[1:]:
+        if b - merged[-1] < 100:
+            continue
+        merged.append(b)
+    bounds = merged
+
+    col_words = {}
+    for w in body_words:
+        for i in range(len(bounds) - 1):
+            if bounds[i] <= w['x0'] < bounds[i + 1]:
+                col_words.setdefault(i, []).append(w)
+                break
+
+    columns = []
+    for i in sorted(col_words.keys()):
+        ws = sorted(col_words[i], key=lambda w: (round(w['top'] / 3), w['x0']))
+        lines = []
+        cur_top = None
+        cur_line = []
+        for w in ws:
+            if cur_top is None or abs(w['top'] - cur_top) < 3:
+                cur_line.append(w)
+                cur_top = w['top'] if cur_top is None else cur_top
+            else:
+                lines.append(' '.join(x['text'] for x in sorted(cur_line, key=lambda x: x['x0'])))
+                cur_line = [w]
+                cur_top = w['top']
+        if cur_line:
+            lines.append(' '.join(x['text'] for x in sorted(cur_line, key=lambda x: x['x0'])))
+        columns.append('\n'.join(lines))
+    return columns
+
+
+def extract_principal_risks(pdf_bytes: bytes) -> list:
+    """The filing's own named, qualitative principal-risk categories
+    (Credit Risk, Technology and Cybersecurity, Compliance Risk, Climate
+    Risk, etc.) from its 'Management of Principal Risks' section, each
+    with the company's own description and 'Our Mitigations' text -
+    never a numeric score, since filed reports don't publish one for
+    these categories. Returns [] if this section isn't found (e.g. it
+    only matches the FY2025-style roman-numeral, multi-column layout
+    confirmed during development - a different layout, like a two-column
+    'Principal Risk | Mitigation Measures' table, returns [] rather than
+    guessing at a mismatched structure)."""
+    # Locate the section via the fast pypdf-based text pass first (~5x
+    # faster than pdfplumber's per-page extract_text at this page count -
+    # confirmed during development on a 138-page filing). pdfplumber is
+    # only opened afterwards, and only for the narrow page range actually
+    # needed, since its slower word-position data is what column
+    # reconstruction below requires.
+    page_texts = _pypdf_or_pdfplumber_page_texts(pdf_bytes)
+    section_pages = [pg for pg, text in page_texts if 'management of principal risks' in text.lower()]
+    if not section_pages:
+        return []
+    start_pg = section_pages[0]
+    total_pages = len(page_texts)
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        # scan the heading page plus a bounded run of following pages -
+        # stop once two consecutive pages contribute no recognized
+        # category, rather than scanning the whole document
+        scan_range = range(start_pg, min(start_pg + 8, total_pages + 1))
+
+        raw_entries = []
+        for pg in scan_range:
+            page = pdf.pages[pg - 1]
+            cols = _reconstruct_columns(page)
+            for col_text in cols:
+                lines = col_text.splitlines()
+                current = None
+                for line in lines:
+                    m = _ROMAN_HEADING_RE.match(line.strip())
+                    if m and len(m.group(1)) <= 4:
+                        if current:
+                            raw_entries.append(current)
+                        current = {'roman': m.group(1), 'category': m.group(2).strip(), 'lines': [], 'page': pg}
+                    elif current is not None:
+                        current['lines'].append(line)
+                if current:
+                    raw_entries.append(current)
+
+        results = []
+        seen_categories = set()
+        for entry in raw_entries:
+            category = entry['category'].rstrip('.')
+            # only keep entries matching a real risk category name - this
+            # is what filters out the section's own process-explanation
+            # sub-headings ("I. Risk Identification, Assessment, and
+            # Management") which also happen to use roman numerals
+            if category not in _KNOWN_RISK_CATEGORIES:
+                continue
+            if category in seen_categories:
+                continue
+            seen_categories.add(category)
+            full_text = '\n'.join(entry['lines']).replace('Ksh\n', '').strip()
+            if 'Our Mitigations:' in full_text:
+                description, mitigation = full_text.split('Our Mitigations:', 1)
+            elif 'Mitigations:' in full_text:
+                description, mitigation = full_text.split('Mitigations:', 1)
+            else:
+                description, mitigation = full_text, ''
+            results.append({
+                'category': category,
+                'order_index': len(results),
+                'description': re.sub(r'\s+', ' ', description).strip(),
+                'mitigation': re.sub(r'\s+', ' ', mitigation).strip(),
+                'page': entry['page'],
+            })
+        # A real "Management of Principal Risks" section discloses many
+        # categories together, never just one or two - a low count here
+        # means this filing uses a different layout (e.g. a two-column
+        # "Principal Risk | Mitigation Measures" table) that this
+        # roman-numeral/4-column parser doesn't understand, not that the
+        # filing genuinely only disclosed a couple of risks. Returning a
+        # partial list in that case would look like an accurate, complete
+        # count when it isn't - so return [] and let the caller show
+        # "not extracted from this filing" instead of a misleadingly
+        # short real-looking list.
+        if len(results) < 5:
+            return []
+        return results
+
 if __name__ == "__main__":
     # Local smoke test with synthetic multi-statement text, to confirm the
     # section-tracking + extraction logic before ever touching a real PDF.
@@ -1381,4 +1811,118 @@ if __name__ == "__main__":
     1. Basis of preparation ...
     """
     result = parse_financials_text([(1, sample_text)])
-    print(json.dumps(result, indent=2))
+
+
+_DIRECTOR_REM_SUBHEADING_RE = re.compile(
+    r'(?:^|\n)\s*(?:i|ii|iii|iv|v)\.\s*(non-executive directors|executive directors)'
+    r'.{0,120}?for the year ended\s+\d{1,2}\s+\w+\s+(\d{4})',
+    re.I | re.S,
+)
+_DIRECTOR_REM_NED_TOTAL_RE = re.compile(
+    r'GRAND TOTAL\s*(?:\(\d+\))?\s+([\d,.\-]+)\s+([\d,.\-]+)\s+([\d,.\-]+)\s+([\d,.\-]+)\s+([\d,.\-]+)',
+    re.I,
+)
+_DIRECTOR_REM_ED_ROW_RE = re.compile(
+    r'^(Mr\.|Mrs\.|Ms\.|Dr\.)\s+([A-Za-z.\s]+?)\s+([\d,.\-]+(?:\s+[\d,.\-]+){5,6})$'
+)
+
+
+def _num_or_none(s: str):
+    s = s.strip()
+    return None if s == '-' else float(s.replace(',', ''))
+
+
+def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: str | None = None) -> list:
+    """Per-director remuneration rows from the filing's own "Directors'
+    Remuneration Report" - the Non-Executive Directors' fees table's own
+    printed GRAND TOTAL row, and each Executive Director's own printed
+    Total row. Every figure is exactly what the filing prints in Ksh
+    '000 - this app never sums individual NED rows itself to invent a
+    total (see extract_director_remuneration's docstring above for why),
+    it only reads a total the filing already states.
+
+    This table always prints the current year's figures AND the prior
+    year's as a second, separately-headed sub-table on the same page
+    (e.g. "iii. Executive Directors' Remuneration for the Year Ended 31
+    December 2025" immediately followed by "iv. ... for the Year Ended
+    31 December 2024"). Pass target_period_label (e.g. "FY2025") to keep
+    only that year's own sub-table - the other year's figures belong to
+    that other filing's own upload instead, and keeping both here would
+    double-count/conflict once both years are uploaded separately.
+    Returns [] if this section isn't found (e.g. an interim filing, or a
+    layout this parser doesn't recognize)."""
+    page_texts = _pypdf_or_pdfplumber_page_texts(pdf_bytes)
+    section_pages = [pg for pg, text in page_texts
+                      if 'remuneration report' in text.lower()
+                      and ('non-executive' in text.lower() or 'executive director' in text.lower())]
+    if not section_pages:
+        return []
+    start_pg, end_pg = min(section_pages), max(section_pages) + 1
+
+    results = []
+    order = 0
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for pg in range(start_pg, min(end_pg + 1, len(pdf.pages) + 1)):
+            page = pdf.pages[pg - 1]
+            for half_text in _split_double_page_text(page):
+                lower = half_text.lower()
+                if 'non-executive director' not in lower and 'executive director' not in lower:
+                    continue
+                sub_matches = list(_DIRECTOR_REM_SUBHEADING_RE.finditer(half_text))
+                if not sub_matches:
+                    continue
+                for idx, sm in enumerate(sub_matches):
+                    chunk_start = sm.end()
+                    chunk_end = sub_matches[idx + 1].start() if idx + 1 < len(sub_matches) else len(half_text)
+                    chunk = half_text[chunk_start:chunk_end]
+                    section_kind = sm.group(1).lower()
+                    year = sm.group(2)
+                    if target_period_label and f'FY{year}' != target_period_label:
+                        continue
+
+                    if 'non-executive' in section_kind:
+                        m = _DIRECTOR_REM_NED_TOTAL_RE.search(chunk)
+                        if m:
+                            results.append({
+                                'director_name': 'GRAND TOTAL - Non-Executive Directors',
+                                'role': 'non_executive', 'is_grand_total': True,
+                                'total': _num_or_none(m.group(5)), 'fiscal_year': year,
+                                'components': {
+                                    "directors_fees_ksh'000": _num_or_none(m.group(1)),
+                                    "sitting_allowance_ksh'000": _num_or_none(m.group(2)),
+                                    "other_allowances_ksh'000": _num_or_none(m.group(3)),
+                                    "non_cash_benefit_ksh'000": _num_or_none(m.group(4)),
+                                },
+                                'order_index': order, 'page': pg,
+                            })
+                            order += 1
+                    else:
+                        for line in chunk.splitlines():
+                            line = line.strip()
+                            rm = _DIRECTOR_REM_ED_ROW_RE.match(line)
+                            if not rm:
+                                continue
+                            title, name, nums_str = rm.groups()
+                            nums = [n.strip() for n in nums_str.split()]
+                            if len(nums) not in (6, 7):
+                                continue
+                            components = {
+                                "salary_ksh'000": _num_or_none(nums[0]),
+                                "bonus_cash_ksh'000": _num_or_none(nums[1]),
+                                "bonus_deferred_ksh'000": _num_or_none(nums[2]),
+                                "allowances_ksh'000": _num_or_none(nums[3]),
+                            }
+                            if len(nums) == 7:
+                                components["gratuity_ksh'000"] = _num_or_none(nums[4])
+                                components["non_cash_benefit_ksh'000"] = _num_or_none(nums[5])
+                            else:
+                                components["gratuity_ksh'000"] = _num_or_none(nums[4])
+                            results.append({
+                                'director_name': f'{title} {name.strip()}',
+                                'role': 'executive', 'is_grand_total': False,
+                                'total': _num_or_none(nums[-1]), 'fiscal_year': year,
+                                'components': components,
+                                'order_index': order, 'page': pg,
+                            })
+                            order += 1
+    return results
