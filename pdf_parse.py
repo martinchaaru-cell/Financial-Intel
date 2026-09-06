@@ -1959,7 +1959,7 @@ def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: 
 _CONDENSED_SECTION_RE = re.compile(r'^===([A-Z_]+)===$')
 _CONDENSED_FIELD_RE = re.compile(r'^([A-Za-z][A-Za-z]*)\s*:\s*(.*)$')
 _CONDENSED_RISK_HEADING_RE = re.compile(r'^\[(.+?)\]$')
-_CONDENSED_REM_HEADING_RE = re.compile(r'^\[(.+?)\]\s*Total\s*:\s*(.+)$')
+_CONDENSED_REM_HEADING_RE = re.compile(r'^\[(.+?)\]\s*Total\s*:\s*([\-\d.,]+)\s*(?:;\s*(.+))?$')
 _CONDENSED_GUIDANCE_RE = re.compile(
     r'^([A-Za-z][A-Za-z0-9]*)\s*:\s*current\s*=\s*([\-\d.]+)\s*,\s*low\s*=\s*([\-\d.]+)\s*,\s*high\s*=\s*([\-\d.]+)'
     r'(?:\s*,\s*commentary\s*=\s*(.+))?\s*$'
@@ -2188,7 +2188,7 @@ def parse_condensed_filing(text: str) -> dict:
             m = _CONDENSED_REM_HEADING_RE.match(line.strip())
             if not m:
                 continue
-            name_and_role, total_str = m.groups()
+            name_and_role, total_str, components_str = m.groups()
             role = 'non_executive'
             director_name = name_and_role.strip()
             if ',' in name_and_role:
@@ -2199,10 +2199,33 @@ def parse_condensed_filing(text: str) -> dict:
                 total = float(total_str.strip().replace(',', ''))
             except ValueError:
                 continue
+            # Optional breakdown after a ";" on the same line - e.g.
+            # "Fees=141157, Salaries=259203, Bonuses=77033, Non-cash
+            # benefits=5853" - so a condensed file can still carry the
+            # filing's own component breakdown (as the real PDF path's
+            # extract_director_remuneration_detail does) instead of
+            # collapsing straight to just the total. Optional and
+            # order-preserving (a plain dict, insertion order matches
+            # the file) - a file with no ";" breakdown still parses
+            # exactly as before, so this is fully backward compatible.
+            components = None
+            if components_str:
+                components = {}
+                for part in components_str.split(','):
+                    if '=' not in part:
+                        continue
+                    key, val = part.split('=', 1)
+                    key = key.strip()
+                    try:
+                        components[key] = float(val.strip().replace(',', ''))
+                    except ValueError:
+                        continue
+                if not components:
+                    components = None
             director_remuneration.append({
                 'director_name': director_name, 'role': role,
                 'is_grand_total': 'GRAND TOTAL' in director_name.upper(),
-                'total': total, 'components': None, 'order_index': order, 'page': None,
+                'total': total, 'components': components, 'order_index': order, 'page': None,
             })
 
     return {
