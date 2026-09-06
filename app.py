@@ -1443,6 +1443,38 @@ def upload_documents_batch():
                             components=json.dumps(components) if components else None,
                             **row,
                         ))
+                    # Also populate the single-figure "Total Director
+                    # Remuneration - As Filed" summary (OperationalMetric,
+                    # same metric_name/shape the real-PDF path writes via
+                    # extract_director_remuneration - see that function's
+                    # docstring) so a condensed file's grand total shows
+                    # there too, not just in the per-director breakdown
+                    # below it. Only when there's EXACTLY ONE grand-total
+                    # row: a condensed file describing a split-table filing
+                    # (separate NED/Executive totals, no combined figure -
+                    # the real, common case this format exists to
+                    # represent, not just this one hand-built combined-
+                    # total example) has more than one is_grand_total row,
+                    # and picking one of those over the other here would
+                    # silently invent a "the" total the filing itself never
+                    # printed - exactly what extract_director_remuneration
+                    # already refuses to do for a real PDF with the same
+                    # shape, so the condensed path must refuse it too for
+                    # the two to agree.
+                    grand_totals = [r for r in condensed['director_remuneration'] if r.get('is_grand_total')]
+                    if len(grand_totals) == 1:
+                        existing_metric = OperationalMetric.query.filter_by(
+                            period_id=period_row.id, metric_name='total_director_remuneration'
+                        ).first()
+                        if existing_metric:
+                            existing_metric.value = grand_totals[0]['total']
+                        else:
+                            db.session.add(OperationalMetric(
+                                period_id=period_row.id,
+                                metric_name='total_director_remuneration',
+                                value=grand_totals[0]['total'],
+                                unit=company_info.get('currency', 'KES') + ' ' + (company_info.get('unit') or 'thousands'),
+                            ))
                 db.session.commit()
 
             results.append({
