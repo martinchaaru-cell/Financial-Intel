@@ -123,11 +123,17 @@ One block per named risk category, in the filing's own order:
     Mitigation: <as filed>
 
 ## ===DIRECTOR_REMUNERATION===
-One line per row the filing itself prints a total for:
+One line per row the filing itself prints a total for. Values are
+ALWAYS in Ksh '000, regardless of the Unit set in ===COMPANY=== for
+the financial statement sections above - this matches the convention
+real filings themselves use for this table (confirmed on a real KCB
+filing's own "Amounts in Kshs '000" heading), and this app's own
+storage for this section is fixed to that unit too. Do not convert to
+match the statements' Unit:
 
-    [GRAND TOTAL - Non-Executive Directors] Total: <value>
-    [Dr. James Mwangi, Executive] Total: <value>
-    [Executive Director Name, Executive] Total: <value>
+    [GRAND TOTAL - Non-Executive Directors] Total: <value, in Ksh '000>
+    [Dr. James Mwangi, Executive] Total: <value, in Ksh '000>
+    [Executive Director Name, Executive] Total: <value, in Ksh '000>
 
 ## ===SOURCE===
 Optional, for traceability - human-readable notes on where each

@@ -1473,7 +1473,23 @@ def upload_documents_batch():
                                 period_id=period_row.id,
                                 metric_name='total_director_remuneration',
                                 value=grand_totals[0]['total'],
-                                unit=company_info.get('currency', 'KES') + ' ' + (company_info.get('unit') or 'thousands'),
+                                # Always Ksh '000 - see DirectorRemunerationRow.total's
+                                # own docstring in models.py ("this row's own printed
+                                # Total column, in Ksh '000 as filed"). NOT
+                                # company_info.get('unit') - that's the unit the
+                                # ===INCOME_STATEMENT===/===BALANCE_SHEET===/
+                                # ===CASH_FLOW=== sections are stated in (millions,
+                                # for a bank like this), but a filing's own Directors'
+                                # Remuneration Report conventionally states its
+                                # figures in thousands regardless of what unit the
+                                # rest of the filing uses - confirmed against a real
+                                # KCB filing ("Amounts in Kshs '000") - so this
+                                # section is deliberately NOT unit-converted the way
+                                # the statement sections are. A condensed file's own
+                                # ===DIRECTOR_REMUNERATION=== values must always be
+                                # entered in thousands to match - see
+                                # CONDENSED_FORMAT_SPEC.md's note on this.
+                                unit=company_info.get('currency', 'KES') + " thousands",
                             ))
                 db.session.commit()
 
