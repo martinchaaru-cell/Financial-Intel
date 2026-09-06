@@ -612,7 +612,7 @@ tr.li-child td:first-child{color:var(--text-dim);}
       and saved directly, no review step. Re-uploading a report for a company/year
       already on file updates that period instead of duplicating it.
     </p>
-    <input type="file" id="uploadReportsInput" accept="application/pdf" multiple
+    <input type="file" id="uploadReportsInput" accept="application/pdf,.pdf" multiple
            style="display:block;width:100%;margin-bottom:12px;"
            onchange="onUploadReportsFilesChosen(this.files)">
     <div id="uploadReportsFileList" style="font-size:13px;margin-bottom:12px;"></div>
@@ -3416,7 +3416,7 @@ async function irRemunerationTab(ir){
         <div class="ir-panel-title">Director &amp; Executive Remuneration Benchmark</div>
         <div class="empty">No remuneration survey imported yet.</div>
         <div style="max-width:420px;margin:14px auto 0;">
-          <input type="file" id="ir-survey-file" accept="application/pdf">
+          <input type="file" id="ir-survey-file" accept="application/pdf,.pdf">
           <button onclick="uploadIRSurvey(${currentCompanyId})">Import Survey PDF</button>
           <div id="ir-survey-error" class="error"></div>
         </div>
