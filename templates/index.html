@@ -2801,7 +2801,7 @@ function renderIRTabBody(){
   else if (irTab === 'performance-trends') { el.innerHTML = irPerformanceTrendsTab(ir); irMountTrendCharts(ir); }
   else if (irTab === 'peer-comparison') { el.innerHTML = irPeerComparisonTab(ir); irMountPeerChart(ir); }
   else if (irTab === 'risk-analysis') el.innerHTML = irRiskAnalysisTab(ir);
-  else if (irTab === 'remuneration') { el.innerHTML = `<div class="empty">Loading remuneration benchmark...</div>`; irRemunerationTab(ir); }
+  else if (irTab === 'remuneration') { el.innerHTML = `<div class="empty">Loading remuneration report...</div>`; irRemunerationTab(ir); }
   else if (irTab === 'outlook') el.innerHTML = irOutlookTab(ir);
   else if (irTab === 'source-evidence') el.innerHTML = irSourceEvidenceTab(ir);
   else if (irTab === 'raw-data') { el.innerHTML = `<div class="empty">Loading raw financial statements...</div>`; irRawDataTab(irCache.company.id); }
@@ -3352,162 +3352,158 @@ async function irRemunerationTab(ir){
   const el = document.getElementById('ir-tab-body');
   if (irTab !== 'remuneration') return;
   const res = await fetch(`/api/companies/${currentCompanyId}/remuneration`);
-  const data = await safeJson(res, {has_survey: false, own_remuneration: [], director_rows_by_period: {}});
+  const data = await safeJson(res, {own_remuneration: [], director_rows_by_period: {}});
   if (irTab !== 'remuneration') return; // user may have switched tabs while this loaded
 
   const byPeriod = data.director_rows_by_period || {};
-  const periodsWithRows = Object.keys(byPeriod);
+  const periods = Object.keys(byPeriod);
   const ownRows = (data.own_remuneration || []);
 
-  const componentLabel = (key) => key.replace(/_ksh'000$/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-  const directorDetailPanel = periodsWithRows.length ? `
-    <div class="panel">
-      <div class="ir-panel-title">Director Remuneration — per-director, as filed</div>
-      <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
-        Each row is the director's own printed Total from the company's Directors' Remuneration Report (figures in Ksh '000
-        as filed). The Non-Executive Directors row is the report's own printed GRAND TOTAL across all NEDs — individual NED
-        rows aren't broken out here since some filings wrap director names across lines in a way this app can't reliably
-        separate; the Executive Directors are each their own named row.
-      </div>
-      ${periodsWithRows.map(period => `
-        <div style="margin-bottom:${period === periodsWithRows[periodsWithRows.length-1] ? '0' : '20px'};">
-          <div style="font-weight:700;font-size:12.5px;margin-bottom:8px;">${escapeHtml(period)}</div>
-          <table>
-            <thead><tr><th>Director</th><th>Role</th><th class="amount">Total (Ksh '000)</th><th>Components</th></tr></thead>
-            <tbody>
-              ${byPeriod[period].map(r => `
-                <tr>
-                  <td>${r.is_grand_total ? `<b>${escapeHtml(r.director_name)}</b>` : escapeHtml(r.director_name)}</td>
-                  <td>${r.role === 'executive' ? 'Executive Director' : 'Non-Executive Directors'}</td>
-                  <td class="amount"><b>${fmtAmount(r.total)}</b></td>
-                  <td style="font-size:10.5px;color:var(--text-faint);">${r.components ? Object.entries(r.components).filter(([,v]) => v !== null).map(([k,v]) => `${componentLabel(k)}: ${fmtAmount(v)}`).join(' · ') : ''}</td>
-                </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>`).join('')}
-      <div style="font-size:10px;color:var(--text-faint);margin-top:12px;">Source: filing's own Directors' Remuneration Report, page numbers as captured per row.</div>
-    </div>` : '';
-
-  const ownPanel = (!periodsWithRows.length && ownRows.length) ? `
-    <div class="panel">
-      <div class="ir-panel-title">Total Director Remuneration — as filed (${escapeHtml(irCache.company.name)})</div>
-      <table>
-        <thead><tr><th>Period</th><th class="amount">Total</th></tr></thead>
-        <tbody>${ownRows.map(r => `<tr><td>${escapeHtml(r.period_label)}</td><td class="amount">${fmtAmount(r.total)}${r.unit ? ' ' + escapeHtml(r.unit) : ''}</td></tr>`).join('')}</tbody>
-      </table>
-      <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">
-        From this company's own Directors' Remuneration Report, as printed in its filing - a single filed total per
-        period, not a per-director breakdown and not computed/summed by this app. Some filings don't print one
-        explicit total (this app never estimates one in that case), so not every period will show a row here.
-      </div>
-    </div>` : (!periodsWithRows.length ? `
-    <div class="panel">
-      <div class="ir-panel-title">Total Director Remuneration — as filed</div>
-      <div class="empty">No filed total found in this company's uploaded reports yet - either none has been
-        uploaded with a Directors' Remuneration Report, or that report didn't print one single total figure.</div>
-    </div>` : '');
-
-  const summaryPanel = directorDetailPanel || ownPanel;
-
-  if (!data.has_survey) {
-    el.innerHTML = summaryPanel + `
+  if (!periods.length) {
+    el.innerHTML = ownRows.length ? `
       <div class="panel">
-        <div class="ir-panel-title">Director &amp; Executive Remuneration Benchmark</div>
-        <div class="empty">No remuneration survey imported yet.</div>
-        <div style="max-width:420px;margin:14px auto 0;">
-          <input type="file" id="ir-survey-file" accept="application/pdf,.pdf">
-          <button onclick="uploadIRSurvey(${currentCompanyId})">Import Survey PDF</button>
-          <div id="ir-survey-error" class="error"></div>
+        <div class="ir-panel-title">Total Director Remuneration — as filed (${escapeHtml(irCache.company.name)})</div>
+        <table>
+          <thead><tr><th>Period</th><th class="amount">Total</th></tr></thead>
+          <tbody>${ownRows.map(r => `<tr><td>${escapeHtml(r.period_label)}</td><td class="amount">${fmtAmount(r.total)}${r.unit ? ' ' + escapeHtml(r.unit) : ''}</td></tr>`).join('')}</tbody>
+        </table>
+        <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">
+          From this company's own Directors' Remuneration Report, as printed in its filing — a single filed total per
+          period, not a per-director breakdown and not computed/summed by this app.
         </div>
+      </div>` : `
+      <div class="panel">
+        <div class="ir-panel-title">Directors' Remuneration Report</div>
+        <div class="empty">No Directors' Remuneration Report found in this company's uploaded filings yet.</div>
       </div>`;
     return;
   }
 
-  const rs = data.remuneration_stats;
-  const pctRow = (label, cat) => {
-    const chair = rs[cat] && rs[cat].chairperson;
-    const other = rs[cat] && rs[cat].other_neds;
-    if (!chair && !other) return '';
-    return `
-      <tr><td>${label} — Chairperson</td><td class="amount">${chair ? fmtAmount(chair.p25) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p50) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p75) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.average) : '-'}</td></tr>
-      <tr><td>${label} — Other NEDs</td><td class="amount">${other ? fmtAmount(other.p25) : '-'}</td><td class="amount">${other ? fmtAmount(other.p50) : '-'}</td><td class="amount">${other ? fmtAmount(other.p75) : '-'}</td><td class="amount">${other ? fmtAmount(other.average) : '-'}</td></tr>`;
+  // Every filer prints a different set of tables and columns (see
+  // extract_director_remuneration_detail's docstring in pdf_parse.py) -
+  // this renders whatever table_kinds and component columns that
+  // specific filing's own upload actually produced, never a fixed
+  // schema. table_kind groups rows within a period; KIND_ORDER just
+  // controls display order when more than one kind is present.
+  const KIND_LABEL = {
+    executive: "Executive Directors' Remuneration",
+    non_executive: "Non-Executive Directors' Fees",
+    ned_named_totals: 'Non-Executive Directors — Amounts Paid to Individual Board Members',
+    fee_schedule: "Non-Executive Directors' Fee Schedule",
+    ltip: 'Long-Term Incentive Plans',
+    unknown: "Directors' Remuneration",
   };
-  const committeeRow = () => {
-    const chair = rs.committee_allowance && rs.committee_allowance.committee_chairperson;
-    const member = rs.committee_allowance && rs.committee_allowance.committee_member;
-    if (!chair && !member) return '';
+  const KIND_ORDER = ['executive', 'non_executive', 'ned_named_totals', 'fee_schedule', 'ltip', 'unknown'];
+
+  const renderKindTable = (rows) => {
+    const cols = [];
+    rows.forEach(r => {
+      if (!r.components) return;
+      Object.keys(r.components).forEach(k => { if (!cols.includes(k)) cols.push(k); });
+    });
+    const totalIdx = cols.indexOf('Total');
+    if (totalIdx > -1 && totalIdx !== cols.length - 1) { cols.splice(totalIdx, 1); cols.push('Total'); }
     return `
-      <tr><td>Committee Allowance — Chairperson</td><td class="amount">${chair ? fmtAmount(chair.p25) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p50) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.p75) : '-'}</td><td class="amount">${chair ? fmtAmount(chair.average) : '-'}</td></tr>
-      <tr><td>Committee Allowance — Member</td><td class="amount">${member ? fmtAmount(member.p25) : '-'}</td><td class="amount">${member ? fmtAmount(member.p50) : '-'}</td><td class="amount">${member ? fmtAmount(member.p75) : '-'}</td><td class="amount">${member ? fmtAmount(member.average) : '-'}</td></tr>`;
-  };
-
-  const maxPrevalence = Math.max(1, ...data.benefits.map(b => b.prevalence_pct || 0));
-  const benefitRows = data.benefits.map(b => `
-    <div class="ir-benefit-row">
-      <div class="bn-name">${escapeHtml(b.benefit_name)}</div>
-      <div class="bn-track"><div class="bn-fill" style="width:${(b.prevalence_pct || 0) / maxPrevalence * 100}%;"></div></div>
-      <div class="bn-pct">${b.prevalence_pct !== null ? b.prevalence_pct + '%' : '-'}</div>
-    </div>`).join('');
-
-  const ceoRows = data.ceo_comp.map(cc => `
-    <tr><td>${escapeHtml(cc.component_name)}</td><td class="amount">${fmtAmount(cc.p25)}</td><td class="amount">${fmtAmount(cc.p50)}</td><td class="amount">${fmtAmount(cc.p75)}</td><td class="amount">${fmtAmount(cc.average)}</td></tr>`).join('');
-
-  el.innerHTML = summaryPanel + `
-    <div class="panel">
-      <div class="panel-head">
-        <h2>${escapeHtml(data.survey.title)} ${data.survey.edition ? '· ' + escapeHtml(data.survey.edition) : ''}</h2>
-        <span class="badge">${data.survey.companies_surveyed} companies surveyed</span>
-      </div>
-      <div style="font-size:11.5px;color:var(--text-faint);margin-bottom:4px;">
-        ${data.survey.period_covered ? 'Period covered: ' + escapeHtml(data.survey.period_covered) : ''}
-        ${data.matched_sector ? ` · This company's survey sector: <b style="color:var(--text-dim);">${escapeHtml(data.matched_sector)}</b>` : ' · Company not identified in this survey\'s company list — figures below are market-wide, not sector-matched.'}
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="ir-panel-title">Non-Executive Director Remuneration (KES)</div>
-      <table class="ir-percentile-table">
-        <thead><tr><th></th><th class="amount">25th pct</th><th class="amount">50th pct</th><th class="amount">75th pct</th><th class="amount">Average</th></tr></thead>
+      <table>
+        <thead><tr><th>Director</th>${cols.map(c => `<th class="amount">${escapeHtml(c)}</th>`).join('')}</tr></thead>
         <tbody>
-          ${pctRow('Annual Retainer Fee', 'annual_fee')}
-          ${pctRow('Sitting Allowance', 'sitting_allowance')}
-          ${committeeRow()}
+          ${rows.map(r => {
+            const bold = r.is_grand_total || r.is_total_row;
+            const wrap = (html) => bold ? `<b>${html}</b>` : html;
+            return `<tr><td>${wrap(escapeHtml(r.director_name))}</td>${cols.map(c => {
+              const v = r.components ? r.components[c] : null;
+              const cell = (v === null || v === undefined) ? '–' : fmtAmount(v);
+              return `<td class="amount">${wrap(cell)}</td>`;
+            }).join('')}</tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  };
+
+  const periodPanels = periods.map(period => {
+    const rows = byPeriod[period];
+    const byKind = {};
+    rows.forEach(r => { const k = r.table_kind || 'unknown'; (byKind[k] = byKind[k] || []).push(r); });
+    const kindsPresent = KIND_ORDER.filter(k => byKind[k] && byKind[k].length);
+    return `
+      <div class="panel">
+        <div class="ir-panel-title">${escapeHtml(period)} — Directors' Remuneration Report</div>
+        ${kindsPresent.map(k => `
+          <div style="margin-bottom:16px;">
+            <div style="font-weight:700;font-size:12px;margin-bottom:6px;color:var(--text-dim);">${KIND_LABEL[k] || k}</div>
+            ${renderKindTable(byKind[k])}
+          </div>`).join('')}
+      </div>`;
+  }).join('');
+
+  // Combined board cost: the Non-Executive Directors' own printed
+  // GRAND TOTAL (or, for a fee-schedule-style filer with no component
+  // breakdown, its own named-totals table's total row) plus each named
+  // Executive Director's own printed Total. A separate Long-Term
+  // Incentive Plans table, where a filing prints one, is deliberately
+  // NOT folded in here — its own headline figure (e.g. "Total
+  // Emoluments") already overlaps with the executive table's own total
+  // for the same person, so combining them would double-count; it's
+  // shown on its own above instead.
+  const combinedRows = periods.map(period => {
+    const rows = byPeriod[period];
+    const nedGrand = rows.find(r => r.table_kind === 'non_executive' && r.is_grand_total);
+    const nedNamedGrand = rows.find(r => r.table_kind === 'ned_named_totals' && (r.is_grand_total || r.is_total_row));
+    const nedTotal = nedGrand ? nedGrand.total : (nedNamedGrand ? nedNamedGrand.total : null);
+    const execRows = rows.filter(r => r.table_kind === 'executive' && !r.is_grand_total && !r.is_total_row);
+    if (nedTotal === null && !execRows.length) return null;
+    const execSum = execRows.reduce((s, r) => s + (r.total || 0), 0);
+    return {period, nedTotal, execSum, combined: (nedTotal || 0) + execSum};
+  }).filter(Boolean);
+
+  const combinedPanel = combinedRows.length ? `
+    <div class="panel">
+      <div class="ir-panel-title">Total Board Cost — as filed</div>
+      <table>
+        <thead><tr><th>Period</th><th class="amount">Non-Executive Directors</th><th class="amount">Executive Directors</th><th class="amount">Combined</th></tr></thead>
+        <tbody>
+          ${combinedRows.map(c => `<tr><td>${escapeHtml(c.period)}</td><td class="amount">${c.nedTotal !== null ? fmtAmount(c.nedTotal) : '–'}</td><td class="amount">${fmtAmount(c.execSum)}</td><td class="amount"><b>${fmtAmount(c.combined)}</b></td></tr>`).join('')}
         </tbody>
       </table>
-    </div>
-
-    <div class="row row-3" style="grid-template-columns:1.2fr 1fr;">
-      <div class="panel">
-        <div class="ir-panel-title">CEO / MD Monthly Compensation (KES)</div>
-        <table class="ir-percentile-table">
-          <thead><tr><th>Component</th><th class="amount">25th pct</th><th class="amount">50th pct</th><th class="amount">75th pct</th><th class="amount">Average</th></tr></thead>
-          <tbody>${ceoRows}</tbody>
-        </table>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">
+        Sum of the filing's own printed totals only — never re-derived from individual line items.
       </div>
-      <div class="panel">
-        <div class="ir-panel-title">Board Benefits Prevalence</div>
-        ${benefitRows}
-      </div>
-    </div>
-  `;
-}
+    </div>` : '';
 
-async function uploadIRSurvey(companyId){
-  const fileInput = document.getElementById('ir-survey-file');
-  const errorEl = document.getElementById('ir-survey-error');
-  errorEl.textContent = '';
-  if (!fileInput.files.length) { errorEl.textContent = 'Choose a PDF first.'; return; }
-  const fd = new FormData();
-  fd.append('file', fileInput.files[0]);
-  try {
-    const res = await fetch('/api/surveys/import', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) { errorEl.textContent = data.error || 'Import failed.'; return; }
-    irRemunerationTab(irCache);
-  } catch (e) {
-    errorEl.textContent = 'Import failed: ' + e.message;
+  // Year-over-year per named director, wherever the same name appears
+  // across more than one uploaded period (grand-total/subtotal rows
+  // are skipped here - they aren't a "director").
+  let yoyPanel = '';
+  if (periods.length >= 2) {
+    const byName = {};
+    periods.forEach(period => {
+      byPeriod[period].forEach(r => {
+        if (r.is_grand_total || r.is_total_row) return;
+        (byName[r.director_name] = byName[r.director_name] || {})[period] = r.total;
+      });
+    });
+    const names = Object.keys(byName).filter(n => Object.values(byName[n]).filter(v => v !== undefined && v !== null).length >= 2);
+    if (names.length) {
+      yoyPanel = `
+        <div class="panel">
+          <div class="ir-panel-title">Year-over-Year — per director</div>
+          <table>
+            <thead><tr><th>Director</th>${periods.map(p => `<th class="amount">${escapeHtml(p)}</th>`).join('')}<th class="amount">Change</th></tr></thead>
+            <tbody>
+              ${names.map(n => {
+                const vals = periods.map(p => byName[n][p]);
+                const present = vals.filter(v => v !== undefined && v !== null);
+                const first = present[0], last = present[present.length - 1];
+                const pct = (first && last && first !== 0 && first !== last) ? ((last - first) / first * 100) : (first === last ? 0 : null);
+                return `<tr><td>${escapeHtml(n)}</td>${vals.map(v => `<td class="amount">${(v === undefined || v === null) ? '–' : fmtAmount(v)}</td>`).join('')}<td class="amount">${pct !== null ? (pct >= 0 ? '+' : '') + fmt(pct) + '%' : '–'}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
   }
+
+  el.innerHTML = periodPanels + combinedPanel + yoyPanel;
 }
 
 function irOutlookTab(ir){

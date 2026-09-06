@@ -1173,6 +1173,26 @@ def _split_double_page_text(page) -> list:
     return [_reconstruct(left_words), _reconstruct(right_words)]
 
 
+def _page_word_groups(page) -> list:
+    """Same double-wide-sheet detection as _split_double_page_text above,
+    but returns the raw word lists (dicts with x0/x1/top/text) per
+    logical half instead of joined text - callers that need to reason
+    about column positions (e.g. gap-based table reconstruction) can't
+    use the joined-text version, which throws the x-positions away."""
+    width, height = page.width, page.height
+    if height == 0 or width / height < 1.4:
+        return [page.extract_words()]
+    words = page.extract_words()
+    if not words:
+        return [words]
+    midpoint = width / 2
+    left_words = [w for w in words if w['x0'] < midpoint]
+    right_words = [w for w in words if w['x0'] >= midpoint]
+    if not left_words or not right_words:
+        return [words]
+    return [left_words, right_words]
+
+
 # ---------- DIRECTOR REMUNERATION (totals-only) ----------
 #
 # Deliberately scoped to ONE figure: the report's own printed grand total
@@ -1823,118 +1843,417 @@ if __name__ == "__main__":
     result = parse_financials_text([(1, sample_text)])
 
 
-_DIRECTOR_REM_SUBHEADING_RE = re.compile(
-    r'(?:^|\n)\s*(?:i|ii|iii|iv|v)\.\s*(non-executive directors|executive directors)'
-    r'.{0,120}?for the year ended\s+\d{1,2}\s+\w+\s+(\d{4})',
-    re.I | re.S,
-)
-_DIRECTOR_REM_NED_TOTAL_RE = re.compile(
-    r'GRAND TOTAL\s*(?:\(\d+\))?\s+([\d,.\-]+)\s+([\d,.\-]+)\s+([\d,.\-]+)\s+([\d,.\-]+)\s+([\d,.\-]+)',
-    re.I,
-)
-_DIRECTOR_REM_ED_ROW_RE = re.compile(
-    r'^(Mr\.|Mrs\.|Ms\.|Dr\.)\s+([A-Za-z.\s]+?)\s+([\d,.\-]+(?:\s+[\d,.\-]+){5,6})$'
-)
-
-
 def _num_or_none(s: str):
     s = s.strip()
     return None if s == '-' else float(s.replace(',', ''))
 
 
-def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: str | None = None) -> list:
-    """Per-director remuneration rows from the filing's own "Directors'
-    Remuneration Report" - the Non-Executive Directors' fees table's own
-    printed GRAND TOTAL row, and each Executive Director's own printed
-    Total row. Every figure is exactly what the filing prints in Ksh
-    '000 - this app never sums individual NED rows itself to invent a
-    total (see extract_director_remuneration's docstring above for why),
-    it only reads a total the filing already states.
+# ---------- Generic directors' remuneration table reconstruction ----------
+#
+# A filing's "Directors' Remuneration Report" is never one fixed shape -
+# confirmed against 4 real NSE filers' own tables (KCB Group, Liberty
+# Kenya Holdings, Equity Group Holdings, Absa Bank Kenya): column sets
+# differ (KCB: Directors' Fees/Sitting Allowance/Other Allowances/
+# Non-cash Benefit; Liberty: just Retainer Fees/Attendance Fees; Absa:
+# Base Salary/Retirement Benefits/Other Employee Benefits/->subtotal/
+# Cash Bonus/Deferred Bonus/->subtotal/->grand total, plus a SEPARATE
+# Long-Term Incentive Plans table that rolls into a bigger "Total
+# Emoluments" figure), and table structure differs too (KCB/Liberty
+# split Non-Executive vs Executive into separate tables; Equity puts
+# every director - executive and non-executive - in ONE combined table
+# with executives flagged by an asterisk in the name column; Absa's
+# non-executive side is a fee-rate schedule by committee/body rather
+# than a per-director component breakdown at all). No fixed regex per
+# company can cover this - instead we reconstruct whatever table is
+# actually printed, generically, from word positions.
+_REM_NUMERIC_CELL_RE = re.compile(r'^\(?-?[\d,]+(\.\d+)?\)?$')
+_REM_DASH_RE = re.compile(r'^[-\u2013\u2014]$')
+_REM_SECTION_HEADING_RE = re.compile(
+    r'(?:(?:non-executive director|executive director)(?:s?)[^.]{0,90}?'
+    r'(?:for the year ended|fees, allowances|remuneration for the year|remuneration \(continued\))'
+    r'|\([ab]\)\s*(?:non-executive director|executive director)'
+    r'|long-term incentive|share incentive|individual board member|amounts paid to individual)',
+    re.I,
+)
+_REM_YEAR_RE = re.compile(r'(20\d{2})')
+_REM_STOP_LINE_RE = re.compile(r'^(notes?:|by order|date:|statement of directors)', re.I)
 
-    This table always prints the current year's figures AND the prior
-    year's as a second, separately-headed sub-table on the same page
-    (e.g. "iii. Executive Directors' Remuneration for the Year Ended 31
-    December 2025" immediately followed by "iv. ... for the Year Ended
-    31 December 2024"). Pass target_period_label (e.g. "FY2025") to keep
-    only that year's own sub-table - the other year's figures belong to
-    that other filing's own upload instead, and keeping both here would
-    double-count/conflict once both years are uploaded separately.
-    Returns [] if this section isn't found (e.g. an interim filing, or a
-    layout this parser doesn't recognize)."""
+
+_REM_UNIT_ONLY_RE = re.compile(r"^k?shs?\.?\s*'?\u2018?\u2019?000\u2018?\u2019?'?$", re.I)
+
+
+def _cell_kind(cell: str) -> str:
+    c = cell.strip()
+    if _REM_DASH_RE.match(c):
+        return 'dash'
+    if _REM_NUMERIC_CELL_RE.match(c.replace(' ', '')):
+        return 'number'
+    return 'text'
+
+
+def _row_numeric_ratio(cells: list) -> float:
+    rest = [t for t, _x0, _x1 in cells[1:]]
+    if not rest:
+        return 0.0
+    hits = sum(1 for c in rest if _cell_kind(c) in ('number', 'dash'))
+    return hits / len(rest)
+
+
+def _reconstruct_cells_by_gap(words: list, gap_threshold: float = 8.0) -> list:
+    """Cluster words into visual lines by y-position, then split each
+    line into cells wherever the horizontal gap between adjacent words
+    exceeds gap_threshold. This reconstructs a whitespace/column-aligned
+    table's rows without needing pdfplumber's line-drawing-based table
+    detector - confirmed necessary on a real filing (KCB) where running
+    pdfplumber's own table finder against the header banner's corrupted
+    doubled-letter text produced garbage column splits, while this
+    simpler column-gap approach cleanly reconstructed every row of both
+    the Non-Executive and Executive remuneration tables, headers
+    included.
+
+    Returns a list of cell-lists, top-to-bottom; each cell is (text,
+    x0, x1) so callers can bucket a multi-line wrapped column header
+    (e.g. "Sitting" on one line, "allowance" on the line below it, both
+    belonging to the same column as a data row's "Sitting Allowance"
+    figures) against a real data row's column positions rather than
+    guessing from cell order alone, and can also detect a single header
+    word that visually spans two data columns (e.g. "Bonus" printed
+    once, centered above both a "Cash" and a "Deferred" column beneath
+    it - confirmed on a real filing) using its full x0-x1 width rather
+    than just its start position."""
+    if not words:
+        return []
+    words = sorted(words, key=lambda w: (round(w['top'] / 3), w['x0']))
+    lines, cur, cur_top = [], [], None
+    for w in words:
+        if cur_top is None or abs(w['top'] - cur_top) < 3:
+            cur.append(w)
+            cur_top = w['top'] if cur_top is None else cur_top
+        else:
+            lines.append(cur)
+            cur, cur_top = [w], w['top']
+    if cur:
+        lines.append(cur)
+    out = []
+    for line in lines:
+        line_sorted = sorted(line, key=lambda w: w['x0'])
+        cells = []
+        cur_cell = [line_sorted[0]['text']]
+        cur_x0, cur_x1 = line_sorted[0]['x0'], line_sorted[0]['x1']
+        for w in line_sorted[1:]:
+            if w['x0'] - cur_x1 > gap_threshold:
+                cells.append((' '.join(cur_cell), cur_x0, cur_x1))
+                cur_cell, cur_x0, cur_x1 = [w['text']], w['x0'], w['x1']
+            else:
+                cur_cell.append(w['text'])
+                cur_x1 = w['x1']
+        cells.append((' '.join(cur_cell), cur_x0, cur_x1))
+        out.append(cells)
+    return out
+
+
+def _bucket_by_column(cells: list, ref_x0s: list) -> list:
+    """Assign each (text, x0, x1) cell to whichever reference column x0
+    it's closest to (by start position), joining multiple cells landing
+    in the same bucket top-to-bottom. Used to align a DATA row's cells
+    to reference columns when its cell count doesn't exactly match
+    (e.g. a run of dashes for zero/not-applicable that still needs to
+    land in the right column) - a value belongs to exactly one column,
+    so nearest-start-position is the right rule here (contrast with
+    _bucket_header_by_column below, which a header word can span).
+    Returns a list the same length as ref_x0s."""
+    out = [''] * len(ref_x0s)
+    for text, x0, _x1 in cells:
+        idx = min(range(len(ref_x0s)), key=lambda i: abs(ref_x0s[i] - x0))
+        out[idx] = f'{out[idx]} {text}'.strip() if out[idx] else text
+    return out
+
+
+def _bucket_header_by_column(cells: list, ref_x0s: list) -> list:
+    """Like _bucket_by_column, but for HEADER cells: a header word can
+    visually span more than one data column (e.g. "Bonus" printed once,
+    centered above both a "Cash" and a "Deferred" column beneath it -
+    confirmed on a real filing), so this assigns a cell to every
+    reference column whose own x-position actually falls within that
+    cell's x0-x1 span (plus a little padding for text-vs-number
+    alignment slop), not just the single nearest one. A boundary-
+    midpoint version of this over-triggered on a second real filing
+    with tighter column spacing, where an ordinary single-column header
+    like "Directors' fees" is simply wider than its own numeric column
+    and was wrongly duplicated into its neighbour - requiring the
+    neighbour's own x-position to be truly inside the header's span
+    (not just past a shared midpoint) avoids that false duplication
+    while still catching a genuinely spanning word like "Bonus".
+    Returns a list the same length as ref_x0s."""
+    out = [''] * len(ref_x0s)
+    for text, x0, x1 in cells:
+        pad = max((x1 - x0) * 0.15, 3)
+        matched = [i for i, rx in enumerate(ref_x0s) if x0 - pad <= rx <= x1 + pad]
+        if not matched:
+            matched = [min(range(len(ref_x0s)), key=lambda i: abs(ref_x0s[i] - x0))]
+        for idx in matched:
+            out[idx] = f'{out[idx]} {text}'.strip() if out[idx] else text
+    return out
+
+
+def _parse_remuneration_table(cell_lines: list, start_idx: int = 0) -> tuple:
+    """Scan cell_lines (from _reconstruct_cells_by_gap, so cells are
+    (text, x0, x1) tuples) starting at start_idx for one table: the
+    first data-shaped row (a text label followed by mostly
+    numbers/dashes, OR a lone-text line immediately followed by an
+    all-numeric line - confirmed on a real filing: "Dr. Joseph Kinyua"
+    prints alone, then its row of figures on the next line), then
+    walks BACKWARD from there to find the nearest preceding text-heavy
+    line(s) to serve as the header, bucketing every header-block
+    line's cells against that first data row's own column x-positions
+    (handles a header wrapped across several stacked lines, including
+    one word spanning two columns - see _bucket_header_by_column).
+    Skips a units-only header line (e.g. "Ksh '000'" repeated per
+    column) so it doesn't clutter the real component labels.
+
+    Returns (table_dict_or_None, next_idx) so callers can keep scanning
+    for further tables (e.g. a second Long-Term Incentive Plans table
+    further down the same page) after this one ends. table_dict is
+    {'headers': [...], 'rows': [{'label','values','is_total_row'}]}."""
+    n = len(cell_lines)
+    i = start_idx
+    data_start = None
+    while i < n:
+        cells = cell_lines[i]
+        if len(cells) >= 2 and _row_numeric_ratio(cells) >= 0.5:
+            data_start = i
+            break
+        if len(cells) == 1 and _cell_kind(cells[0][0]) == 'text':
+            if i + 1 < n and len(cell_lines[i + 1]) >= 1 and _row_numeric_ratio(cell_lines[i + 1]) >= 0.5:
+                data_start = i
+                break
+        i += 1
+    if data_start is None:
+        return None, n
+
+    ref_row = cell_lines[data_start]
+    if len(ref_row) < 2:
+        # the wrapped-name case: data_start is the lone name, real
+        # column positions come from the very next (all-numeric) line
+        ref_row = [ref_row[0]] + list(cell_lines[data_start + 1])
+    ref_x0s = [x0 for _t, x0, _x1 in ref_row[1:]]
+    if not ref_x0s:
+        return None, n
+
+    # Walk backward collecting every header-block line, INCLUDING short
+    # single-word lines that are really a wrapped/merged column header
+    # (e.g. "Bonus" printed on its own line, spanning above two data
+    # columns "Cash" and "Deferred" beneath it - confirmed on a real
+    # filing) - only a genuine section/document heading line stops the
+    # scan, not mere shortness.
+    header_lines = []
+    k = data_start - 1
+    while k >= start_idx and len(header_lines) < 6:
+        cells = cell_lines[k]
+        if not cells:
+            k -= 1
+            continue
+        joined = ' '.join(t for t, _x0, _x1 in cells)
+        if _REM_SECTION_HEADING_RE.search(joined) or re.match(r'^\s*(?:i|ii|iii|iv|v)\.\s', joined, re.I):
+            break
+        if _row_numeric_ratio(cells) > 0.3:
+            break
+        header_lines.insert(0, cells)
+        k -= 1
+    if not header_lines:
+        return None, n
+
+    # A header cell is only real column-header text if it sits to the
+    # right of the midpoint between the row-label column and the first
+    # value column - anything left of that midpoint (e.g. "Director's
+    # Name"/"Capacity") is the row-label column's own header and must
+    # not get bucketed into column 1's label. A plain half-inter-column
+    # margin is too tight here: a text header like "Directors' fees"
+    # legitimately starts well left of its own numeric column (longer
+    # left-aligned label vs a narrow right-aligned number) - confirmed
+    # on a real filing where that under-cut the real first column's
+    # header. Also drops a bare units marker ("Ksh '000'", "Shs")
+    # repeated per column - confirmed as noise on the same filing.
+    label_x0 = ref_row[0][1]
+    label_cutoff = (label_x0 + ref_x0s[0]) / 2
+    headers = [''] * len(ref_x0s)
+    for line in header_lines:
+        filtered = [(t, x0, x1) for t, x0, x1 in line
+                    if x0 >= label_cutoff and not _REM_UNIT_ONLY_RE.match(t.strip())]
+        if not filtered:
+            continue
+        bucketed = _bucket_header_by_column(filtered, ref_x0s)
+        for idx, text in enumerate(bucketed):
+            if text:
+                headers[idx] = f'{headers[idx]} {text}'.strip() if headers[idx] else text
+    if not any(headers):
+        return None, n
+
+    rows = []
+    pending_label = None
+    j = data_start
+    while j < n:
+        cells = cell_lines[j]
+        if len(cells) == 1:
+            text = cells[0][0].strip()
+            if not text:
+                j += 1
+                continue
+            if _REM_STOP_LINE_RE.match(text):
+                break
+            if _cell_kind(text) == 'text':
+                pending_label = text
+                j += 1
+                continue
+            break
+        ratio = _row_numeric_ratio(cells)
+        if ratio < 0.4 and pending_label is None:
+            break
+        if pending_label is not None and _cell_kind(cells[0][0]) in ('number', 'dash'):
+            label = pending_label
+            value_cells = cells
+        else:
+            label = cells[0][0].strip()
+            value_cells = cells[1:]
+        pending_label = None
+        if not label:
+            j += 1
+            continue
+        bucketed = _bucket_by_column(value_cells, ref_x0s)
+        values = {}
+        for h, v in zip(headers, bucketed):
+            if not h:
+                continue
+            v = v.strip()
+            if not v or _cell_kind(v) == 'dash':
+                values[h] = None
+            elif _cell_kind(v) == 'number':
+                values[h] = _num_or_none(v.replace(' ', ''))
+        if not values:
+            j += 1
+            continue
+        rows.append({
+            'label': re.sub(r'\s+', ' ', label).strip(),
+            'values': values,
+            'is_total_row': bool(re.search(r'\btotal\b', label, re.I)),
+        })
+        j += 1
+    if not rows:
+        return None, data_start
+    return {'headers': [h for h in headers if h], 'rows': rows}, j
+
+
+def _classify_remuneration_kind(heading_text: str) -> str:
+    t = heading_text.lower()
+    if 'long-term incentive' in t or 'share incentive' in t:
+        return 'ltip'
+    if 'individual board member' in t or 'amounts paid to individual' in t:
+        return 'ned_named_totals'
+    if 'non-executive' in t:
+        return 'non_executive'
+    if 'executive director' in t:
+        return 'executive'
+    if re.search(r'\bchairman\b', t) and re.search(r'\bmember\b', t):
+        return 'fee_schedule'
+    return 'unknown'
+
+
+def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: str | None = None) -> list:
+    """Every named director/role's own remuneration row(s) from the
+    filing's "Directors' Remuneration Report", reconstructed generically
+    from word positions rather than assumed against one fixed column
+    set - see the module note above this function for the 4 real filer
+    layouts this was built and tested against. Every figure is exactly
+    what the filing prints (never summed or estimated by this app); a
+    filing's own printed subtotal/total rows are kept as their own rows
+    (is_total_row=True) rather than collapsed away.
+
+    Returns a flat list of dicts, one per (person or total/subtotal
+    row) per sub-table on the page:
+      director_name, role ('executive'|'non_executive'|'unknown'),
+      table_kind ('executive'|'non_executive'|'ltip'|'ned_named_totals'|
+        'fee_schedule'|'unknown' - which of possibly several sub-tables
+        this row came from, e.g. Absa's separate LTIP table),
+      is_grand_total, is_total_row (a printed subtotal like Absa's
+        "Total Fixed Remuneration", distinct from is_grand_total which
+        is the table's own final GRAND TOTAL/Total row),
+      components (dict, filing's own column headers as keys - NOT
+        normalized to a fixed schema, since the columns themselves
+        differ by filer), total (this row's own rightmost/"Total"-
+        labelled figure if the columns include one, else None),
+      fiscal_year, order_index, page.
+
+    Executives are detected by table heading OR by an asterisk/footnote
+    marker on the name (Equity Group's combined-table convention) -
+    when detected only by marker, role is 'executive' but table_kind
+    stays whatever the single combined table's kind was classified as.
+    Returns [] if no remuneration table is found on any page (e.g. an
+    interim filing, or a layout this parser doesn't recognize)."""
     page_texts = _pypdf_or_pdfplumber_page_texts(pdf_bytes)
     section_pages = [pg for pg, text in page_texts
                       if 'remuneration report' in text.lower()
-                      and ('non-executive' in text.lower() or 'executive director' in text.lower())]
+                      and _REM_SECTION_HEADING_RE.search(text)]
     if not section_pages:
         return []
-    start_pg, end_pg = min(section_pages), max(section_pages) + 1
+    start_pg, end_pg = min(section_pages), max(section_pages)
 
     results = []
     order = 0
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for pg in range(start_pg, min(end_pg + 1, len(pdf.pages) + 1)):
+        for pg in range(start_pg, min(end_pg + 1, len(pdf.pages)) + 1):
+            if pg < 1 or pg > len(pdf.pages):
+                continue
             page = pdf.pages[pg - 1]
-            for half_text in _split_double_page_text(page):
-                lower = half_text.lower()
-                if 'non-executive director' not in lower and 'executive director' not in lower:
+            for word_group in _page_word_groups(page):
+                if not word_group:
                     continue
-                sub_matches = list(_DIRECTOR_REM_SUBHEADING_RE.finditer(half_text))
-                if not sub_matches:
+                cell_lines = _reconstruct_cells_by_gap(word_group)
+                # Find every heading line in this half/page, so a page
+                # with more than one sub-table (e.g. Absa's Executive
+                # table immediately followed by its LTIP table) gets
+                # each one classified and parsed separately. A roman-
+                # numeral list marker ("I.", "iii.") sometimes lands in
+                # its own cell ahead of the heading text proper -
+                # confirmed on a real filing - so a heading line can be
+                # 1-2 cells, not always exactly 1; join them before
+                # matching so a lone "I." doesn't get misread as data.
+                heading_positions = [i for i, cells in enumerate(cell_lines)
+                                      if len(cells) <= 2
+                                      and _REM_SECTION_HEADING_RE.search(' '.join(t for t, _x0, _x1 in cells))]
+                if not heading_positions:
                     continue
-                for idx, sm in enumerate(sub_matches):
-                    chunk_start = sm.end()
-                    chunk_end = sub_matches[idx + 1].start() if idx + 1 < len(sub_matches) else len(half_text)
-                    chunk = half_text[chunk_start:chunk_end]
-                    section_kind = sm.group(1).lower()
-                    year = sm.group(2)
-                    if target_period_label and f'FY{year}' != target_period_label:
+                for h_idx, h_pos in enumerate(heading_positions):
+                    heading_text = ' '.join(t for t, _x0, _x1 in cell_lines[h_pos])
+                    kind = _classify_remuneration_kind(heading_text)
+                    year_m = _REM_YEAR_RE.search(heading_text)
+                    year = year_m.group(1) if year_m else None
+                    if target_period_label and year and f'FY{year}' != target_period_label:
                         continue
-
-                    if 'non-executive' in section_kind:
-                        m = _DIRECTOR_REM_NED_TOTAL_RE.search(chunk)
-                        if m:
-                            results.append({
-                                'director_name': 'GRAND TOTAL - Non-Executive Directors',
-                                'role': 'non_executive', 'is_grand_total': True,
-                                'total': _num_or_none(m.group(5)), 'fiscal_year': year,
-                                'components': {
-                                    "directors_fees_ksh'000": _num_or_none(m.group(1)),
-                                    "sitting_allowance_ksh'000": _num_or_none(m.group(2)),
-                                    "other_allowances_ksh'000": _num_or_none(m.group(3)),
-                                    "non_cash_benefit_ksh'000": _num_or_none(m.group(4)),
-                                },
-                                'order_index': order, 'page': pg,
-                            })
-                            order += 1
-                    else:
-                        for line in chunk.splitlines():
-                            line = line.strip()
-                            rm = _DIRECTOR_REM_ED_ROW_RE.match(line)
-                            if not rm:
-                                continue
-                            title, name, nums_str = rm.groups()
-                            nums = [n.strip() for n in nums_str.split()]
-                            if len(nums) not in (6, 7):
-                                continue
-                            components = {
-                                "salary_ksh'000": _num_or_none(nums[0]),
-                                "bonus_cash_ksh'000": _num_or_none(nums[1]),
-                                "bonus_deferred_ksh'000": _num_or_none(nums[2]),
-                                "allowances_ksh'000": _num_or_none(nums[3]),
-                            }
-                            if len(nums) == 7:
-                                components["gratuity_ksh'000"] = _num_or_none(nums[4])
-                                components["non_cash_benefit_ksh'000"] = _num_or_none(nums[5])
-                            else:
-                                components["gratuity_ksh'000"] = _num_or_none(nums[4])
-                            results.append({
-                                'director_name': f'{title} {name.strip()}',
-                                'role': 'executive', 'is_grand_total': False,
-                                'total': _num_or_none(nums[-1]), 'fiscal_year': year,
-                                'components': components,
-                                'order_index': order, 'page': pg,
-                            })
-                            order += 1
+                    scan_end = heading_positions[h_idx + 1] if h_idx + 1 < len(heading_positions) else len(cell_lines)
+                    table, _ = _parse_remuneration_table(cell_lines[h_pos + 1:scan_end])
+                    if not table:
+                        continue
+                    total_header = next((h for h in table['headers'] if h.strip().lower() == 'total'), None)
+                    for row in table['rows']:
+                        label = row['label']
+                        is_exec_marked = bool(re.search(r'\*', label)) and kind == 'unknown'
+                        role = ('executive' if kind == 'executive' or is_exec_marked
+                                else 'non_executive' if kind == 'non_executive'
+                                else 'unknown')
+                        is_grand_total = bool(re.search(r'\bgrand total\b', label, re.I))
+                        results.append({
+                            'director_name': label,
+                            'role': role,
+                            'table_kind': kind,
+                            'is_grand_total': is_grand_total,
+                            'is_total_row': row['is_total_row'],
+                            'total': row['values'].get(total_header) if total_header else None,
+                            'components': row['values'],
+                            'fiscal_year': year,
+                            'order_index': order,
+                            'page': pg,
+                        })
+                        order += 1
     return results
 
 

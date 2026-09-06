@@ -536,26 +536,30 @@ class ManagementGuidance(db.Model):
 
 
 class DirectorRemunerationRow(db.Model):
-    """One director's own filed remuneration row from the "Directors'
-    Remuneration Report" (Non-Executive Directors' fees table, or
-    Executive Directors' remuneration table) - real per-director figures
-    with the filing's own component breakdown and total, never summed or
-    estimated by this app. A "GRAND TOTAL" row (is_grand_total=True,
-    director_name left as printed, e.g. "GRAND TOTAL") is stored the same
-    way when the filing prints one for the NED table - see
-    extract_director_remuneration_detail's docstring for why an
-    Executive Directors' table with only 1-2 named rows and no such
-    total isn't treated as missing data."""
+    """One named director/role's own filed remuneration row from a
+    filing's "Directors' Remuneration Report", reconstructed generically
+    from the filing's own table layout - no fixed column set or fixed
+    Non-Executive/Executive split is assumed (see
+    extract_director_remuneration_detail's docstring in pdf_parse.py for
+    the 4 real NSE filer layouts this was built against: KCB Group,
+    Liberty Kenya Holdings, Equity Group Holdings, Absa Bank Kenya - each
+    differs in column set and/or table structure). A row can be a named
+    person OR a filing's own printed subtotal/GRAND TOTAL row
+    (is_total_row/is_grand_total=True, director_name left exactly as
+    printed) - both are stored the same way, never summed or estimated
+    by this app."""
     __tablename__ = 'director_remuneration_rows'
     id = db.Column(db.Integer, primary_key=True)
     period_id = db.Column(db.Integer, db.ForeignKey('financial_periods.id'), nullable=False)
     source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
 
     director_name = db.Column(db.String(150), nullable=False)
-    role = db.Column(db.String(30))                 # 'non_executive' | 'executive'
+    role = db.Column(db.String(30))                 # 'executive' | 'non_executive' | 'unknown'
+    table_kind = db.Column(db.String(30))            # which sub-table this row came from: 'executive' | 'non_executive' | 'ltip' | 'ned_named_totals' | 'fee_schedule' | 'unknown' - a person can have rows in more than one (e.g. Absa's separate LTIP table)
     is_grand_total = db.Column(db.Boolean, default=False)
-    total = db.Column(db.Float, nullable=False)      # this row's own printed Total column, in Ksh '000 as filed
-    components = db.Column(db.Text)                   # JSON dict of the other printed columns (fees, salary, bonus, etc.) - display-only detail, never re-derived
+    is_total_row = db.Column(db.Boolean, default=False)  # a filing's own printed subtotal (e.g. Absa's "Total Fixed Remuneration") - distinct from is_grand_total, the table's own final total row
+    total = db.Column(db.Float)                      # this row's own rightmost "Total"-labelled figure, if the table has one - as filed, in the filing's own units, never re-derived
+    components = db.Column(db.Text)                   # JSON dict, keyed by the FILING'S OWN column header text verbatim (not a fixed schema, since columns differ by filer) - display-only detail, never re-derived
     order_index = db.Column(db.Integer, default=0)
 
     page = db.Column(db.Integer)
@@ -565,7 +569,9 @@ class DirectorRemunerationRow(db.Model):
         import json as _json
         return {
             'director_name': self.director_name, 'role': self.role,
-            'is_grand_total': self.is_grand_total, 'total': self.total,
+            'table_kind': self.table_kind,
+            'is_grand_total': self.is_grand_total, 'is_total_row': self.is_total_row,
+            'total': self.total,
             'components': _json.loads(self.components) if self.components else None,
             'order_index': self.order_index, 'page': self.page, 'confidence': self.confidence,
         }
