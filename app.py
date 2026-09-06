@@ -1447,32 +1447,39 @@ def upload_documents_batch():
                     # Remuneration - As Filed" summary (OperationalMetric,
                     # same metric_name/shape the real-PDF path writes via
                     # extract_director_remuneration - see that function's
-                    # docstring) so a condensed file's grand total shows
-                    # there too, not just in the per-director breakdown
-                    # below it. Only when there's EXACTLY ONE grand-total
-                    # row: a condensed file describing a split-table filing
-                    # (separate NED/Executive totals, no combined figure -
-                    # the real, common case this format exists to
-                    # represent, not just this one hand-built combined-
-                    # total example) has more than one is_grand_total row,
-                    # and picking one of those over the other here would
-                    # silently invent a "the" total the filing itself never
-                    # printed - exactly what extract_director_remuneration
-                    # already refuses to do for a real PDF with the same
-                    # shape, so the condensed path must refuse it too for
-                    # the two to agree.
-                    grand_totals = [r for r in condensed['director_remuneration'] if r.get('is_grand_total')]
-                    if len(grand_totals) == 1:
+                    # docstring and its "cluster_labeled_rows" comment) so
+                    # a condensed file's total shows there too, not just
+                    # in the per-director breakdown below it. Only when
+                    # the section has EXACTLY ONE ROW, TOTAL - not "exactly
+                    # one row named GRAND TOTAL". An earlier version of
+                    # this check counted only is_grand_total rows, which
+                    # is wrong: confirmed on KCB's real FY2025 filing, the
+                    # section has a "GRAND TOTAL" row for Non-Executive
+                    # Directors (97,395) PLUS two separately-named
+                    # Executive Director rows with their own totals (Paul
+                    # Russo 285,306; Lawrence Kimathi 147,772) - that
+                    # earlier check saw exactly one is_grand_total row and
+                    # would have written 97,395 as if it were the WHOLE
+                    # company's director remuneration, silently dropping
+                    # both executives' pay - a wrong total is worse than
+                    # no total, since it looks authoritative. The real-PDF
+                    # path avoids this exact trap by counting every
+                    # labeled total row in the section, named "GRAND
+                    # TOTAL" or not, and only trusting a single row when
+                    # there's truly only one in the whole section - this
+                    # must count the same way for the two paths to agree.
+                    if len(condensed['director_remuneration']) == 1:
+                        only_row = condensed['director_remuneration'][0]
                         existing_metric = OperationalMetric.query.filter_by(
                             period_id=period_row.id, metric_name='total_director_remuneration'
                         ).first()
                         if existing_metric:
-                            existing_metric.value = grand_totals[0]['total']
+                            existing_metric.value = only_row['total']
                         else:
                             db.session.add(OperationalMetric(
                                 period_id=period_row.id,
                                 metric_name='total_director_remuneration',
-                                value=grand_totals[0]['total'],
+                                value=only_row['total'],
                                 # Always Ksh '000 - see DirectorRemunerationRow.total's
                                 # own docstring in models.py ("this row's own printed
                                 # Total column, in Ksh '000 as filed"). NOT
