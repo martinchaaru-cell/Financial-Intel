@@ -116,7 +116,17 @@ _SECTION_STOP_HEADING_RES = [
 CANONICAL_LINE_ITEMS = {
     'income_statement': {
         r"total\s+operating\s+income": 'revenue',
-        r"^\s*revenue\b": 'revenue',
+        # Anchored so a genuine revenue TOTAL line wins over a same-
+        # statement component that also starts with "Revenue" (e.g.
+        # "Revenue from contracts with customers" / "Revenue from other
+        # sources" printed as their own lines above the real "Total
+        # revenue" line, per IFRS 15 disclosure convention) - confirmed
+        # on a real filing where the component line, appearing first,
+        # otherwise won the seen_normalized dedupe ahead of the real
+        # total a few lines later. A standalone "Revenue" total line has
+        # nothing after the word itself but note refs/whitespace, so this
+        # loses no genuine match.
+        r"^\s*revenue\s*$": 'revenue',
         r"total\s+revenue": 'revenue',
         # NSE's own statement labels its top line "Total income" (a sum of
         # transaction levies/listing fees/data-vending income, not a
@@ -511,10 +521,10 @@ def _classify_statement(line: str):
 # column-header line is SHORT (just column labels, no sentence content)
 # and starts with "Note" as its own word, rather than merely containing
 # "Note" anywhere in a longer sentence.
-_NOTE_COLUMN_RE = re.compile(r"^\s*note\b", re.IGNORECASE)
+_NOTE_COLUMN_RE = re.compile(r"^\s*notes?\b", re.IGNORECASE)
 
 
-def _has_nearby_note_column(lines: list, heading_idx: int, lookahead: int = 4) -> bool:
+def _has_nearby_note_column(lines: list, heading_idx: int, lookahead: int = 7) -> bool:
     for line in lines[heading_idx + 1: heading_idx + 1 + lookahead]:
         stripped = line.strip()
         # Column-header line only - short (a handful of column labels,
@@ -1926,3 +1936,277 @@ def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: 
                             })
                             order += 1
     return results
+
+
+# ---------- STANDARD CONDENSED FORMAT (v1) ----------
+# A plain-text alternative to a raw PDF, purpose-built to sidestep every
+# layout problem the PDF extractors above have to work around (double-wide
+# pages, Group/Company column ordering, "Note" vs "Notes" wording, roman-
+# numeral multi-column risk sections, etc.). See condensed_format/SPEC.md
+# for the full grammar. One file per company per fiscal year;
+# ===SECTION=== markers, "Label: value" or "Label: current, prior" lines,
+# "#"-prefixed comments ignored.
+#
+# This is deliberately NOT reusing extract_pdf_document's heading-
+# detection/column-splitting machinery - that machinery exists to cope
+# with messy real-world PDF text; a condensed file has none of that
+# messiness by construction, so a much simpler line-based parser is both
+# sufficient and less likely to misfire on this format's own edge cases
+# (e.g. a still-valid negative cash-flow number shouldn't trip the PDF
+# parser's parenthesized-negative heuristics meant for OCR'd statement
+# text).
+
+_CONDENSED_SECTION_RE = re.compile(r'^===([A-Z_]+)===$')
+_CONDENSED_FIELD_RE = re.compile(r'^([A-Za-z][A-Za-z]*)\s*:\s*(.*)$')
+_CONDENSED_RISK_HEADING_RE = re.compile(r'^\[(.+?)\]$')
+_CONDENSED_REM_HEADING_RE = re.compile(r'^\[(.+?)\]\s*Total\s*:\s*(.+)$')
+_CONDENSED_GUIDANCE_RE = re.compile(
+    r'^([A-Za-z][A-Za-z0-9]*)\s*:\s*current\s*=\s*([\-\d.]+)\s*,\s*low\s*=\s*([\-\d.]+)\s*,\s*high\s*=\s*([\-\d.]+)'
+    r'(?:\s*,\s*commentary\s*=\s*(.+))?\s*$'
+)
+
+# Field label (as written in the condensed file) -> this app's
+# normalized_name, one dict per statement section. Kept separate from
+# CANONICAL_LINE_ITEMS above (which matches free-form PDF text via
+# regex) since condensed field labels are an exact, fixed vocabulary by
+# design - a plain dict lookup is the right tool, not another regex table.
+_CONDENSED_INCOME_FIELDS = {
+    'Revenue': 'revenue', 'InterestIncome': 'interest_income', 'InterestExpense': 'interest_expense',
+    'CostOfSales': 'cost_of_sales', 'GrossProfit': 'gross_profit', 'EmployeeCosts': 'employee_costs',
+    'Depreciation': 'depreciation', 'Amortisation': 'amortisation', 'FinanceCosts': 'finance_costs',
+    'OperatingProfit': 'operating_profit', 'ProfitBeforeTax': 'profit_before_tax',
+    'TaxExpense': 'tax_expense', 'NetIncome': 'net_income', 'EPS': 'eps',
+    'SharesOutstanding': 'shares_outstanding',
+}
+_CONDENSED_BALANCE_FIELDS = {
+    'TotalAssets': 'total_assets', 'TotalLiabilities': 'total_liabilities', 'TotalEquity': 'total_equity',
+    'CashAndEquivalents': 'cash_and_equivalents', 'Receivables': 'receivables', 'Payables': 'payables',
+    'Inventory': 'inventory', 'CurrentAssets': 'current_assets', 'CurrentLiabilities': 'current_liabilities',
+    'PPE': 'ppe', 'Borrowings': 'borrowings', 'ShareCapital': 'share_capital',
+    'RetainedEarnings': 'retained_earnings',
+}
+_CONDENSED_CASHFLOW_FIELDS = {
+    'OperatingCashFlow': 'operating_cash_flow', 'InvestingCashFlow': 'investing_cash_flow',
+    'FinancingCashFlow': 'financing_cash_flow', 'CashEndOfPeriod': 'cash_end_of_period',
+    'Capex': 'capex',
+}
+_CONDENSED_STATEMENT_SECTIONS = {
+    'INCOME_STATEMENT': ('income_statement', _CONDENSED_INCOME_FIELDS),
+    'BALANCE_SHEET': ('balance_sheet', _CONDENSED_BALANCE_FIELDS),
+    'CASH_FLOW': ('cash_flow', _CONDENSED_CASHFLOW_FIELDS),
+}
+_CONDENSED_MARKET_DATA_FIELDS = {
+    'SharePrice': ('share_price', 'prior_share_price'),
+    'MarketCap': ('market_cap', None),
+    'SharesIssued': ('shares_issued', None),
+    'SharesAuthorized': ('shares_authorized', None),
+    'ShareholderCount': ('shareholder_count', 'prior_shareholder_count'),
+    'FreeFloatPct': ('free_float_pct', None),
+    'DividendPerShare': ('dividend_per_share', None),
+    'InterimDividendPerShare': ('interim_dividend_per_share', None),
+    'FinalDividendPerShare': ('final_dividend_per_share', None),
+    'SpecialDividendPerShare': ('special_dividend_per_share', None),
+    'DividendYieldPct': ('dividend_yield', None),
+    'TotalShareholderReturnPct': ('total_shareholder_return', None),
+    'LocalInstitutionalPct': ('local_institutional_pct', None),
+    'LocalIndividualPct': ('local_individual_pct', None),
+    'ForeignInvestorPct': ('foreign_investor_pct', None),
+}
+
+
+def _condensed_parse_numbers(raw: str):
+    """'349447.2, 310904.8' -> (349447.2, 310904.8); '4.25' -> (4.25, None).
+    Returns (None, None) for an empty/unparseable value rather than
+    raising, so one malformed line doesn't abort the whole file - the
+    caller decides whether to skip that field."""
+    raw = raw.strip()
+    if not raw:
+        return None, None
+    parts = [p.strip() for p in raw.split(',')]
+    try:
+        first = float(parts[0].replace(',', '')) if parts[0] not in ('', '-') else None
+    except ValueError:
+        return None, None
+    second = None
+    if len(parts) > 1 and parts[1] not in ('', '-'):
+        try:
+            second = float(parts[1].replace(',', ''))
+        except ValueError:
+            second = None
+    return first, second
+
+
+def is_condensed_format(text: str) -> bool:
+    """True if this looks like our own condensed format rather than raw
+    PDF-extracted text - checked before falling back to the PDF pipeline,
+    so a condensed .txt upload never gets mistakenly run through the
+    much slower/fuzzier PDF statement parser."""
+    return bool(re.search(r'^===COMPANY===\s*$', text, re.MULTILINE))
+
+
+def parse_condensed_filing(text: str) -> dict:
+    """Parse one standard condensed filing (see condensed_format/SPEC.md).
+    Returns a dict with keys: company, period, statements (same shape
+    parse_financials_text's 'statements' value has, so this can feed the
+    exact same save path app.py already uses for PDF uploads),
+    market_data, management_guidance, principal_risks,
+    director_remuneration - each None/[] if that section was omitted,
+    exactly mirroring how a real filing missing that disclosure behaves.
+    Raises ValueError with a line number if the file is malformed enough
+    that guessing would be worse than telling the person exactly what to
+    fix."""
+    lines = text.splitlines()
+    sections: dict = {}
+    current_section = None
+    current_lines: list = []
+
+    def flush():
+        if current_section is not None:
+            sections.setdefault(current_section, []).extend(current_lines)
+
+    for line in lines:
+        if line.strip().startswith('#') or not line.strip():
+            continue
+        m = _CONDENSED_SECTION_RE.match(line.strip())
+        if m:
+            flush()
+            current_section = m.group(1)
+            current_lines = []
+            continue
+        current_lines.append(line.rstrip())
+    flush()
+
+    if 'COMPANY' not in sections:
+        raise ValueError('Missing required ===COMPANY=== section.')
+    if 'PERIOD' not in sections:
+        raise ValueError('Missing required ===PERIOD=== section.')
+
+    def parse_fields(section_lines):
+        out = {}
+        for line in section_lines:
+            m = _CONDENSED_FIELD_RE.match(line.strip())
+            if m:
+                out[m.group(1)] = m.group(2).strip()
+        return out
+
+    company_fields = parse_fields(sections.get('COMPANY', []))
+    period_fields = parse_fields(sections.get('PERIOD', []))
+    if not company_fields.get('Name'):
+        raise ValueError('===COMPANY=== section is missing required field "Name".')
+    if not period_fields.get('Label'):
+        raise ValueError('===PERIOD=== section is missing required field "Label".')
+
+    company = {
+        'name': company_fields.get('Name'), 'ticker': company_fields.get('Ticker'),
+        'sector': company_fields.get('Sector'), 'exchange': company_fields.get('Exchange'),
+        'currency': company_fields.get('Currency'), 'unit': company_fields.get('Unit'),
+    }
+    period = {
+        'label': period_fields.get('Label'), 'fiscal_year_end': period_fields.get('FiscalYearEnd'),
+        'prior_label': period_fields.get('PriorLabel'),
+    }
+
+    statements = {}
+    for section_name, (stmt_type, field_map) in _CONDENSED_STATEMENT_SECTIONS.items():
+        if section_name not in sections:
+            continue
+        fields = parse_fields(sections[section_name])
+        line_items = []
+        for order, (condensed_label, value) in enumerate(fields.items()):
+            normalized = field_map.get(condensed_label)
+            if normalized is None:
+                continue  # unrecognized field label in this section - skip rather than guess
+            amount, prior_amount = _condensed_parse_numbers(value)
+            if amount is None:
+                continue
+            line_items.append({
+                'label': condensed_label, 'normalized_name': normalized,
+                'amount': amount, 'prior_amount': prior_amount,
+                'page': None, 'confidence': 1.0,  # condensed file's own stated figure - not a parser guess
+                'order_index': order,
+            })
+        if line_items:
+            statements[stmt_type] = {'line_items': line_items}
+
+    market_data = None
+    if 'MARKET_DATA' in sections:
+        fields = parse_fields(sections['MARKET_DATA'])
+        md = {}
+        for condensed_label, (field_name, prior_field_name) in _CONDENSED_MARKET_DATA_FIELDS.items():
+            if condensed_label not in fields:
+                continue
+            amount, prior = _condensed_parse_numbers(fields[condensed_label])
+            if amount is not None:
+                md[field_name] = amount
+            if prior is not None and prior_field_name:
+                md[prior_field_name] = prior
+        market_data = md if md else None
+
+    management_guidance = []
+    if 'MANAGEMENT_GUIDANCE' in sections:
+        guidance_period_label = None
+        order = 0
+        for line in sections['MANAGEMENT_GUIDANCE']:
+            stripped = line.strip()
+            gp = _CONDENSED_FIELD_RE.match(stripped)
+            if gp and gp.group(1) == 'GuidancePeriod':
+                guidance_period_label = gp.group(2).strip()
+                continue
+            m = _CONDENSED_GUIDANCE_RE.match(stripped)
+            if not m:
+                continue
+            metric_name, current, low, high, commentary = m.groups()
+            management_guidance.append({
+                'metric_name': metric_name, 'guidance_period_label': guidance_period_label,
+                'current_value': float(current), 'guidance_low': float(low), 'guidance_high': float(high),
+                'commentary': commentary.strip() if commentary else None, 'order_index': order, 'page': None,
+            })
+            order += 1
+
+    principal_risks = []
+    if 'PRINCIPAL_RISKS' in sections:
+        current = None
+        for order, line in enumerate(sections['PRINCIPAL_RISKS']):
+            m = _CONDENSED_RISK_HEADING_RE.match(line.strip())
+            if m:
+                if current:
+                    principal_risks.append(current)
+                current = {'category': m.group(1).strip(), 'description': '', 'mitigation': '',
+                           'order_index': len(principal_risks), 'page': None}
+                continue
+            if current is None:
+                continue
+            fm = _CONDENSED_FIELD_RE.match(line.strip())
+            if fm and fm.group(1) in ('Description', 'Mitigation'):
+                current[fm.group(1).lower()] = fm.group(2).strip()
+        if current:
+            principal_risks.append(current)
+
+    director_remuneration = []
+    if 'DIRECTOR_REMUNERATION' in sections:
+        for order, line in enumerate(sections['DIRECTOR_REMUNERATION']):
+            m = _CONDENSED_REM_HEADING_RE.match(line.strip())
+            if not m:
+                continue
+            name_and_role, total_str = m.groups()
+            role = 'non_executive'
+            director_name = name_and_role.strip()
+            if ',' in name_and_role:
+                name_part, role_part = name_and_role.rsplit(',', 1)
+                director_name = name_part.strip()
+                role = 'executive' if 'executive' in role_part.lower() and 'non' not in role_part.lower() else 'non_executive'
+            try:
+                total = float(total_str.strip().replace(',', ''))
+            except ValueError:
+                continue
+            director_remuneration.append({
+                'director_name': director_name, 'role': role,
+                'is_grand_total': 'GRAND TOTAL' in director_name.upper(),
+                'total': total, 'components': None, 'order_index': order, 'page': None,
+            })
+
+    return {
+        'company': company, 'period': period, 'statements': statements,
+        'market_data': market_data, 'management_guidance': management_guidance,
+        'principal_risks': principal_risks, 'director_remuneration': director_remuneration,
+    }

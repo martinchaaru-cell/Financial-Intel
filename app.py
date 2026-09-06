@@ -25,6 +25,7 @@ from pdf_parse import (
     extract_director_remuneration,
     extract_market_data, extract_management_guidance, extract_principal_risks,
     extract_director_remuneration_detail,
+    is_condensed_format, parse_condensed_filing,
 )
 from survey_pdf_parse import parse_survey_pdf
 from report_context import build_report_context
@@ -1329,6 +1330,128 @@ def upload_documents_batch():
             pdf_bytes = file.read()
         except Exception as e:
             results.append({'filename': filename, 'ok': False, 'error': f'Could not read upload: {e}'})
+            continue
+
+        # Standard condensed filing (see condensed_format/SPEC.md) - a
+        # plain-text alternative to a raw PDF that sidesteps every
+        # layout quirk the PDF extractors below have to work around.
+        # Detected by content (a "===COMPANY===" marker), not by file
+        # extension, so a .txt OR a .pdf containing this format both
+        # work - only decoded as UTF-8 text once that marker is found,
+        # so a real PDF's binary bytes are never treated as this format.
+        is_condensed = False
+        try:
+            sniff_text = pdf_bytes[:4096].decode('utf-8', errors='ignore')
+            is_condensed = is_condensed_format(sniff_text)
+        except Exception:
+            pass
+
+        if is_condensed:
+            try:
+                condensed_text = pdf_bytes.decode('utf-8')
+                condensed = parse_condensed_filing(condensed_text)
+            except (ValueError, UnicodeDecodeError) as e:
+                results.append({'filename': filename, 'ok': False, 'error': f'Malformed condensed file: {e}'})
+                continue
+
+            period_label = condensed['period']['label']
+            company_info = condensed['company']
+
+            if forced_company:
+                company_id = forced_company.id
+                created_company = False
+            else:
+                company_id = (existing_by_ticker.get((company_info.get('ticker') or '').lower())
+                               or existing_by_name.get((company_info.get('name') or '').strip().lower()))
+                created_company = company_id is None
+
+            if not condensed['statements']:
+                results.append({
+                    'filename': filename, 'ok': False,
+                    'error': 'No recognized financial statement fields found in this condensed file '
+                             '(check field labels against condensed_format/SPEC.md).',
+                })
+                continue
+
+            save_payload = {
+                'source_filename': filename,
+                'source_page_count': None,
+                'source_sha256': hashlib.sha256(pdf_bytes).hexdigest(),
+            }
+            if company_id:
+                save_payload['company_id'] = company_id
+            else:
+                save_payload['company_name'] = company_info.get('name')
+                save_payload['ticker'] = company_info.get('ticker')
+                save_payload['sector'] = company_info.get('sector')
+
+            # A condensed file describes exactly one period per file (no
+            # "detect the prior period from a comparative column" step
+            # needed - each year gets its own file) - but its statement
+            # lines still carry a prior_amount for the SAME comparative
+            # convention a PDF upload uses, so the current-period save
+            # picks those up as this period's own YoY comparison the
+            # same way. No second FinancialPeriod row is created for a
+            # condensed file's own comparative column - the person is
+            # expected to upload that prior year's own condensed file
+            # separately for a full period row of its own, same
+            # expectation as this whole feature already sets in
+            # condensed_format/SPEC.md.
+            try:
+                result, status = _save_one_import({**save_payload, 'period': period_label, 'statements': condensed['statements']})
+            except Exception as e:
+                db.session.rollback()
+                app.logger.exception(f'Unexpected error saving condensed file {filename}')
+                results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
+                continue
+
+            if status != 201:
+                results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Save failed.')})
+                continue
+
+            saved += 1
+            if result.get('company_id'):
+                existing_by_name[(company_info.get('name') or '').strip().lower()] = result['company_id']
+                if company_info.get('ticker'):
+                    existing_by_ticker[company_info['ticker'].lower()] = result['company_id']
+
+            period_row = FinancialPeriod.query.filter_by(
+                company_id=result['company_id'], period_label=period_label
+            ).first()
+            if period_row:
+                if condensed['market_data']:
+                    existing_md = MarketDataSnapshot.query.filter_by(period_id=period_row.id).first()
+                    if existing_md is None:
+                        existing_md = MarketDataSnapshot(period_id=period_row.id)
+                        db.session.add(existing_md)
+                    for field, value in condensed['market_data'].items():
+                        setattr(existing_md, field, value)
+                if condensed['management_guidance']:
+                    ManagementGuidance.query.filter_by(period_id=period_row.id).delete()
+                    for row in condensed['management_guidance']:
+                        db.session.add(ManagementGuidance(period_id=period_row.id, **row))
+                if condensed['principal_risks']:
+                    PrincipalRisk.query.filter_by(period_id=period_row.id).delete()
+                    for row in condensed['principal_risks']:
+                        db.session.add(PrincipalRisk(period_id=period_row.id, **row))
+                if condensed['director_remuneration']:
+                    DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
+                    for row in condensed['director_remuneration']:
+                        components = row.pop('components', None)
+                        db.session.add(DirectorRemunerationRow(
+                            period_id=period_row.id,
+                            components=json.dumps(components) if components else None,
+                            **row,
+                        ))
+                db.session.commit()
+
+            results.append({
+                'filename': filename, 'ok': True, 'company_id': result.get('company_id'),
+                'company_name': company_info.get('name'), 'period': period_label,
+                'match_score': 1.0 if company_id and not created_company else 0.0,
+                'created_company': created_company, 'periods_saved': [period_label],
+                'prior_period_error': None, 'format': 'condensed',
+            })
             continue
 
         # One slow pdfplumber pass covers both company/period detection
