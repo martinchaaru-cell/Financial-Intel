@@ -3434,6 +3434,10 @@ async function irRemunerationTab(ir){
     return `
       <div class="panel">
         <div class="ir-panel-title">${escapeHtml(period)} — Directors' Remuneration Report</div>
+        <div style="font-size:10.5px;color:var(--text-faint);margin-top:-4px;margin-bottom:12px;">
+          Amounts in Ksh '000, as filed — this section is always reported in thousands regardless of the
+          unit (e.g. millions) used elsewhere in this filing's financial statements.
+        </div>
         ${kindsPresent.map(k => `
           <div style="margin-bottom:16px;">
             <div style="font-weight:700;font-size:12px;margin-bottom:6px;color:var(--text-dim);">${KIND_LABEL[k] || k}</div>
@@ -3472,7 +3476,7 @@ async function irRemunerationTab(ir){
         </tbody>
       </table>
       <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">
-        Sum of the filing's own printed totals only — never re-derived from individual line items.
+        Sum of the filing's own printed totals only — never re-derived from individual line items. Amounts in Ksh '000, as filed.
       </div>
     </div>` : '';
 
@@ -3493,6 +3497,9 @@ async function irRemunerationTab(ir){
       yoyPanel = `
         <div class="panel">
           <div class="ir-panel-title">Year-over-Year — per director</div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:-6px;margin-bottom:10px;">
+            Amounts in Ksh '000, as filed.
+          </div>
           <table>
             <thead><tr><th>Director</th>${periods.map(p => `<th class="amount">${escapeHtml(p)}</th>`).join('')}<th class="amount">Change</th></tr></thead>
             <tbody>
