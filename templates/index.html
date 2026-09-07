@@ -3402,19 +3402,25 @@ async function irRemunerationTab(ir){
       Object.keys(r.components).forEach(k => { if (!cols.includes(k)) cols.push(k); });
     });
     const totalIdx = cols.indexOf('Total');
-    if (totalIdx > -1 && totalIdx !== cols.length - 1) { cols.splice(totalIdx, 1); cols.push('Total'); }
+    if (totalIdx > -1) { cols.splice(totalIdx, 1); }
+    // r.total is the filing's own rightmost "Total" figure - it's a
+    // separate field on the row (see DirectorRemunerationRow.total),
+    // never one of the component columns, so it has to be added here
+    // explicitly rather than picked up from r.components above.
+    const hasTotalCol = rows.some(r => r.total !== null && r.total !== undefined);
     return `
       <table>
-        <thead><tr><th>Director</th>${cols.map(c => `<th class="amount">${escapeHtml(c)}</th>`).join('')}</tr></thead>
+        <thead><tr><th>Director</th>${cols.map(c => `<th class="amount">${escapeHtml(c)}</th>`).join('')}${hasTotalCol ? '<th class="amount">Total</th>' : ''}</tr></thead>
         <tbody>
           ${rows.map(r => {
             const bold = r.is_grand_total || r.is_total_row;
             const wrap = (html) => bold ? `<b>${html}</b>` : html;
+            const totalCell = (r.total === null || r.total === undefined) ? '–' : fmtAmount(r.total);
             return `<tr><td>${wrap(escapeHtml(r.director_name))}</td>${cols.map(c => {
               const v = r.components ? r.components[c] : null;
               const cell = (v === null || v === undefined) ? '–' : fmtAmount(v);
               return `<td class="amount">${wrap(cell)}</td>`;
-            }).join('')}</tr>`;
+            }).join('')}${hasTotalCol ? `<td class="amount">${wrap(totalCell)}</td>` : ''}</tr>`;
           }).join('')}
         </tbody>
       </table>`;

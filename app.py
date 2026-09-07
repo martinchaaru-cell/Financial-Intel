@@ -57,6 +57,14 @@ def score_band(score):
 
 app = Flask(__name__)
 
+# Flask's default JSON provider alphabetizes dict keys (sort_keys=True),
+# which silently re-orders period-keyed dicts like
+# director_rows_by_period ({'FY2024': ..., 'FY2025': ...} -> FY2024
+# first alphabetically, even though _ordered_periods() already builds
+# them newest-year-first). Disable that so callers get back exactly the
+# insertion order this app already computed.
+app.json.sort_keys = False
+
 # Fix for hosts (e.g. Replit's provisioned Postgres) that hand back a
 # "postgres://" URL — SQLAlchemy 1.4+ requires "postgresql://".
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///test.db')

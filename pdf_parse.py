@@ -2543,6 +2543,16 @@ def parse_condensed_filing(text: str) -> dict:
                     components = None
             director_remuneration.append({
                 'director_name': director_name, 'role': role,
+                # table_kind drives which labelled sub-table (e.g.
+                # "Non-Executive Directors' Fees" vs "Executive
+                # Directors' Remuneration") the UI groups this row
+                # into - see KIND_LABEL/KIND_ORDER in the remuneration
+                # tab. role is already 'executive'/'non_executive' here
+                # so it doubles directly as table_kind; leaving this
+                # unset (as before) left every row's table_kind at the
+                # DB column's None default, which the UI treats as
+                # 'unknown' and dumps into one undifferentiated table.
+                'table_kind': role,
                 'is_grand_total': 'GRAND TOTAL' in director_name.upper(),
                 'total': total, 'components': components, 'order_index': order, 'page': None,
             })
