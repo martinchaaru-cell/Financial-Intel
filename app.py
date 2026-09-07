@@ -911,6 +911,16 @@ def delete_company(company_id):
         it at all.
       - ImportJob: has a company_id FK but no relationship/backref was
         added in models.py, so SQLAlchemy won't touch it automatically.
+    A further four (DirectorRemunerationRow, MarketDataSnapshot,
+    PrincipalRisk, ManagementGuidance) each have a REAL foreign-key
+    constraint on period_id (and source_document_id) with no
+    ondelete=CASCADE and no ORM relationship either - each must be
+    deleted before its parent FinancialPeriod rows or the database
+    itself rejects the delete with an IntegrityError (this was a real
+    bug: any company with saved remuneration/market-data/risk/guidance
+    rows couldn't be deleted at all once those tables were added, until
+    this was fixed - it surfaced to the user as "the delete button
+    doesn't work").
     """
     c = Company.query.get_or_404(company_id)
 
@@ -943,6 +953,21 @@ def delete_company(company_id):
             FinancialSegment.query.filter_by(period_id=period_id).delete(synchronize_session=False)
             OperationalMetric.query.filter_by(period_id=period_id).delete(synchronize_session=False)
             FinancialNote.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            # Every one of these four has a real FK to financial_periods.id
+            # with no ondelete=CASCADE and no ORM relationship either -
+            # each was added in a later session than this route, and none
+            # of them were wired into its cleanup at the time, so a
+            # company with any of this data saved (remuneration rows,
+            # market data snapshot, principal risks, management guidance)
+            # used to fail to delete at all with an uncaught IntegrityError
+            # once FinancialPeriod rows were deleted out from under them
+            # below - that's the delete-company-button-doesn't-work bug:
+            # the request 500'd instead of silently doing nothing, but the
+            # visible effect looked the same either way.
+            DirectorRemunerationRow.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            MarketDataSnapshot.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            PrincipalRisk.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            ManagementGuidance.query.filter_by(period_id=period_id).delete(synchronize_session=False)
 
         FinancialPeriod.query.filter_by(company_id=company_id).delete(synchronize_session=False)
         ImportJob.query.filter_by(company_id=company_id).delete(synchronize_session=False)
@@ -1418,6 +1443,9 @@ def upload_documents_batch():
             period_row = FinancialPeriod.query.filter_by(
                 company_id=result['company_id'], period_label=period_label
             ).first()
+            director_remuneration_rows_parsed = len(condensed['director_remuneration'])
+            director_remuneration_rows_saved = 0
+            director_remuneration_save_error = None
             if period_row:
                 if condensed['market_data']:
                     existing_md = MarketDataSnapshot.query.filter_by(period_id=period_row.id).first()
@@ -1435,14 +1463,21 @@ def upload_documents_batch():
                     for row in condensed['principal_risks']:
                         db.session.add(PrincipalRisk(period_id=period_row.id, **row))
                 if condensed['director_remuneration']:
-                    DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
-                    for row in condensed['director_remuneration']:
-                        components = row.pop('components', None)
-                        db.session.add(DirectorRemunerationRow(
-                            period_id=period_row.id,
-                            components=json.dumps(components) if components else None,
-                            **row,
-                        ))
+                    try:
+                        DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
+                        for row in condensed['director_remuneration']:
+                            components = row.pop('components', None)
+                            db.session.add(DirectorRemunerationRow(
+                                period_id=period_row.id,
+                                components=json.dumps(components) if components else None,
+                                **row,
+                            ))
+                        db.session.flush()  # surface any column/constraint error now, inside this try, instead of at the final commit where it would be harder to attribute to this specific step
+                        director_remuneration_rows_saved = director_remuneration_rows_parsed
+                    except Exception as e:
+                        db.session.rollback()
+                        app.logger.exception(f'Director remuneration save failed for {filename}')
+                        director_remuneration_save_error = str(e)
                     # Also populate the single-figure "Total Director
                     # Remuneration - As Filed" summary (OperationalMetric,
                     # same metric_name/shape the real-PDF path writes via
@@ -1468,7 +1503,7 @@ def upload_documents_batch():
                     # TOTAL" or not, and only trusting a single row when
                     # there's truly only one in the whole section - this
                     # must count the same way for the two paths to agree.
-                    if len(condensed['director_remuneration']) == 1:
+                    if len(condensed['director_remuneration']) == 1 and director_remuneration_save_error is None:
                         only_row = condensed['director_remuneration'][0]
                         existing_metric = OperationalMetric.query.filter_by(
                             period_id=period_row.id, metric_name='total_director_remuneration'
@@ -1506,6 +1541,18 @@ def upload_documents_batch():
                 'match_score': 1.0 if company_id and not created_company else 0.0,
                 'created_company': created_company, 'periods_saved': [period_label],
                 'prior_period_error': None, 'format': 'condensed',
+                # Diagnostics for the director-remuneration section
+                # specifically, surfaced here rather than only in server
+                # logs - added after a real case where the upload
+                # reported full success while every remuneration row had
+                # silently failed a step downstream of the main save, and
+                # there was no way to tell from the dialog alone. 0/0
+                # (parsed=0) just means the file's own
+                # ===DIRECTOR_REMUNERATION=== section was empty or absent -
+                # not an error.
+                'director_remuneration_rows_parsed': director_remuneration_rows_parsed,
+                'director_remuneration_rows_saved': director_remuneration_rows_saved,
+                'director_remuneration_save_error': director_remuneration_save_error,
             })
             continue
 
