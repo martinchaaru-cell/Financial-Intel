@@ -925,7 +925,7 @@ async function renderOverview(){
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i+1);
     const band = p.financial_score >= 70 ? 'strong' : p.financial_score >= 40 ? 'moderate' : 'weak';
     return `
-      <tr class="clickable" onclick="goToCompany(${p.id})">
+      <tr class="clickable" onclick="goToIntelligenceReport(${p.id})">
         <td class="rank-medal">${medal}</td>
         <td>${escapeHtml(p.name)}</td>
         <td><span class="score-badge score-${band}">${p.financial_score}/100</span></td>
@@ -1144,7 +1144,7 @@ function buildAttentionTable(issues){
     </div>`;
   }
   const rows = issues.map(i => `
-    <tr class="clickable" onclick="goToCompany(${i.company_id})">
+    <tr class="clickable" onclick="goToIntelligenceReport(${i.company_id})">
       <td><span class="company-flag">${escapeHtml(i.company_name.slice(0,1).toUpperCase())}</span>${escapeHtml(i.company_name)}</td>
       <td>${escapeHtml(i.issue)}</td>
       <td>${escapeHtml(i.metric)}</td>
@@ -1185,7 +1185,7 @@ function buildAlertsList(alerts){
     return `<div class="empty">No alerts or opportunities right now. These are detected from debt/equity, profit, and revenue changes vs the prior period.</div>`;
   }
   return alerts.map(a => `
-    <div class="alert-item clickable" onclick="goToCompany(${a.company_id})">
+    <div class="alert-item clickable" onclick="goToIntelligenceReport(${a.company_id})">
       <div>
         <div class="alert-title risk-${a.severity}">${escapeHtml(a.title)}</div>
         <div class="alert-company">${escapeHtml(a.company_name)}</div>
@@ -1670,16 +1670,11 @@ function renderCompaniesTable(filterText){
       `<td>${sparklineSvg(l ? l.score_trend : null)}</td>`,
       `<td>
         <div class="row-actions">
-          <button class="view-btn" onclick="event.stopPropagation();goToCompany(${c.id})">View</button>
-          <button class="row-menu-btn" onclick="event.stopPropagation();toggleRowMenu(${c.id}, event)" title="More">⋮</button>
-          <div class="row-menu hidden" id="rowMenu${c.id}">
-            <button onclick="event.stopPropagation();goToCompany(${c.id})">View details</button>
-            <button class="danger" onclick="event.stopPropagation();deleteCompany(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
-          </div>
+          <button class="view-btn" onclick="event.stopPropagation();goToIntelligenceReport(${c.id})">View</button>
         </div>
       </td>`,
     ].join('');
-    return `<tr class="clickable" onclick="goToCompany(${c.id})">${cells}</tr>`;
+    return `<tr class="clickable" onclick="goToIntelligenceReport(${c.id})">${cells}</tr>`;
   }).join('');
 
   const pageNumbers = [];
@@ -1732,7 +1727,19 @@ async function deleteCompany(companyId, companyName){
       return;
     }
     allCompaniesCache = allCompaniesCache.filter(c => c.id !== companyId);
-    renderCompaniesTable(coFilterText);
+    // Called from the Intelligence Report page (its own Delete button) -
+    // the company just deleted is the one currently being viewed, so
+    // there's nothing left here to refresh in place. Send the person
+    // back to the Companies list instead of trying to re-render a report
+    // for a company that no longer exists.
+    if (currentPage === 'companies') {
+      renderCompaniesTable(coFilterText);
+    } else {
+      currentCompanyId = null;
+      irLandingCompanyId = null;
+      irCache = null;
+      goTo('companies');
+    }
   } catch (err) {
     console.error('Delete failed:', err);
     alert('Delete failed — check the browser console for details.');
@@ -1820,7 +1827,7 @@ function renderRankingsTable(){
     const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i + 1);
     return `
-      <tr class="clickable" onclick="goToCompany(${c.id})">
+      <tr class="clickable" onclick="goToIntelligenceReport(${c.id})">
         <td class="rank-medal">${medal}</td>
         <td>
           <div class="co-cell">
@@ -1833,7 +1840,7 @@ function renderRankingsTable(){
         <td>${band ? `<span class="score-badge score-${band}">${l.financial_score}/100</span>` : '-'}</td>
         <td>${l && l.revenue !== null && l.revenue !== undefined ? fmtAmount(l.revenue) : '-'}</td>
         <td>${l && l.net_income !== null && l.net_income !== undefined ? fmtAmount(l.net_income) : '-'}</td>
-        <td><button class="view-btn" onclick="event.stopPropagation();goToCompany(${c.id})">View</button></td>
+        <td><button class="view-btn" onclick="event.stopPropagation();goToIntelligenceReport(${c.id})">View</button></td>
       </tr>`;
   }).join('');
 
@@ -2393,13 +2400,13 @@ async function renderAlertsPage(){
 
   const riskCards = data.risks.length ? data.risks.map(a => `
     <div class="alert-card">
-      <div class="alert-title clickable" onclick="goToCompany(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
+      <div class="alert-title clickable" onclick="goToIntelligenceReport(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
       <div class="alert-meta"><span class="severity-badge severity-${a.severity}">${a.severity}</span> · ${escapeHtml(a.metric)}</div>
     </div>`).join('') : '<div class="empty">No active risk flags.</div>';
 
   const oppCards = data.opportunities.length ? data.opportunities.map(a => `
     <div class="alert-card">
-      <div class="alert-title clickable" onclick="goToCompany(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
+      <div class="alert-title clickable" onclick="goToIntelligenceReport(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
       <div class="alert-meta"><span class="severity-badge severity-Positive">Positive</span> · ${escapeHtml(a.metric)}</div>
     </div>`).join('') : '<div class="empty">No standout opportunities detected right now.</div>';
 
@@ -2431,7 +2438,7 @@ async function renderReportsPage(){
 
   const rows = jobs.map(j => `
     <tr>
-      <td>${j.company_name ? `<span class="clickable" onclick="goToCompany(${j.company_id})">${escapeHtml(j.company_name)}</span>` : '-'}</td>
+      <td>${j.company_name ? `<span class="clickable" onclick="goToIntelligenceReport(${j.company_id})">${escapeHtml(j.company_name)}</span>` : '-'}</td>
       <td>${escapeHtml(j.period_label || '-')}</td>
       <td><span class="status-badge status-${escapeHtml(j.status)}">${escapeHtml(j.status)}</span></td>
       <td>${j.source_url ? `<a href="${escapeHtml(j.source_url)}" target="_blank" rel="noopener">Source PDF</a>` : '-'}</td>
@@ -2764,6 +2771,7 @@ async function renderIntelligenceReport(companyId, opts){
         <button class="secondary" onclick="compareSelectedIds=[${companyId}];goTo('compare');">⚖ Compare</button>
         <button class="btn-primary-cta" style="margin:0;" ${ir.has_data ? '' : 'disabled style="opacity:.5;"'}
           onclick="window.location.href='/api/companies/${companyId}/export/snapshot'">⭱ Export Report</button>
+        <button class="danger" onclick="deleteCompany(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
       </div>
     </div>`;
 
@@ -3395,6 +3403,15 @@ async function irRemunerationTab(ir){
   };
   const KIND_ORDER = ['executive', 'non_executive', 'ned_named_totals', 'fee_schedule', 'ltip', 'unknown'];
 
+  // Every value in DirectorRemunerationRow (components and total alike)
+  // is stored exactly as the filing prints it, which for this section
+  // is always Ksh '000 (see CONDENSED_FORMAT_SPEC.md's note on
+  // ===DIRECTOR_REMUNERATION===) - regardless of the unit the rest of
+  // the filing's statements use. Multiplying by 1000 here shows the
+  // reader the actual full-value figure instead of relying on a "in
+  // '000s" caption next to smaller numbers.
+  const fmtRemAmount = (val) => (val === null || val === undefined) ? '–' : fmtAmount(Number(val) * 1000);
+
   const renderKindTable = (rows) => {
     const cols = [];
     rows.forEach(r => {
@@ -3415,10 +3432,10 @@ async function irRemunerationTab(ir){
           ${rows.map(r => {
             const bold = r.is_grand_total || r.is_total_row;
             const wrap = (html) => bold ? `<b>${html}</b>` : html;
-            const totalCell = (r.total === null || r.total === undefined) ? '–' : fmtAmount(r.total);
+            const totalCell = (r.total === null || r.total === undefined) ? '–' : fmtRemAmount(r.total);
             return `<tr><td>${wrap(escapeHtml(r.director_name))}</td>${cols.map(c => {
               const v = r.components ? r.components[c] : null;
-              const cell = (v === null || v === undefined) ? '–' : fmtAmount(v);
+              const cell = (v === null || v === undefined) ? '–' : fmtRemAmount(v);
               return `<td class="amount">${wrap(cell)}</td>`;
             }).join('')}${hasTotalCol ? `<td class="amount">${wrap(totalCell)}</td>` : ''}</tr>`;
           }).join('')}
@@ -3434,10 +3451,6 @@ async function irRemunerationTab(ir){
     return `
       <div class="panel">
         <div class="ir-panel-title">${escapeHtml(period)} — Directors' Remuneration Report</div>
-        <div style="font-size:10.5px;color:var(--text-faint);margin-top:-4px;margin-bottom:12px;">
-          Amounts in Ksh '000, as filed — this section is always reported in thousands regardless of the
-          unit (e.g. millions) used elsewhere in this filing's financial statements.
-        </div>
         ${kindsPresent.map(k => `
           <div style="margin-bottom:16px;">
             <div style="font-weight:700;font-size:12px;margin-bottom:6px;color:var(--text-dim);">${KIND_LABEL[k] || k}</div>
@@ -3472,11 +3485,11 @@ async function irRemunerationTab(ir){
       <table>
         <thead><tr><th>Period</th><th class="amount">Non-Executive Directors</th><th class="amount">Executive Directors</th><th class="amount">Combined</th></tr></thead>
         <tbody>
-          ${combinedRows.map(c => `<tr><td>${escapeHtml(c.period)}</td><td class="amount">${c.nedTotal !== null ? fmtAmount(c.nedTotal) : '–'}</td><td class="amount">${fmtAmount(c.execSum)}</td><td class="amount"><b>${fmtAmount(c.combined)}</b></td></tr>`).join('')}
+          ${combinedRows.map(c => `<tr><td>${escapeHtml(c.period)}</td><td class="amount">${c.nedTotal !== null ? fmtRemAmount(c.nedTotal) : '–'}</td><td class="amount">${fmtRemAmount(c.execSum)}</td><td class="amount"><b>${fmtRemAmount(c.combined)}</b></td></tr>`).join('')}
         </tbody>
       </table>
       <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">
-        Sum of the filing's own printed totals only — never re-derived from individual line items. Amounts in Ksh '000, as filed.
+        Sum of the filing's own printed totals only — never re-derived from individual line items.
       </div>
     </div>` : '';
 
@@ -3497,9 +3510,6 @@ async function irRemunerationTab(ir){
       yoyPanel = `
         <div class="panel">
           <div class="ir-panel-title">Year-over-Year — per director</div>
-          <div style="font-size:10px;color:var(--text-faint);margin-top:-6px;margin-bottom:10px;">
-            Amounts in Ksh '000, as filed.
-          </div>
           <table>
             <thead><tr><th>Director</th>${periods.map(p => `<th class="amount">${escapeHtml(p)}</th>`).join('')}<th class="amount">Change</th></tr></thead>
             <tbody>
@@ -3508,7 +3518,7 @@ async function irRemunerationTab(ir){
                 const present = vals.filter(v => v !== undefined && v !== null);
                 const first = present[0], last = present[present.length - 1];
                 const pct = (first && last && first !== 0 && first !== last) ? ((last - first) / first * 100) : (first === last ? 0 : null);
-                return `<tr><td>${escapeHtml(n)}</td>${vals.map(v => `<td class="amount">${(v === undefined || v === null) ? '–' : fmtAmount(v)}</td>`).join('')}<td class="amount">${pct !== null ? (pct >= 0 ? '+' : '') + fmt(pct) + '%' : '–'}</td></tr>`;
+                return `<tr><td>${escapeHtml(n)}</td>${vals.map(v => `<td class="amount">${(v === undefined || v === null) ? '–' : fmtRemAmount(v)}</td>`).join('')}<td class="amount">${pct !== null ? (pct >= 0 ? '+' : '') + fmt(pct) + '%' : '–'}</td></tr>`;
               }).join('')}
             </tbody>
           </table>
