@@ -79,8 +79,34 @@ FIELD_MAP = {
         'CEOMonthlyGratuity': 'ceo_monthly_gratuity',
         'CEOMonthlyShareValue': 'ceo_monthly_share_value',
         'CEOMonthlyCostOfEmployment': 'ceo_monthly_cost_of_employment',
+        'CEOAnnualSalaryAsStated': 'ceo_annual_salary_as_stated',
+        'CEOMonthlyConversionBasis': 'ceo_monthly_conversion_basis',
+    },
+    'NED_BENEFITS': {
+        'MedicalCover': 'MedicalCover',
+        'IndemnityInsurance': 'IndemnityInsurance',
+        'TravelAccommodation': 'TravelAccommodation',
+        'TelephoneAllowance': 'TelephoneAllowance',
+        'TransportAllowance': 'TransportAllowance',
+        'MealAllowance': 'MealAllowance',
+        'ClubMembership': 'ClubMembership',
+        'DutyDayAllowance': 'DutyDayAllowance',
+        'GroupPersonalAccident': 'GroupPersonalAccident',
+        'ShareSchemeParticipation': 'ShareSchemeParticipation',
     },
 }
+
+# FieldName (as written in the file, either a data field or a NED_BENEFITS
+# key) -> SurveyCompanyData column name. Used to validate SOURCE style-1
+# lines ("FieldName: page ref") against real fields before recording them
+# in field_sources - an unrecognized name falls back to a general note
+# instead of being silently dropped.
+_ALL_FIELD_NAMES = {}
+for _section, _fields in FIELD_MAP.items():
+    if _section == 'NED_BENEFITS':
+        continue
+    _ALL_FIELD_NAMES.update(_fields)
+SOURCE_FIELD_RE = re.compile(r'^([A-Za-z][A-Za-z0-9]*)\s*:\s*(.+)$')
 
 INT_FIELDS = {
     'board_size', 'board_meetings_per_year', 'committees_per_board',
@@ -101,8 +127,14 @@ FLOAT_FIELDS = {
     'ceo_monthly_salary', 'ceo_monthly_allowances', 'ceo_monthly_incentive_bonus',
     'ceo_monthly_deferred_incentive', 'ceo_monthly_non_cash_benefits',
     'ceo_monthly_pension', 'ceo_monthly_gratuity', 'ceo_monthly_share_value',
-    'ceo_monthly_cost_of_employment',
+    'ceo_monthly_cost_of_employment', 'ceo_annual_salary_as_stated',
 }
+
+# Yes/No benefit fields take a leading Yes/No/Reimbursed/Catered token,
+# optionally followed by " — detail text" or " - detail text". Only the
+# leading token is used for aggregation; detail is kept for the company
+# drill-down page.
+BENEFIT_VALUE_RE = re.compile(r'^(Yes|No|Reimbursed|Catered)\s*(?:[—-]\s*(.*))?$', re.IGNORECASE)
 
 
 def is_survey_data_format(text: str) -> bool:
@@ -112,7 +144,7 @@ def is_survey_data_format(text: str) -> bool:
     is_condensed_format()."""
     return bool(re.search(r'^===COMPANY===\s*$', text, re.MULTILINE)) and \
         bool(re.search(r'^===PERIOD===\s*$', text, re.MULTILINE)) and \
-        bool(re.search(r'^===(PERFORMANCE|BOARD_COMPOSITION|DIRECTOR_PAY|COMMITTEE_PAY|CEO_PAY)===\s*$', text, re.MULTILINE))
+        bool(re.search(r'^===(PERFORMANCE|BOARD_COMPOSITION|DIRECTOR_PAY|COMMITTEE_PAY|CEO_PAY|NED_BENEFITS)===\s*$', text, re.MULTILINE))
 
 
 def _num(token):
@@ -133,7 +165,9 @@ def parse_survey_data(text: str) -> dict:
     present in the text are simply absent from the dict - the caller
     should treat a missing key as None/not-disclosed, never as 0."""
     result = {}
-    source_lines = []
+    source_notes_lines = []
+    field_sources = {}
+    ned_benefits = {}
     current_section = None
 
     for raw_line in text.splitlines():
@@ -148,7 +182,35 @@ def parse_survey_data(text: str) -> dict:
             continue
 
         if current_section == 'SOURCE':
-            source_lines.append(stripped)
+            # Style 1: "FieldName: page ref [— derivation note]" where
+            # FieldName matches a real field elsewhere in this file -
+            # recorded per-field. Anything else (including a FieldName we
+            # don't recognize) falls back to a general note, never dropped.
+            m = SOURCE_FIELD_RE.match(stripped)
+            if m and m.group(1) in _ALL_FIELD_NAMES:
+                column = _ALL_FIELD_NAMES[m.group(1)]
+                field_sources[column] = m.group(2).strip()
+            else:
+                source_notes_lines.append(stripped)
+            continue
+
+        if current_section == 'NED_BENEFITS':
+            field_match = FIELD_RE.match(stripped)
+            if not field_match:
+                continue
+            field_name, value = field_match.group(1), field_match.group(2).strip()
+            if field_name not in FIELD_MAP['NED_BENEFITS']:
+                continue
+            benefit_match = BENEFIT_VALUE_RE.match(value)
+            if not benefit_match:
+                # Doesn't parse as Yes/No/Reimbursed/Catered - skip rather
+                # than guess, same discipline as everywhere else.
+                continue
+            token, detail = benefit_match.group(1), benefit_match.group(2)
+            entry = {'provided': token.lower() != 'no', 'stated_as': token}
+            if detail:
+                entry['detail'] = detail.strip()
+            ned_benefits[field_name] = entry
             continue
 
         if current_section not in FIELD_MAP:
@@ -170,11 +232,16 @@ def parse_survey_data(text: str) -> dict:
         elif column in FLOAT_FIELDS:
             result[column] = _num(value)
         else:
-            # plain string fields: sector, currency, unit, fiscal_year
+            # plain string fields: sector, currency, unit, fiscal_year,
+            # ceo_monthly_conversion_basis
             result[column] = value
 
-    if source_lines:
-        result['source_notes'] = '\n'.join(source_lines)
+    if source_notes_lines:
+        result['source_notes'] = '\n'.join(source_notes_lines)
+    if field_sources:
+        result['field_sources'] = field_sources
+    if ned_benefits:
+        result['ned_benefits'] = ned_benefits
 
     return result
 

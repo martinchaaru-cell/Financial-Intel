@@ -197,6 +197,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 
 .row{display:grid;gap:14px;margin-bottom:14px;}
 .row-3{grid-template-columns:1fr 1.3fr 1fr;}
+.row-2{grid-template-columns:1fr 1fr;}
 .row-4{grid-template-columns:repeat(4,1fr);}
 .chart-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
 .co-breadcrumb{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-faint);margin-bottom:14px;flex-wrap:wrap;}
@@ -2566,10 +2567,20 @@ function surveyMetricRow(label, metric, opts){
   const suffix = opts.suffix || '';
   const prefix = opts.prefix || '';
   if (!metric || metric.average === null || metric.average === undefined) {
-    const countNote = metric && metric.company_count ? ` (${metric.company_count} of ${metric.company_count < 2 ? '2+ needed' : metric.company_count} companies)` : '';
+    const countNote = metric && metric.company_count ? ` (${metric.company_count} of 2+ needed)` : '';
     return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span>${naSpan('Not enough companies have supplied this figure yet' + countNote)}</div>`;
   }
-  return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span><span style="font-weight:700;">${prefix}${fmt(metric.average, decimals)}${suffix}</span></div>`;
+  const hasPercentiles = metric.p25 !== undefined && metric.p25 !== null;
+  const percentileNote = hasPercentiles
+    ? `<div style="font-size:11px;color:var(--text-dim);margin-top:1px;">25th: ${prefix}${fmt(metric.p25, decimals)}${suffix} &nbsp;·&nbsp; 50th: ${prefix}${fmt(metric.p50, decimals)}${suffix} &nbsp;·&nbsp; 75th: ${prefix}${fmt(metric.p75, decimals)}${suffix}</div>`
+    : '';
+  return `<div class="ir-kv-row" style="flex-direction:column;align-items:flex-start;">
+    <div style="display:flex;justify-content:space-between;width:100%;">
+      <span class="k">${escapeHtml(label)}</span>
+      <span style="font-weight:700;">${prefix}${fmt(metric.average, decimals)}${suffix}</span>
+    </div>
+    ${percentileNote}
+  </div>`;
 }
 
 function renderSurveyBody(overview){
@@ -2594,6 +2605,7 @@ function renderSurveyBody(overview){
   const bo = overview.board_overview;
   const dr = overview.directors_remuneration;
   const cr = overview.committee_remuneration;
+  const cp = overview.ceo_remuneration;
   const unitLabel = overview.unit || 'millions';
   const yearPicker = overview.available_fiscal_years.length > 1
     ? `<select onchange="surveyFiscalYear=this.value;renderSurveyPage();" style="margin-left:10px;">
@@ -2609,9 +2621,9 @@ function renderSurveyBody(overview){
       </div>
       <div class="stat-grid">
         ${statCard('blue', '🏢', overview.companies_surveyed, 'Companies Surveyed')}
-        ${statCard('green', '💰', es.avg_turnover !== null ? fmtAmount(es.avg_turnover) : 'Not enough data', `Avg. Turnover (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
-        ${statCard('purple', '📈', es.avg_net_profit !== null ? fmtAmount(es.avg_net_profit) : 'Not enough data', `Avg. Net Profit (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
-        ${statCard('amber', '%', es.avg_profit_margin !== null ? fmt(es.avg_profit_margin) + '%' : 'Not enough data', 'Avg. Profit Margin')}
+        ${statCard('green', '💰', es.avg_turnover.average !== null ? fmtAmount(es.avg_turnover.average) : 'Not enough data', `Avg. Turnover (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
+        ${statCard('purple', '📈', es.avg_net_profit.average !== null ? fmtAmount(es.avg_net_profit.average) : 'Not enough data', `Avg. Net Profit (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
+        ${statCard('amber', '%', es.avg_profit_margin.average !== null ? fmt(es.avg_profit_margin.average) + '%' : 'Not enough data', 'Avg. Profit Margin')}
       </div>
     </div>
 
@@ -2675,21 +2687,59 @@ function renderSurveyBody(overview){
       </div>
     </div>
 
+    <div class="row row-2">
+      <div class="panel">
+        <div class="ir-panel-title">CEO/MD Remuneration — Monthly (${escapeHtml(overview.currency)})</div>
+        <div class="ir-kv-list">
+          ${surveyMetricRow('Salary', cp.ceo_monthly_salary, {decimals: 0})}
+          ${surveyMetricRow('Allowances', cp.ceo_monthly_allowances, {decimals: 0})}
+          ${surveyMetricRow('Incentives / Bonus', cp.ceo_monthly_incentive_bonus, {decimals: 0})}
+          ${surveyMetricRow('Deferred Incentive', cp.ceo_monthly_deferred_incentive, {decimals: 0})}
+          ${surveyMetricRow('Non-Cash Benefits', cp.ceo_monthly_non_cash_benefits, {decimals: 0})}
+          ${surveyMetricRow('Pension', cp.ceo_monthly_pension, {decimals: 0})}
+          ${surveyMetricRow('Gratuity', cp.ceo_monthly_gratuity, {decimals: 0})}
+          ${surveyMetricRow('Share Value', cp.ceo_monthly_share_value, {decimals: 0})}
+          ${surveyMetricRow('Monthly Cost of Employment', cp.ceo_monthly_cost_of_employment, {decimals: 0})}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">NED Benefits — % of Companies Providing</div>
+        <div class="ir-kv-list">
+          ${Object.entries(overview.ned_benefits_summary || {}).map(([key, b]) => `
+            <div class="ir-kv-row"><span class="k">${escapeHtml(key.replace(/([A-Z])/g, ' $1').trim())}</span>${
+              b.percent_provided !== null
+                ? `<span style="font-weight:700;">${fmt(b.percent_provided, 1)}%</span>`
+                : naSpan(`No companies have addressed this benefit yet`)
+            }</div>`).join('')}
+        </div>
+      </div>
+    </div>
+
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-head"><h2>Comparative Analysis — by Sector</h2></div>
+      <div style="overflow-x:auto;">
       <table>
-        <thead><tr><th>Sector</th><th>Companies</th><th>Avg. Other NED Annual Retainer</th></tr></thead>
+        <thead><tr>
+          <th>Sector</th><th>Companies</th>
+          <th>Avg. Chair Meeting Allowance</th>
+          <th>Avg. Other NED Meeting Allowance</th>
+          <th>Avg. Other NED Annual Retainer</th>
+          <th>Avg. CEO Monthly Salary</th>
+        </tr></thead>
         <tbody>
           ${overview.sector_comparison.map(s => `
             <tr>
               <td>${escapeHtml(s.sector)}</td>
               <td>${s.company_count}</td>
-              <td>${s.avg_other_ned_annual_retainer !== null
-                ? `${escapeHtml(overview.currency)} ${fmtAmount(s.avg_other_ned_annual_retainer)}`
-                : naSpan(`Only ${s.avg_other_ned_annual_retainer_company_count} of ${s.company_count} companies in this sector supplied this figure`)}</td>
+              ${['chairperson_meeting_allowance', 'other_ned_meeting_allowance', 'other_ned_annual_retainer', 'ceo_monthly_salary'].map(f => `
+                <td>${s[`avg_${f}`] !== null
+                  ? `${escapeHtml(overview.currency)} ${fmtAmount(s[`avg_${f}`])}`
+                  : naSpan(`Only ${s[`avg_${f}_company_count`]} of ${s.company_count} companies in this sector supplied this figure`)}</td>
+              `).join('')}
             </tr>`).join('')}
         </tbody>
       </table>
+      </div>
     </div>
 
     <div class="panel">

@@ -97,13 +97,58 @@ DIRECTOR_PAY asks for the chairperson/average NED figure)
     CEOMonthlyShareValue: <value>
     CEOMonthlyCostOfEmployment: <value>        # total, only if the filing states one directly - do not compute by summing the fields above yourself, since a filing's own total may use a different basis (e.g. annual components spread differently across months)
 
+    # Optional derivation trail - fill in ONLY if CEOMonthly* figures above
+    # were converted from an annual/named-individual disclosure rather than
+    # transcribed directly. Leave both blank if the filing states monthly
+    # company-level figures itself.
+    CEOAnnualSalaryAsStated: <value>           # the filing's own annual figure, pre-conversion
+    CEOMonthlyConversionBasis: <string>        # e.g. "annual / 12"
+
+## ===NED_BENEFITS===
+(Directors' benefits / perquisites, usually narrative in the filing rather
+than tabular. Company-level: does the company provide this benefit to its
+NEDs, not a per-director figure. Each field takes `Yes`, `No`, or `Yes —
+<detail>` / `No — <detail>` if the filing gives specifics worth keeping.
+Same discipline as everywhere else: omit the field entirely if the filing
+doesn't address it, do not write `No` as a guess.)
+
+    MedicalCover: <Yes|No> [— detail]
+    IndemnityInsurance: <Yes|No> [— detail]
+    TravelAccommodation: <Yes|No|Reimbursed|Catered> [— detail]
+    TelephoneAllowance: <Yes|No> [— detail]
+    TransportAllowance: <Yes|No> [— detail]
+    MealAllowance: <Yes|No> [— detail]
+    ClubMembership: <Yes|No> [— detail]
+    DutyDayAllowance: <Yes|No> [— detail]
+    GroupPersonalAccident: <Yes|No> [— detail]
+    ShareSchemeParticipation: <Yes|No> [— detail]
+
 ## ===SOURCE===
-Optional, free text — page numbers / where each section's figures came
-from in the original filing, for traceability.
+Optional. Two styles, and both can appear in the same file:
+
+1. Per-field (preferred where practical) — lets the company page show a
+   source next to each individual figure:
+
+    FieldName: page reference [— derivation note]
+
+   FieldName must match a field name used elsewhere in this file exactly
+   (e.g. `Turnover`, `ChairpersonAnnualRetainer`, `CEOMonthlySalary`).
+   Add a derivation note after the page reference for any figure that
+   required interpretation - a pooled multi-entity total, an
+   annual-to-monthly conversion, etc - so the reasoning is visible next
+   to the number it produced, not buried in prose elsewhere.
+
+2. Section-level free text (fallback, or for anything that doesn't map
+   to one field) — a line that isn't `FieldName: ...` for a recognized
+   field name is treated as general notes rather than discarded:
 
     Performance: pages 2, 5
     BoardComposition: pages 16-17, 33-35, 72
-    DirectorPay: pages 74-75
+    NotIncluded: <explanation of what was left out and why>
+
+   Use this style for methodology caveats that don't belong to one
+   field - e.g. explaining that a whole section was omitted because the
+   filing only discloses a pooled/multi-entity figure.
 
 ## Notes
 

@@ -104,7 +104,29 @@ class SurveyCompanyData(db.Model):
     ceo_monthly_share_value = db.Column(db.Float)
     ceo_monthly_cost_of_employment = db.Column(db.Float)  # total - stated by the filing itself if given, else left NULL rather than summed here (avoids double-counting/mismatched figures if a filing's own total uses a different basis than the sum of components above)
 
-    source_notes = db.Column(db.Text)   # free text — where in the filing each figure came from, optional
+    # Optional CEO pay derivation trail - populated only when the
+    # ceo_monthly_* figures above were converted/derived rather than
+    # transcribed directly (e.g. filing states an annual, named-individual
+    # figure). Lets the company drill-down page show its arithmetic instead
+    # of presenting a monthly figure as if the filing printed it directly.
+    ceo_annual_salary_as_stated = db.Column(db.Float)
+    ceo_monthly_conversion_basis = db.Column(db.String(120))   # e.g. "annual / 12"
+
+    # ---- NED benefits (qualitative - Directors' Benefits tab) ----
+    # {"MedicalCover": {"provided": true, "detail": "..."}, "ClubMembership": {"provided": false}, ...}
+    # Keys are the same field names as NED_BENEFITS in SURVEY_FORMAT_SPEC.md.
+    # A key absent from the dict means the filing didn't address that
+    # benefit at all - never inferred or defaulted to False.
+    ned_benefits = db.Column(db.JSON)
+
+    source_notes = db.Column(db.Text)   # free text — methodology-level notes that don't map to one field (see SOURCE section style 2)
+
+    # Per-field sources - {"turnover": "page 11", "chairperson_annual_retainer": "page 75 — derived: pooled across subsidiaries"}
+    # Keys are SurveyCompanyData column names (snake_case), populated from
+    # the SOURCE section's style-1 "FieldName: page ref" lines. Lets the
+    # company page show a citation next to each individual figure instead
+    # of one undifferentiated paragraph for the whole company.
+    field_sources = db.Column(db.JSON)
 
     __table_args__ = (
         db.UniqueConstraint('company_id', 'fiscal_year', name='uq_survey_company_fiscal_year'),
@@ -158,5 +180,9 @@ class SurveyCompanyData(db.Model):
             'ceo_monthly_gratuity': self.ceo_monthly_gratuity,
             'ceo_monthly_share_value': self.ceo_monthly_share_value,
             'ceo_monthly_cost_of_employment': self.ceo_monthly_cost_of_employment,
+            'ceo_annual_salary_as_stated': self.ceo_annual_salary_as_stated,
+            'ceo_monthly_conversion_basis': self.ceo_monthly_conversion_basis,
+            'ned_benefits': self.ned_benefits,
             'source_notes': self.source_notes,
+            'field_sources': self.field_sources,
         }

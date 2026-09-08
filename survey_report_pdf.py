@@ -81,21 +81,26 @@ def _fmt_amount(value):
     return f'{sign}{v:.0f}'
 
 
-def _fmt_metric(metric, currency='', suffix='', decimals=0, is_amount=False):
-    """metric is {'average': float|None, 'company_count': int} as
-    produced by survey_aggregate.py. Renders the honest not-enough-data
-    fallback rather than ever showing 0 or blank for a genuinely
-    missing figure."""
+def _fmt_metric(metric, currency='', suffix='', decimals=0, is_amount=False, with_percentiles=False):
+    """metric is {'average': float|None, 'p25'/'p50'/'p75': float|None,
+    'company_count': int} as produced by survey_aggregate.py. Renders the
+    honest not-enough-data fallback rather than ever showing 0 or blank
+    for a genuinely missing figure. with_percentiles=True appends the
+    25th/50th/75th percentile breakdown, matching the source survey PDF's
+    percentile-table convention for compensation figures."""
     if metric is None or metric.get('average') is None:
         count = (metric or {}).get('company_count', 0)
         return f'{NOT_ENOUGH_DATA} ({count} of 2+ companies)'
-    val = metric['average']
-    if is_amount:
-        body = _fmt_amount(val)
-    else:
-        body = f'{val:.{decimals}f}'
-    prefix = f'{currency} ' if currency else ''
-    return f'{prefix}{body}{suffix}'
+
+    def _one(val):
+        body = _fmt_amount(val) if is_amount else f'{val:.{decimals}f}'
+        prefix = f'{currency} ' if currency else ''
+        return f'{prefix}{body}{suffix}'
+
+    out = _one(metric['average'])
+    if with_percentiles and metric.get('p25') is not None:
+        out += f"  (25th: {_one(metric['p25'])} · 50th: {_one(metric['p50'])} · 75th: {_one(metric['p75'])})"
+    return out
 
 
 def _fmt_total(value):
@@ -214,7 +219,8 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(Paragraph('Contents', styles['H2']))
     toc_items = [
         '1. Executive Summary', '2. Board Overview', '3. Directors&rsquo; Remuneration',
-        '4. Committee Remuneration', '5. Comparative Analysis', '6. Appendix — Companies Surveyed',
+        '4. Committee Remuneration', '5. CEO/MD Remuneration', '6. NED Benefits',
+        '7. Comparative Analysis', '8. Appendix — Companies Surveyed',
     ]
     for item in toc_items:
         story.append(Paragraph(item, styles['Body']))
@@ -227,9 +233,9 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     es = overview['executive_summary']
     kpis = [
         ('Companies Surveyed', str(n)),
-        ('Avg. Turnover', _fmt_metric({'average': es['avg_turnover'], 'company_count': n}, currency, is_amount=True) if es['avg_turnover'] is not None else NOT_ENOUGH_DATA),
-        ('Avg. Net Profit', _fmt_metric({'average': es['avg_net_profit'], 'company_count': n}, currency, is_amount=True) if es['avg_net_profit'] is not None else NOT_ENOUGH_DATA),
-        ('Avg. Profit Margin', f"{es['avg_profit_margin']:.1f}%" if es['avg_profit_margin'] is not None else NOT_ENOUGH_DATA),
+        ('Avg. Turnover', _fmt_metric(es['avg_turnover'], currency, is_amount=True)),
+        ('Avg. Net Profit', _fmt_metric(es['avg_net_profit'], currency, is_amount=True)),
+        ('Avg. Profit Margin', _fmt_metric(es['avg_profit_margin'], suffix='%')),
     ]
     story.append(_kpi_table(kpis, styles))
     story.append(Spacer(1, 12))
@@ -288,17 +294,17 @@ def build_survey_pdf(overview: dict) -> BytesIO:
 
     dr = overview['directors_remuneration']
     ned_rows = [
-        ('Chairperson Annual Retainer', _fmt_metric(dr['chairperson_annual_retainer'], currency, is_amount=True)),
-        ('Other NED Annual Retainer', _fmt_metric(dr['other_ned_annual_retainer'], currency, is_amount=True)),
-        ('Chairperson Meeting Allowance (per meeting)', _fmt_metric(dr['chairperson_meeting_allowance'], currency, is_amount=True)),
-        ('Other NED Meeting Allowance (per meeting)', _fmt_metric(dr['other_ned_meeting_allowance'], currency, is_amount=True)),
+        ('Chairperson Annual Retainer', _fmt_metric(dr['chairperson_annual_retainer'], currency, is_amount=True, with_percentiles=True)),
+        ('Other NED Annual Retainer', _fmt_metric(dr['other_ned_annual_retainer'], currency, is_amount=True, with_percentiles=True)),
+        ('Chairperson Meeting Allowance (per meeting)', _fmt_metric(dr['chairperson_meeting_allowance'], currency, is_amount=True, with_percentiles=True)),
+        ('Other NED Meeting Allowance (per meeting)', _fmt_metric(dr['other_ned_meeting_allowance'], currency, is_amount=True, with_percentiles=True)),
     ]
     story.append(_kv_panel('Chairperson vs. Other Non-Executive Directors', ned_rows, styles))
     story.append(Spacer(1, 10))
 
     ed_rows = [
-        ('Executive Director Annual Retainer', _fmt_metric(dr['executive_director_annual_retainer'], currency, is_amount=True)),
-        ('Executive Director Meeting Allowance (per meeting)', _fmt_metric(dr['executive_director_meeting_allowance'], currency, is_amount=True)),
+        ('Executive Director Annual Retainer', _fmt_metric(dr['executive_director_annual_retainer'], currency, is_amount=True, with_percentiles=True)),
+        ('Executive Director Meeting Allowance (per meeting)', _fmt_metric(dr['executive_director_meeting_allowance'], currency, is_amount=True, with_percentiles=True)),
     ]
     story.append(_kv_panel('Executive Directors', ed_rows, styles))
 
@@ -309,10 +315,10 @@ def build_survey_pdf(overview: dict) -> BytesIO:
 
     cr = overview['committee_remuneration']
     committee_rows = [
-        ('Committee Chair Annual Retainer', _fmt_metric(cr['committee_chair_annual_retainer'], currency, is_amount=True)),
-        ('Committee Member Annual Retainer', _fmt_metric(cr['committee_member_annual_retainer'], currency, is_amount=True)),
-        ('Committee Chair Meeting Allowance (per meeting)', _fmt_metric(cr['committee_chair_meeting_allowance'], currency, is_amount=True)),
-        ('Committee Member Meeting Allowance (per meeting)', _fmt_metric(cr['committee_member_meeting_allowance'], currency, is_amount=True)),
+        ('Committee Chair Annual Retainer', _fmt_metric(cr['committee_chair_annual_retainer'], currency, is_amount=True, with_percentiles=True)),
+        ('Committee Member Annual Retainer', _fmt_metric(cr['committee_member_annual_retainer'], currency, is_amount=True, with_percentiles=True)),
+        ('Committee Chair Meeting Allowance (per meeting)', _fmt_metric(cr['committee_chair_meeting_allowance'], currency, is_amount=True, with_percentiles=True)),
+        ('Committee Member Meeting Allowance (per meeting)', _fmt_metric(cr['committee_member_meeting_allowance'], currency, is_amount=True, with_percentiles=True)),
     ]
     story.append(_kv_panel('Committee Chair vs. Member', committee_rows, styles))
 
@@ -323,22 +329,51 @@ def build_survey_pdf(overview: dict) -> BytesIO:
 
     cp = overview['ceo_remuneration']
     ceo_rows = [
-        ('Salary (monthly)', _fmt_metric(cp['ceo_monthly_salary'], currency, is_amount=True)),
-        ('Allowances (monthly)', _fmt_metric(cp['ceo_monthly_allowances'], currency, is_amount=True)),
-        ('Incentives/Bonus (monthly)', _fmt_metric(cp['ceo_monthly_incentive_bonus'], currency, is_amount=True)),
-        ('Deferred Incentive (monthly)', _fmt_metric(cp['ceo_monthly_deferred_incentive'], currency, is_amount=True)),
-        ('Non-Cash Benefits (monthly)', _fmt_metric(cp['ceo_monthly_non_cash_benefits'], currency, is_amount=True)),
-        ('Pension (monthly)', _fmt_metric(cp['ceo_monthly_pension'], currency, is_amount=True)),
-        ('Gratuity (monthly)', _fmt_metric(cp['ceo_monthly_gratuity'], currency, is_amount=True)),
-        ('Share Value (monthly)', _fmt_metric(cp['ceo_monthly_share_value'], currency, is_amount=True)),
-        ('Monthly Cost of Employment (total)', _fmt_metric(cp['ceo_monthly_cost_of_employment'], currency, is_amount=True)),
+        ('Salary (monthly)', _fmt_metric(cp['ceo_monthly_salary'], currency, is_amount=True, with_percentiles=True)),
+        ('Allowances (monthly)', _fmt_metric(cp['ceo_monthly_allowances'], currency, is_amount=True, with_percentiles=True)),
+        ('Incentives/Bonus (monthly)', _fmt_metric(cp['ceo_monthly_incentive_bonus'], currency, is_amount=True, with_percentiles=True)),
+        ('Deferred Incentive (monthly)', _fmt_metric(cp['ceo_monthly_deferred_incentive'], currency, is_amount=True, with_percentiles=True)),
+        ('Non-Cash Benefits (monthly)', _fmt_metric(cp['ceo_monthly_non_cash_benefits'], currency, is_amount=True, with_percentiles=True)),
+        ('Pension (monthly)', _fmt_metric(cp['ceo_monthly_pension'], currency, is_amount=True, with_percentiles=True)),
+        ('Gratuity (monthly)', _fmt_metric(cp['ceo_monthly_gratuity'], currency, is_amount=True, with_percentiles=True)),
+        ('Share Value (monthly)', _fmt_metric(cp['ceo_monthly_share_value'], currency, is_amount=True, with_percentiles=True)),
+        ('Monthly Cost of Employment (total)', _fmt_metric(cp['ceo_monthly_cost_of_employment'], currency, is_amount=True, with_percentiles=True)),
     ]
     story.append(_kv_panel('CEO/MD Compensation Components', ceo_rows, styles))
+
+    # ================= NED BENEFITS =================
+    _section_divider(story, styles, 'NED Benefits', 'Non-cash benefits and perquisites offered to Non-Executive Directors')
+    story.append(PageBreak())
+    story.append(Paragraph('6. NED Benefits', styles['H2']))
+
+    benefits = overview.get('ned_benefits_summary', {})
+    benefit_labels = {
+        'MedicalCover': 'Medical Cover',
+        'IndemnityInsurance': 'Indemnity / Liability Insurance',
+        'TravelAccommodation': 'Travel & Accommodation',
+        'TelephoneAllowance': 'Telephone Allowance',
+        'TransportAllowance': 'Transport Allowance',
+        'MealAllowance': 'Meal Allowance',
+        'ClubMembership': 'Club Membership',
+        'DutyDayAllowance': 'Duty Day Allowance',
+        'GroupPersonalAccident': 'Group Personal Accident',
+        'ShareSchemeParticipation': 'Remuneration via Share Schemes',
+    }
+    benefit_rows = []
+    for key, label in benefit_labels.items():
+        b = benefits.get(key, {})
+        pct = b.get('percent_provided')
+        count = b.get('companies_addressing', 0)
+        if pct is None:
+            benefit_rows.append((label, f'{NOT_ENOUGH_DATA} (0 companies addressed this)'))
+        else:
+            benefit_rows.append((label, f'{pct:.1f}% of {count} compan{"y" if count == 1 else "ies"} that addressed this'))
+    story.append(_kv_panel('% of Companies Providing Each Benefit', benefit_rows, styles))
 
     # ================= COMPARATIVE ANALYSIS =================
     _section_divider(story, styles, 'Comparative Analysis', 'Sector-by-sector comparison')
     story.append(PageBreak())
-    story.append(Paragraph('6. Comparative Analysis — by Sector', styles['H2']))
+    story.append(Paragraph('7. Comparative Analysis — by Sector', styles['H2']))
 
     sector_table_data = [[
         Paragraph('Sector', styles['TableHeader']),
@@ -374,7 +409,7 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     # ================= APPENDIX =================
     _section_divider(story, styles, 'Appendix', 'Companies surveyed and data sources')
     story.append(PageBreak())
-    story.append(Paragraph('7. Appendix — Companies Surveyed', styles['H2']))
+    story.append(Paragraph('8. Appendix — Companies Surveyed', styles['H2']))
     story.append(Paragraph(
         f'This survey draws on {n} compan{"y" if n == 1 else "ies"}&rsquo;{"s" if n == 1 else ""} own filings, '
         f'uploaded individually to FinSight. Unlike a single aggregate survey document, this list — and every '
