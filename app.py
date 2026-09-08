@@ -1374,11 +1374,19 @@ def upload_documents_batch():
         # work - only decoded as UTF-8 text once that marker is found,
         # so a real PDF's binary bytes are never treated as this format.
         is_condensed = False
+        is_survey_data = False
         try:
             sniff_text = pdf_bytes[:4096].decode('utf-8', errors='ignore')
             is_condensed = is_condensed_format(sniff_text)
+            is_survey_data = is_survey_data_format(sniff_text)
         except Exception:
             pass
+
+        if is_survey_data:
+            results.append({'filename': filename, 'ok': False,
+                             'error': 'This is a Survey Data file (board/remuneration benchmark), not an '
+                                      'annual report. Upload it from the Survey page instead.'})
+            continue
 
         if is_condensed:
             try:
@@ -1919,6 +1927,22 @@ def list_survey_companies():
         })
         entry['fiscal_years'].append(r.fiscal_year)
     return jsonify(list(by_company.values()))
+
+
+@app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['GET'])
+def get_survey_company_data(company_id, fiscal_year):
+    """The full SurveyCompanyData row for ONE company/fiscal-year -
+    every field exactly as uploaded, before it's folded into any
+    cross-company average. This is the per-company review surface: a
+    place to check what a submitted file actually captured (and what it
+    didn't) separately from the aggregate report at /api/survey/overview,
+    which never shows a single company's own figures on their own."""
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first_or_404()
+    company = Company.query.get_or_404(company_id)
+    return jsonify({
+        'company': {'id': company.id, 'name': company.name, 'sector': company.sector},
+        'survey_data': row.to_dict(),
+    })
 
 
 @app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['DELETE'])

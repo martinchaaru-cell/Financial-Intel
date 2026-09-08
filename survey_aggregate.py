@@ -148,7 +148,9 @@ def build_survey_overview(fiscal_year=None):
 
     # ---- Appendix: company list ----
     company_list = sorted([
-        {'name': company_by_id[r.company_id].name, 'sector': r.sector or company_by_id[r.company_id].sector, 'source_filename': r.source_filename}
+        {'company_id': r.company_id, 'fiscal_year': r.fiscal_year,
+         'name': company_by_id[r.company_id].name, 'sector': r.sector or company_by_id[r.company_id].sector,
+         'source_filename': r.source_filename}
         for r in rows
     ], key=lambda c: c['name'])
 

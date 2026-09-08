@@ -2701,16 +2701,140 @@ function renderSurveyBody(overview){
         <thead><tr><th>Company</th><th>Sector</th><th>Source File</th></tr></thead>
         <tbody>
           ${overview.companies.map(c => `
-            <tr>
-              <td>${escapeHtml(c.name)}</td>
+            <tr style="cursor:pointer;" onclick="showSurveyCompanyDetail(${c.company_id}, '${escapeHtml(c.fiscal_year)}')">
+              <td>${escapeHtml(c.name)} <span style="color:var(--blue);font-size:11px;">view →</span></td>
               <td>${escapeHtml(c.sector || '-')}</td>
               <td style="color:var(--text-faint);font-size:11.5px;">${escapeHtml(c.source_filename || '-')}</td>
             </tr>`).join('')}
         </tbody>
       </table>
     </div>
+    <div id="surveyCompanyDetail"></div>
   `;
 }
+
+function surveyDetailRow(label, value, opts){
+  opts = opts || {};
+  if (value === null || value === undefined) {
+    return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span>${naSpan('Not captured in this company\\'s submitted data')}</div>`;
+  }
+  const formatted = opts.isAmount ? fmtAmount(value) : (typeof value === 'number' ? fmt(value, opts.decimals !== undefined ? opts.decimals : 0) : escapeHtml(String(value)));
+  const prefix = opts.prefix || '';
+  const suffix = opts.suffix || '';
+  return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span><span style="font-weight:700;">${prefix}${formatted}${suffix}</span></div>`;
+}
+
+async function showSurveyCompanyDetail(companyId, fiscalYear){
+  const el = document.getElementById('surveyCompanyDetail');
+  el.innerHTML = `<div class="panel"><div class="empty">Loading...</div></div>`;
+  el.scrollIntoView({behavior: 'smooth', block: 'start'});
+
+  const data = await safeJson(await fetch(`/api/survey/companies/${companyId}/${encodeURIComponent(fiscalYear)}`), null);
+  if (!data) {
+    el.innerHTML = `<div class="panel"><div class="empty">Could not load this company's survey data.</div></div>`;
+    return;
+  }
+  const sd = data.survey_data;
+  const cur = sd.currency || 'KES';
+
+  el.innerHTML = `
+    <div class="panel" style="margin-top:14px;">
+      <div class="panel-head">
+        <h2>${escapeHtml(data.company.name)} — ${escapeHtml(sd.fiscal_year)}</h2>
+        <button class="secondary" onclick="document.getElementById('surveyCompanyDetail').innerHTML='';">Close</button>
+      </div>
+      <p style="color:var(--text-faint);font-size:11.5px;margin:0 0 12px;">
+        Source file: ${escapeHtml(sd.source_filename || '-')} — uploaded ${sd.uploaded_at ? new Date(sd.uploaded_at).toLocaleString() : '-'}.
+        This is exactly what this company submitted, before any cross-company averaging.
+      </p>
+
+      <div class="row row-3">
+        <div class="panel">
+          <div class="ir-panel-title">Performance</div>
+          <div class="ir-kv-list">
+            ${surveyDetailRow('Turnover', sd.turnover, {isAmount: true, prefix: cur + ' '})}
+            ${surveyDetailRow('Net Profit', sd.net_profit, {isAmount: true, prefix: cur + ' '})}
+            ${surveyDetailRow('Market Cap', sd.market_cap, {isAmount: true, prefix: cur + ' '})}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="ir-panel-title">Board Composition</div>
+          <div class="ir-kv-list">
+            ${surveyDetailRow('Board Size', sd.board_size)}
+            ${surveyDetailRow('Board Meetings / Year', sd.board_meetings_per_year)}
+            ${surveyDetailRow('Committees / Board', sd.committees_per_board)}
+            ${surveyDetailRow('Committee Meetings / Year', sd.committee_meetings_per_year)}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="ir-panel-title">Gender & Independence</div>
+          <div class="ir-kv-list">
+            ${surveyDetailRow('Female Directors', sd.directors_female)}
+            ${surveyDetailRow('Male Directors', sd.directors_male)}
+            ${surveyDetailRow('Executive Directors', sd.executive_directors_count)}
+            ${surveyDetailRow('Non-Executive Directors', sd.non_executive_directors_count)}
+            ${surveyDetailRow('Independent NEDs', sd.independent_neds_count)}
+            ${surveyDetailRow('Non-Independent NEDs', sd.non_independent_neds_count)}
+            ${surveyDetailRow('NEDs — Kenyan', sd.neds_kenyan_count)}
+            ${surveyDetailRow('NEDs — Non-Kenyan', sd.neds_non_kenyan_count)}
+          </div>
+        </div>
+      </div>
+
+      <div class="row row-3">
+        <div class="panel">
+          <div class="ir-panel-title">Age Profile</div>
+          <div class="ir-kv-list">
+            ${surveyDetailRow('Avg. Age — Executive Directors', sd.avg_age_executive_directors, {suffix: ' yrs', decimals: 1})}
+            ${surveyDetailRow('Avg. Age — Non-Executive Directors', sd.avg_age_non_executive_directors, {suffix: ' yrs', decimals: 1})}
+            ${surveyDetailRow('Avg. Age — Independent NEDs', sd.avg_age_independent_neds, {suffix: ' yrs', decimals: 1})}
+            ${surveyDetailRow('Avg. Age — Non-Independent NEDs', sd.avg_age_non_independent_neds, {suffix: ' yrs', decimals: 1})}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="ir-panel-title">Directors' Remuneration (${escapeHtml(cur)})</div>
+          <div class="ir-kv-list">
+            ${surveyDetailRow('Chairperson Annual Retainer', sd.chairperson_annual_retainer, {isAmount: true})}
+            ${surveyDetailRow('Other NED Annual Retainer', sd.other_ned_annual_retainer, {isAmount: true})}
+            ${surveyDetailRow('Chairperson Meeting Allowance', sd.chairperson_meeting_allowance, {isAmount: true})}
+            ${surveyDetailRow('Other NED Meeting Allowance', sd.other_ned_meeting_allowance, {isAmount: true})}
+            ${surveyDetailRow('Executive Director Annual Retainer', sd.executive_director_annual_retainer, {isAmount: true})}
+            ${surveyDetailRow('Executive Director Meeting Allowance', sd.executive_director_meeting_allowance, {isAmount: true})}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="ir-panel-title">Committee Remuneration (${escapeHtml(cur)})</div>
+          <div class="ir-kv-list">
+            ${surveyDetailRow('Committee Chair Annual Retainer', sd.committee_chair_annual_retainer, {isAmount: true})}
+            ${surveyDetailRow('Committee Member Annual Retainer', sd.committee_member_annual_retainer, {isAmount: true})}
+            ${surveyDetailRow('Committee Chair Meeting Allowance', sd.committee_chair_meeting_allowance, {isAmount: true})}
+            ${surveyDetailRow('Committee Member Meeting Allowance', sd.committee_member_meeting_allowance, {isAmount: true})}
+          </div>
+        </div>
+      </div>
+
+      ${sd.source_notes ? `
+        <div class="panel">
+          <div class="ir-panel-title">Source Notes</div>
+          <pre style="white-space:pre-wrap;font-family:inherit;font-size:11.5px;color:var(--text-dim);margin:0;">${escapeHtml(sd.source_notes)}</pre>
+        </div>` : ''}
+
+      <div style="margin-top:12px;">
+        <button class="secondary" style="color:var(--red);" onclick="deleteSurveyCompanyData(${companyId}, '${escapeHtml(fiscalYear)}')">Remove this company from the survey</button>
+      </div>
+    </div>
+  `;
+}
+
+async function deleteSurveyCompanyData(companyId, fiscalYear){
+  if (!confirm('Remove this company\\'s survey data? This cannot be undone.')) return;
+  const res = await fetch(`/api/survey/companies/${companyId}/${encodeURIComponent(fiscalYear)}`, {method: 'DELETE'});
+  if (res.ok) {
+    document.getElementById('surveyCompanyDetail').innerHTML = '';
+    renderSurveyPage();
+  } else {
+    alert('Could not remove this entry.');
+  }
 
 function exportSurveyPdf(){
   window.open('/api/survey/export/report.pdf' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : ''), '_blank');
