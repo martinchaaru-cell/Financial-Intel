@@ -80,6 +80,23 @@ out or compute the chairperson/average figure yourself)
     CommitteeChairMeetingAllowance: <value>    # per committee meeting
     CommitteeMemberMeetingAllowance: <value>
 
+## ===CEO_PAY===
+(Chief Executive Officer / Managing Director tab — company-level MONTHLY
+figures only, same unit/currency as COMPANY.Unit/Currency above. If a
+filing states an ANNUAL figure or names the CEO individually, convert to
+monthly / pick out the company-level figure yourself, same as
+DIRECTOR_PAY asks for the chairperson/average NED figure)
+
+    CEOMonthlySalary: <value>
+    CEOMonthlyAllowances: <value>
+    CEOMonthlyIncentiveBonus: <value>
+    CEOMonthlyDeferredIncentive: <value>
+    CEOMonthlyNonCashBenefits: <value>
+    CEOMonthlyPension: <value>
+    CEOMonthlyGratuity: <value>
+    CEOMonthlyShareValue: <value>
+    CEOMonthlyCostOfEmployment: <value>        # total, only if the filing states one directly - do not compute by summing the fields above yourself, since a filing's own total may use a different basis (e.g. annual components spread differently across months)
+
 ## ===SOURCE===
 Optional, free text — page numbers / where each section's figures came
 from in the original filing, for traceability.

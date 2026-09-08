@@ -316,10 +316,29 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     ]
     story.append(_kv_panel('Committee Chair vs. Member', committee_rows, styles))
 
+    # ================= CEO/MD REMUNERATION =================
+    _section_divider(story, styles, 'CEO/MD Remuneration', 'Chief Executive Officer / Managing Director monthly compensation')
+    story.append(PageBreak())
+    story.append(Paragraph('5. CEO/MD Remuneration', styles['H2']))
+
+    cp = overview['ceo_remuneration']
+    ceo_rows = [
+        ('Salary (monthly)', _fmt_metric(cp['ceo_monthly_salary'], currency, is_amount=True)),
+        ('Allowances (monthly)', _fmt_metric(cp['ceo_monthly_allowances'], currency, is_amount=True)),
+        ('Incentives/Bonus (monthly)', _fmt_metric(cp['ceo_monthly_incentive_bonus'], currency, is_amount=True)),
+        ('Deferred Incentive (monthly)', _fmt_metric(cp['ceo_monthly_deferred_incentive'], currency, is_amount=True)),
+        ('Non-Cash Benefits (monthly)', _fmt_metric(cp['ceo_monthly_non_cash_benefits'], currency, is_amount=True)),
+        ('Pension (monthly)', _fmt_metric(cp['ceo_monthly_pension'], currency, is_amount=True)),
+        ('Gratuity (monthly)', _fmt_metric(cp['ceo_monthly_gratuity'], currency, is_amount=True)),
+        ('Share Value (monthly)', _fmt_metric(cp['ceo_monthly_share_value'], currency, is_amount=True)),
+        ('Monthly Cost of Employment (total)', _fmt_metric(cp['ceo_monthly_cost_of_employment'], currency, is_amount=True)),
+    ]
+    story.append(_kv_panel('CEO/MD Compensation Components', ceo_rows, styles))
+
     # ================= COMPARATIVE ANALYSIS =================
     _section_divider(story, styles, 'Comparative Analysis', 'Sector-by-sector comparison')
     story.append(PageBreak())
-    story.append(Paragraph('5. Comparative Analysis — by Sector', styles['H2']))
+    story.append(Paragraph('6. Comparative Analysis — by Sector', styles['H2']))
 
     sector_table_data = [[
         Paragraph('Sector', styles['TableHeader']),
@@ -355,7 +374,7 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     # ================= APPENDIX =================
     _section_divider(story, styles, 'Appendix', 'Companies surveyed and data sources')
     story.append(PageBreak())
-    story.append(Paragraph('6. Appendix — Companies Surveyed', styles['H2']))
+    story.append(Paragraph('7. Appendix — Companies Surveyed', styles['H2']))
     story.append(Paragraph(
         f'This survey draws on {n} compan{"y" if n == 1 else "ies"}&rsquo;{"s" if n == 1 else ""} own filings, '
         f'uploaded individually to FinSight. Unlike a single aggregate survey document, this list — and every '

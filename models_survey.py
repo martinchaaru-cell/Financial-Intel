@@ -89,6 +89,21 @@ class SurveyCompanyData(db.Model):
     committee_chair_meeting_allowance = db.Column(db.Float)  # per committee meeting
     committee_member_meeting_allowance = db.Column(db.Float)
 
+    # ---- CEO/MD remuneration (Chief Executive Officer / Managing Director tab) ----
+    # Company-level monthly figures only, same discipline as the rest of this
+    # table - if a filing names the CEO individually (annual, not monthly),
+    # pick out or convert the company-level monthly figure yourself, same as
+    # DIRECTOR_PAY already asks for the chairperson/average NED figure.
+    ceo_monthly_salary = db.Column(db.Float)
+    ceo_monthly_allowances = db.Column(db.Float)
+    ceo_monthly_incentive_bonus = db.Column(db.Float)
+    ceo_monthly_deferred_incentive = db.Column(db.Float)
+    ceo_monthly_non_cash_benefits = db.Column(db.Float)
+    ceo_monthly_pension = db.Column(db.Float)
+    ceo_monthly_gratuity = db.Column(db.Float)
+    ceo_monthly_share_value = db.Column(db.Float)
+    ceo_monthly_cost_of_employment = db.Column(db.Float)  # total - stated by the filing itself if given, else left NULL rather than summed here (avoids double-counting/mismatched figures if a filing's own total uses a different basis than the sum of components above)
+
     source_notes = db.Column(db.Text)   # free text — where in the filing each figure came from, optional
 
     __table_args__ = (
@@ -134,5 +149,14 @@ class SurveyCompanyData(db.Model):
             'committee_member_annual_retainer': self.committee_member_annual_retainer,
             'committee_chair_meeting_allowance': self.committee_chair_meeting_allowance,
             'committee_member_meeting_allowance': self.committee_member_meeting_allowance,
+            'ceo_monthly_salary': self.ceo_monthly_salary,
+            'ceo_monthly_allowances': self.ceo_monthly_allowances,
+            'ceo_monthly_incentive_bonus': self.ceo_monthly_incentive_bonus,
+            'ceo_monthly_deferred_incentive': self.ceo_monthly_deferred_incentive,
+            'ceo_monthly_non_cash_benefits': self.ceo_monthly_non_cash_benefits,
+            'ceo_monthly_pension': self.ceo_monthly_pension,
+            'ceo_monthly_gratuity': self.ceo_monthly_gratuity,
+            'ceo_monthly_share_value': self.ceo_monthly_share_value,
+            'ceo_monthly_cost_of_employment': self.ceo_monthly_cost_of_employment,
             'source_notes': self.source_notes,
         }

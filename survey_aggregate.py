@@ -130,6 +130,19 @@ def build_survey_overview(fiscal_year=None):
         'committee_member_meeting_allowance': metric('committee_member_meeting_allowance'),
     }
 
+    # ---- CEO/MD Remuneration ----
+    ceo_remuneration = {
+        'ceo_monthly_salary': metric('ceo_monthly_salary'),
+        'ceo_monthly_allowances': metric('ceo_monthly_allowances'),
+        'ceo_monthly_incentive_bonus': metric('ceo_monthly_incentive_bonus'),
+        'ceo_monthly_deferred_incentive': metric('ceo_monthly_deferred_incentive'),
+        'ceo_monthly_non_cash_benefits': metric('ceo_monthly_non_cash_benefits'),
+        'ceo_monthly_pension': metric('ceo_monthly_pension'),
+        'ceo_monthly_gratuity': metric('ceo_monthly_gratuity'),
+        'ceo_monthly_share_value': metric('ceo_monthly_share_value'),
+        'ceo_monthly_cost_of_employment': metric('ceo_monthly_cost_of_employment'),
+    }
+
     # ---- Comparative Analysis: by sector ----
     sectors = {}
     for r in rows:
@@ -166,6 +179,7 @@ def build_survey_overview(fiscal_year=None):
         'board_overview': board_overview,
         'directors_remuneration': directors_remuneration,
         'committee_remuneration': committee_remuneration,
+        'ceo_remuneration': ceo_remuneration,
         'sector_comparison': sector_comparison,
         'companies': company_list,
     }

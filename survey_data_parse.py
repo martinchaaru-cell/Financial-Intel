@@ -69,6 +69,17 @@ FIELD_MAP = {
         'CommitteeChairMeetingAllowance': 'committee_chair_meeting_allowance',
         'CommitteeMemberMeetingAllowance': 'committee_member_meeting_allowance',
     },
+    'CEO_PAY': {
+        'CEOMonthlySalary': 'ceo_monthly_salary',
+        'CEOMonthlyAllowances': 'ceo_monthly_allowances',
+        'CEOMonthlyIncentiveBonus': 'ceo_monthly_incentive_bonus',
+        'CEOMonthlyDeferredIncentive': 'ceo_monthly_deferred_incentive',
+        'CEOMonthlyNonCashBenefits': 'ceo_monthly_non_cash_benefits',
+        'CEOMonthlyPension': 'ceo_monthly_pension',
+        'CEOMonthlyGratuity': 'ceo_monthly_gratuity',
+        'CEOMonthlyShareValue': 'ceo_monthly_share_value',
+        'CEOMonthlyCostOfEmployment': 'ceo_monthly_cost_of_employment',
+    },
 }
 
 INT_FIELDS = {
@@ -87,6 +98,10 @@ FLOAT_FIELDS = {
     'executive_director_annual_retainer', 'executive_director_meeting_allowance',
     'committee_chair_annual_retainer', 'committee_member_annual_retainer',
     'committee_chair_meeting_allowance', 'committee_member_meeting_allowance',
+    'ceo_monthly_salary', 'ceo_monthly_allowances', 'ceo_monthly_incentive_bonus',
+    'ceo_monthly_deferred_incentive', 'ceo_monthly_non_cash_benefits',
+    'ceo_monthly_pension', 'ceo_monthly_gratuity', 'ceo_monthly_share_value',
+    'ceo_monthly_cost_of_employment',
 }
 
 
@@ -97,7 +112,7 @@ def is_survey_data_format(text: str) -> bool:
     is_condensed_format()."""
     return bool(re.search(r'^===COMPANY===\s*$', text, re.MULTILINE)) and \
         bool(re.search(r'^===PERIOD===\s*$', text, re.MULTILINE)) and \
-        bool(re.search(r'^===(PERFORMANCE|BOARD_COMPOSITION|DIRECTOR_PAY|COMMITTEE_PAY)===\s*$', text, re.MULTILINE))
+        bool(re.search(r'^===(PERFORMANCE|BOARD_COMPOSITION|DIRECTOR_PAY|COMMITTEE_PAY|CEO_PAY)===\s*$', text, re.MULTILINE))
 
 
 def _num(token):
