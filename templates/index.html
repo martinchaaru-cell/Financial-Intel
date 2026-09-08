@@ -2716,7 +2716,7 @@ function renderSurveyBody(overview){
 function surveyDetailRow(label, value, opts){
   opts = opts || {};
   if (value === null || value === undefined) {
-    return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span>${naSpan('Not captured in this company\\'s submitted data')}</div>`;
+    return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span>${naSpan('Not captured in this company\'s submitted data')}</div>`;
   }
   const formatted = opts.isAmount ? fmtAmount(value) : (typeof value === 'number' ? fmt(value, opts.decimals !== undefined ? opts.decimals : 0) : escapeHtml(String(value)));
   const prefix = opts.prefix || '';
@@ -2827,7 +2827,7 @@ async function showSurveyCompanyDetail(companyId, fiscalYear){
 }
 
 async function deleteSurveyCompanyData(companyId, fiscalYear){
-  if (!confirm('Remove this company\\'s survey data? This cannot be undone.')) return;
+  if (!confirm('Remove this company\'s survey data? This cannot be undone.')) return;
   const res = await fetch(`/api/survey/companies/${companyId}/${encodeURIComponent(fiscalYear)}`, {method: 'DELETE'});
   if (res.ok) {
     document.getElementById('surveyCompanyDetail').innerHTML = '';
@@ -2835,6 +2835,7 @@ async function deleteSurveyCompanyData(companyId, fiscalYear){
   } else {
     alert('Could not remove this entry.');
   }
+}
 
 function exportSurveyPdf(){
   window.open('/api/survey/export/report.pdf' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : ''), '_blank');
