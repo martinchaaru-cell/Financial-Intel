@@ -13,10 +13,12 @@ from models import (
     db, Company, FinancialPeriod, FinancialStatement, FinancialLineItem,
     SourceDocument, ImportJob, CalculatedMetric, FinancialSegment,
     OperationalMetric, FinancialNote,
-    MarketSurvey, SurveyMarketMetric, SurveySectorCompany,
-    SurveyRemunerationStat, SurveySectorAllowance, SurveyBenefit, SurveyCEOComp,
     MarketDataSnapshot, PrincipalRisk, ManagementGuidance, DirectorRemunerationRow,
 )
+from models_survey import SurveyCompanyData
+from survey_data_parse import is_survey_data_format, parse_survey_data
+from survey_aggregate import build_survey_overview
+from survey_report_pdf import build_survey_pdf
 from ratios import calculate_ratios
 from company_directory import match_company
 from pdf_parse import (
@@ -27,7 +29,6 @@ from pdf_parse import (
     extract_director_remuneration_detail,
     is_condensed_format, parse_condensed_filing,
 )
-from survey_pdf_parse import parse_survey_pdf
 from report_context import build_report_context
 from report_docx import generate_docx
 from report_narrative import generate_narrative
@@ -1813,24 +1814,42 @@ def upload_documents_batch():
     return jsonify({'results': results, 'saved': saved, 'failed': sum(1 for r in results if not r.get('ok'))}), 200
 
 
-# ---------- MARKET SURVEYS ----------
-# Separate from the NSE per-company import above: a survey document covers
-# the whole market at once (percentiles, sector averages, benefit
-# prevalence), never one company's own reported figures. See
-# survey_pdf_parse.py's module docstring for why this has its own parser.
+# ---------- SURVEY (multi-company board/remuneration benchmark) ----------
+# Built up from individual company uploads (SurveyCompanyData, one row per
+# company per fiscal year - see models_survey.py and SURVEY_FORMAT_SPEC.md)
+# rather than one big aggregate document. Every aggregate figure on the
+# Survey page is computed live, across however many companies have a row
+# for the selected fiscal year - there's nothing to re-upload when a new
+# company is added, and nothing here ever touches FinancialPeriod/
+# FinancialStatement. Aggregation itself lives in survey_aggregate.py,
+# shared with the PDF export route below.
 
-@app.route('/api/surveys', methods=['GET'])
-def list_surveys():
-    surveys = MarketSurvey.query.order_by(MarketSurvey.uploaded_at.desc()).all()
-    return jsonify([s.to_dict() for s in surveys])
+def _find_or_create_company_for_survey(name, sector):
+    """Same reuse-by-name pattern as the financial-condensed-file import
+    (see save_condensed_filing) - looks for an existing Company by
+    case-insensitive exact name match before creating a new one, so a
+    company already tracked for its financials doesn't get duplicated
+    just because its name is typed slightly differently in casing."""
+    name = (name or '').strip()
+    if not name:
+        return None
+    c = Company.query.filter(db.func.lower(Company.name) == name.lower()).first()
+    if c is None:
+        c = Company(name=name, sector=(sector or '').strip() or None, exchange='NSE', country='Kenya')
+        db.session.add(c)
+        db.session.commit()
+    elif sector and not c.sector:
+        c.sector = sector.strip()
+        db.session.commit()
+    return c
 
 
-@app.route('/api/surveys/import', methods=['POST'])
-def import_survey():
-    """Accepts an uploaded PDF (multipart/form-data, field name 'file'),
-    parses it with survey_pdf_parse, and stores everything it recognized.
-    Returns a preview of what was found so the caller can show the person
-    what got imported before they treat it as reliable."""
+@app.route('/api/survey-data/import', methods=['POST'])
+def import_survey_data():
+    """Accepts an uploaded Survey Data condensed .txt file (multipart/
+    form-data, field name 'file') for ONE company/fiscal-year, parses it,
+    and upserts a SurveyCompanyData row. Re-uploading the same company +
+    fiscal_year replaces that row rather than creating a duplicate."""
     if 'file' not in request.files:
         return jsonify({'error': "No file uploaded (expected form field 'file')."}), 400
     file = request.files['file']
@@ -1838,106 +1857,101 @@ def import_survey():
         return jsonify({'error': 'No file selected.'}), 400
 
     try:
-        parsed = parse_survey_pdf(file.read())
+        text = file.read().decode('utf-8', errors='replace')
     except Exception as e:
-        return jsonify({'error': f'Could not parse this PDF: {e}'}), 400
+        return jsonify({'error': f'Could not read file: {e}'}), 400
 
-    meta = parsed.get('meta', {})
-    if not meta.get('title'):
-        return jsonify({'error': 'Could not recognize this document as a remuneration survey.'}), 422
+    if not is_survey_data_format(text):
+        return jsonify({'error': 'This file does not look like a Survey Data condensed file '
+                                  '(expected ===COMPANY===, ===PERIOD===, and at least one of '
+                                  '===PERFORMANCE===/===BOARD_COMPOSITION===/===DIRECTOR_PAY===/===COMMITTEE_PAY===).'}), 422
 
-    survey = MarketSurvey(
-        title=meta.get('title') or file.filename,
-        edition=meta.get('edition'),
-        report_year=meta.get('report_year'),
-        period_covered=meta.get('period_covered'),
-        companies_surveyed=meta.get('companies_surveyed'),
-        currency='KES',
-        source_filename=file.filename,
-    )
-    db.session.add(survey)
-    db.session.flush()  # get survey.id
+    parsed = parse_survey_data(text)
+    company_name = parsed.get('company_name')
+    fiscal_year = parsed.get('fiscal_year')
+    if not company_name:
+        return jsonify({'error': '===COMPANY=== Name is required.'}), 422
+    if not fiscal_year:
+        return jsonify({'error': '===PERIOD=== FiscalYear is required.'}), 422
 
-    for m in parsed.get('market_metrics', []):
-        db.session.add(SurveyMarketMetric(survey_id=survey.id, **m))
-    for sc in parsed.get('sector_companies', []):
-        db.session.add(SurveySectorCompany(survey_id=survey.id, **sc))
-    for rs in parsed.get('remuneration_stats', []):
-        db.session.add(SurveyRemunerationStat(survey_id=survey.id, **rs))
-    for sa in parsed.get('sector_allowances', []):
-        db.session.add(SurveySectorAllowance(survey_id=survey.id, **sa))
-    for b in parsed.get('benefits', []):
-        db.session.add(SurveyBenefit(survey_id=survey.id, **b))
-    for cc in parsed.get('ceo_comp', []):
-        db.session.add(SurveyCEOComp(survey_id=survey.id, **cc))
+    company = _find_or_create_company_for_survey(company_name, parsed.get('sector'))
+
+    row = SurveyCompanyData.query.filter_by(company_id=company.id, fiscal_year=fiscal_year).first()
+    is_update = row is not None
+    if row is None:
+        row = SurveyCompanyData(company_id=company.id, fiscal_year=fiscal_year)
+        db.session.add(row)
+
+    # Only column names SurveyCompanyData actually has - company_name
+    # isn't a column (it resolved `company` above), source_notes maps
+    # straight through.
+    model_columns = {c.name for c in SurveyCompanyData.__table__.columns}
+    for key, value in parsed.items():
+        if key == 'company_name':
+            continue
+        if key in model_columns:
+            setattr(row, key, value)
+    row.source_filename = file.filename
 
     db.session.commit()
 
     return jsonify({
-        'survey': survey.to_dict(),
-        'counts': {
-            'market_metrics': len(parsed.get('market_metrics', [])),
-            'sector_companies': len(parsed.get('sector_companies', [])),
-            'remuneration_stats': len(parsed.get('remuneration_stats', [])),
-            'sector_allowances': len(parsed.get('sector_allowances', [])),
-            'benefits': len(parsed.get('benefits', [])),
-            'ceo_comp': len(parsed.get('ceo_comp', [])),
-        },
+        'ok': True,
+        'updated_existing': is_update,
+        'company': company.to_dict(),
+        'survey_data': row.to_dict(),
     }), 201
 
 
-@app.route('/api/surveys/<int:survey_id>', methods=['GET'])
-def get_survey(survey_id):
-    """Full structured payload for one survey - everything the Intelligence
-    Report page's benchmark panels need, keyed the same way the parser
-    produced it so the frontend doesn't have to reshape anything."""
-    survey = MarketSurvey.query.get_or_404(survey_id)
-
-    market_metrics = {}
-    for m in survey.market_metrics:
-        market_metrics.setdefault(m.metric_name, []).append({'period': m.period_label, 'value': m.value})
-
-    sector_companies = {}
-    for sc in survey.sector_companies:
-        sector_companies.setdefault(sc.sector, []).append(sc.company_name)
-
-    remuneration_stats = {}
-    for rs in survey.remuneration_stats:
-        remuneration_stats.setdefault(rs.category, {})[rs.role] = rs.to_dict()
-
-    return jsonify({
-        **survey.to_dict(),
-        'market_metrics': market_metrics,
-        'sector_companies': sector_companies,
-        'remuneration_stats': remuneration_stats,
-        'benefits': [b.to_dict() for b in survey.benefits],
-        'ceo_comp': [c.to_dict() for c in survey.ceo_comp],
-        'sector_allowances': [sa.to_dict() for sa in survey.sector_allowances],
-    })
+@app.route('/api/survey/companies', methods=['GET'])
+def list_survey_companies():
+    """Every company with at least one SurveyCompanyData row, with the
+    fiscal years available for each - lets the frontend build a fiscal-
+    year picker without guessing what's on file."""
+    rows = db.session.query(SurveyCompanyData, Company).join(
+        Company, SurveyCompanyData.company_id == Company.id
+    ).order_by(Company.name).all()
+    by_company = {}
+    for r, c in rows:
+        entry = by_company.setdefault(r.company_id, {
+            'company_id': r.company_id, 'company_name': c.name,
+            'sector': r.sector or c.sector, 'fiscal_years': [],
+        })
+        entry['fiscal_years'].append(r.fiscal_year)
+    return jsonify(list(by_company.values()))
 
 
-@app.route('/api/surveys/<int:survey_id>/sector-for-company', methods=['GET'])
-def survey_sector_for_company(survey_id):
-    """?name=<company name> -> the sector the survey placed that company
-    in, using a loose (case/punctuation-insensitive) name match, since a
-    company's name in FinSight and in the survey's own company list won't
-    always be typed identically."""
-    name = (request.args.get('name') or '').strip()
-    if not name:
-        return jsonify({'error': 'name query param is required'}), 400
-    norm = re.sub(r'[^a-z0-9]', '', name.lower())
-    for sc in SurveySectorCompany.query.filter_by(survey_id=survey_id).all():
-        if re.sub(r'[^a-z0-9]', '', sc.company_name.lower()) == norm:
-            return jsonify({'sector': sc.sector, 'matched_name': sc.company_name})
-    return jsonify({'sector': None, 'matched_name': None})
-
-
-@app.route('/api/surveys/<int:survey_id>', methods=['DELETE'])
-def delete_survey(survey_id):
-    survey = MarketSurvey.query.get_or_404(survey_id)
-    db.session.delete(survey)
+@app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['DELETE'])
+def delete_survey_company_data(company_id, fiscal_year):
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first_or_404()
+    db.session.delete(row)
     db.session.commit()
     return jsonify({'deleted': True}), 200
+
+
+@app.route('/api/survey/overview', methods=['GET'])
+def survey_overview():
+    """Everything the Survey page needs for one fiscal year, aggregated
+    live across every company with a SurveyCompanyData row for that
+    year. ?fiscal_year=FY2025 - if omitted, uses whichever fiscal_year
+    has the most companies on file. See survey_aggregate.py for the
+    aggregation rules (also used by the PDF export route, so the two
+    never compute a figure two different ways)."""
+    overview = build_survey_overview(request.args.get('fiscal_year'))
+    return jsonify(overview)
+
+
+@app.route('/api/survey/export/report.pdf', methods=['GET'])
+def export_survey_pdf():
+    """Renders the same fiscal-year overview as /api/survey/overview,
+    as a downloadable PDF (survey_report_pdf.py). ?fiscal_year=FY2025."""
+    overview = build_survey_overview(request.args.get('fiscal_year'))
+    if not overview.get('has_data'):
+        return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
+
+    buf = build_survey_pdf(overview)
+    filename = f"Board_Remuneration_Survey_{_safe_filename(overview['fiscal_year'])}.pdf"
+    return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
 
 @app.route('/api/companies/<int:company_id>/periods')
@@ -2310,24 +2324,6 @@ def compare_periods():
     labels = {row.period for row in Financials.query.filter(Financials.company_id.in_(ids)).all() if row.period}
     return jsonify({'periods': sorted(labels, reverse=True)})
 
-def _survey_period_series(survey, metric_name):
-    rows = [m for m in survey.market_metrics if m.metric_name == metric_name]
-    rows.sort(key=lambda m: m.period_label)
-    return rows
-
-def _latest_survey():
-    return MarketSurvey.query.order_by(MarketSurvey.uploaded_at.desc()).first()
-
-def _match_survey_sector(survey, company_name):
-    """Same loose name-matching rule as /api/surveys/<id>/sector-for-company,
-    inlined here so the Intelligence Report doesn't need a second round
-    trip to get a company's benchmark sector."""
-    norm = re.sub(r'[^a-z0-9]', '', company_name.lower())
-    for sc in survey.sector_companies:
-        if re.sub(r'[^a-z0-9]', '', sc.company_name.lower()) == norm:
-            return sc.sector
-    return None
-
 @app.route('/api/companies/<int:company_id>/intelligence-report')
 def company_intelligence_report(company_id):
     """Everything the 8-tab Intelligence Report page needs for one company,
@@ -2568,42 +2564,6 @@ def company_intelligence_report(company_id):
         ],
     }
 
-    # ---- NSE-wide benchmark, from the most recently imported market survey ----
-    survey = _latest_survey()
-    benchmark = None
-    sectors_covered = None
-    if survey:
-        def latest_two(metric):
-            series = _survey_period_series(survey, metric)
-            cur = series[-1] if series else None
-            pri = series[-2] if len(series) > 1 else None
-            return cur, pri
-        avg_rev_cur, avg_rev_pri = latest_two('avg_turnover')
-        avg_np_cur, avg_np_pri = latest_two('avg_net_profit')
-        avg_margin_cur, avg_margin_pri = latest_two('avg_profit_margin')
-        cap_cur, cap_pri = latest_two('nse_capitalisation')
-        benchmark = {
-            'survey_title': survey.title, 'companies_surveyed': survey.companies_surveyed,
-            'avg_revenue': avg_rev_cur.value if avg_rev_cur else None,
-            'avg_revenue_change_pct': pct_change(avg_rev_cur.value, avg_rev_pri.value) if avg_rev_cur and avg_rev_pri else None,
-            'avg_net_profit': avg_np_cur.value if avg_np_cur else None,
-            'avg_net_profit_change_pct': pct_change(avg_np_cur.value, avg_np_pri.value) if avg_np_cur and avg_np_pri else None,
-            'avg_profit_margin': avg_margin_cur.value if avg_margin_cur else None,
-            'avg_profit_margin_change_pp': delta(avg_margin_cur.value, avg_margin_pri.value) if avg_margin_cur and avg_margin_pri else None,
-            'avg_profit_margin_period': avg_margin_cur.period_label if avg_margin_cur else None,
-            'avg_profit_margin_prior_period': avg_margin_pri.period_label if avg_margin_pri else None,
-            'nse_capitalisation': cap_cur.value if cap_cur else None,
-            'nse_capitalisation_period': cap_cur.period_label if cap_cur else None,
-            'nse_capitalisation_change': delta(cap_cur.value, cap_pri.value) if cap_cur and cap_pri else None,
-        }
-        sector_counts = {}
-        for sc in survey.sector_companies:
-            sector_counts[sc.sector] = sector_counts.get(sc.sector, 0) + 1
-        sectors_covered = {
-            'total_companies': survey.companies_surveyed,
-            'sectors': sorted([{'sector': s, 'count': n} for s, n in sector_counts.items()], key=lambda x: -x['count']),
-        }
-
     # ---- Source evidence ----
     source_docs = SourceDocument.query.filter_by(company_id=company_id).order_by(SourceDocument.uploaded_at.desc()).all()
     jobs = ImportJob.query.filter_by(company_id=company_id).order_by(ImportJob.started_at.desc()).limit(20).all()
@@ -2694,7 +2654,6 @@ def company_intelligence_report(company_id):
         'risk_categories': risk_categories, 'overall_risk_score': overall_risk_score,
         'overall_risk_band': _risk_band(overall_risk_score), 'risk_exposures': risk_exposures,
         'peer_comparison': peer_comparison,
-        'nse_benchmark': benchmark, 'sectors_covered': sectors_covered,
         'source_documents': [d.to_dict() for d in source_docs],
         'import_jobs': [{**j.to_dict(), 'source_url': (SourceDocument.query.get(j.source_document_id).url if j.source_document_id else None)} for j in jobs],
         'legacy_source': latest.source,
@@ -2708,13 +2667,10 @@ def company_remuneration(company_id):
     """Remuneration-tab data for one company: this company's OWN filed
     director remuneration totals (from OperationalMetric, one per period -
     see extract_director_remuneration in pdf_parse.py for how these get
-    populated on upload) plus the latest imported market survey's
-    percentile tables, benefits, and CEO/MD comp for context, and which
-    sector the survey itself placed this company in. The two are
-    independent and clearly separated in the response - the company's own
-    filed total is never blended into or compared against the survey
-    numbers automatically, since the survey is a market-wide, not
-    per-company, disclosure."""
+    populated on upload) plus the full per-director breakdown from
+    DirectorRemunerationRow. This is company-own-filing data only - for
+    the cross-company market benchmark, see the Survey page
+    (/api/survey/overview), which is a separate feature entirely."""
     c = Company.query.get_or_404(company_id)
 
     own_remuneration = []
@@ -2742,28 +2698,9 @@ def company_remuneration(company_id):
         if rows:
             director_rows_by_period[p.period_label] = [r.to_dict() for r in rows]
 
-    survey = _latest_survey()
-    if not survey:
-        return jsonify({
-            'has_survey': False, 'own_remuneration': own_remuneration,
-            'director_rows_by_period': director_rows_by_period,
-        })
-
-    matched_sector = _match_survey_sector(survey, c.name)
-    remuneration_stats = {}
-    for rs in survey.remuneration_stats:
-        remuneration_stats.setdefault(rs.category, {})[rs.role] = rs.to_dict()
-
     return jsonify({
-        'has_survey': True,
         'own_remuneration': own_remuneration,
         'director_rows_by_period': director_rows_by_period,
-        'survey': survey.to_dict(),
-        'matched_sector': matched_sector,
-        'remuneration_stats': remuneration_stats,
-        'sector_allowances': [sa.to_dict() for sa in survey.sector_allowances],
-        'benefits': [b.to_dict() for b in survey.benefits],
-        'ceo_comp': [cc.to_dict() for cc in survey.ceo_comp],
     })
 
 @app.route('/api/companies/<int:company_id>/trends')

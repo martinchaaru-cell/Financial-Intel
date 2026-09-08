@@ -7,3 +7,4 @@ pdfplumber
 pypdf
 python-docx
 docx
+reportlab

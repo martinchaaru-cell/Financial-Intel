@@ -637,6 +637,7 @@ const PAGES = [
   {id:'overview', label:'Overview', icon:'🏠'},
   {id:'companies', label:'Companies', icon:'🏢'},
   {id:'intelligence-report', label:'Intelligence Report', icon:'📊'},
+  {id:'survey', label:'Survey', icon:'🧭'},
   {id:'compare', label:'Compare Companies', icon:'⚖️'},
   {id:'rankings', label:'Rankings', icon:'🏆'},
   {id:'sectors', label:'Sectors', icon:'🏭'},
@@ -862,6 +863,10 @@ async function render(){
     title.textContent = 'Settings';
     sub.textContent = 'Database status and portfolio management';
     await renderSettingsPage();
+  } else if (currentPage === 'survey') {
+    title.textContent = 'Survey';
+    sub.textContent = 'Board & director remuneration benchmark, built from uploaded company filings';
+    await renderSurveyPage();
   } else if (currentPage === 'company-detail') {
     await renderCompanyDetail(currentCompanyId);
   } else if (currentPage === 'intelligence-report') {
@@ -2457,6 +2462,260 @@ async function renderReportsPage(){
   `;
 }
 
+// ---------- Survey ----------
+// Board & director remuneration benchmark. Built from SurveyCompanyData
+// rows (one per company per fiscal year, see models_survey.py) uploaded
+// as Survey Data condensed .txt files (SURVEY_FORMAT_SPEC.md) - NOT tied
+// to FinancialPeriod/FinancialStatement, and NOT the same data as the
+// Intelligence Report's Remuneration tab (that tab is one company's own
+// named-director filing; this page is the cross-company market view).
+
+let surveyFiscalYear = null;
+let surveyUploadFiles = [];
+
+async function renderSurveyPage(){
+  const app = document.getElementById('app');
+  const overview = await safeJson(
+    await fetch('/api/survey/overview' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : '')),
+    null
+  );
+
+  app.innerHTML = `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head"><h2>Add Company Data</h2></div>
+      <p style="color:var(--text-dim);font-size:12.5px;margin:0 0 12px;">
+        Upload one Survey Data file per company (see SURVEY_FORMAT_SPEC.md). Every figure on this
+        page is computed live across whichever companies have data on file for the selected fiscal
+        year — averages only appear once at least ${overview && overview.min_companies_for_average ? overview.min_companies_for_average : 2}
+        companies have supplied that specific figure, so a metric can stay "not enough data yet" even
+        after a company is added.
+      </p>
+      <input type="file" id="surveyUploadInput" accept="text/plain,.txt" multiple
+             style="display:block;width:100%;margin-bottom:12px;"
+             onchange="onSurveyFilesChosen(this.files)">
+      <div id="surveyUploadFileList" style="font-size:12.5px;margin-bottom:12px;"></div>
+      <button id="surveyUploadBtn" onclick="submitSurveyUpload()" disabled>Upload &amp; Add to Survey</button>
+      <div id="surveyUploadResult" style="margin-top:12px;font-size:12.5px;"></div>
+    </div>
+    <div id="surveyBody"></div>
+  `;
+
+  renderSurveyBody(overview);
+}
+
+function onSurveyFilesChosen(fileList){
+  surveyUploadFiles = Array.from(fileList);
+  const listEl = document.getElementById('surveyUploadFileList');
+  const btn = document.getElementById('surveyUploadBtn');
+  if (surveyUploadFiles.length === 0) {
+    listEl.innerHTML = '';
+    btn.disabled = true;
+    return;
+  }
+  listEl.innerHTML = surveyUploadFiles.map(f => `<div>📄 ${escapeHtml(f.name)}</div>`).join('');
+  btn.disabled = false;
+}
+
+async function submitSurveyUpload(){
+  const btn = document.getElementById('surveyUploadBtn');
+  const resultEl = document.getElementById('surveyUploadResult');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+  resultEl.innerHTML = '';
+
+  const outcomes = [];
+  for (const file of surveyUploadFiles) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/survey-data/import', {method: 'POST', body: fd});
+      const data = await safeJson(res, null);
+      if (res.ok && data) {
+        outcomes.push({file: file.name, ok: true, company: data.company.name, fiscalYear: data.survey_data.fiscal_year, updated: data.updated_existing});
+      } else {
+        outcomes.push({file: file.name, ok: false, error: (data && data.error) || `HTTP ${res.status}`});
+      }
+    } catch (e) {
+      outcomes.push({file: file.name, ok: false, error: String(e)});
+    }
+  }
+
+  resultEl.innerHTML = outcomes.map(o => o.ok
+    ? `<div style="color:var(--green);">✓ ${escapeHtml(o.file)} — ${escapeHtml(o.company)} (${escapeHtml(o.fiscalYear)})${o.updated ? ' — updated existing entry' : ''}</div>`
+    : `<div style="color:var(--red);">✗ ${escapeHtml(o.file)} — ${escapeHtml(o.error)}</div>`
+  ).join('');
+
+  btn.textContent = 'Upload & Add to Survey';
+  btn.disabled = false;
+  surveyUploadFiles = [];
+  document.getElementById('surveyUploadInput').value = '';
+  document.getElementById('surveyUploadFileList').innerHTML = '';
+
+  if (outcomes.some(o => o.ok)) {
+    const refreshed = await safeJson(
+      await fetch('/api/survey/overview' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : '')),
+      null
+    );
+    renderSurveyBody(refreshed);
+  }
+}
+
+function surveyMetricRow(label, metric, opts){
+  opts = opts || {};
+  const decimals = opts.decimals !== undefined ? opts.decimals : 1;
+  const suffix = opts.suffix || '';
+  const prefix = opts.prefix || '';
+  if (!metric || metric.average === null || metric.average === undefined) {
+    const countNote = metric && metric.company_count ? ` (${metric.company_count} of ${metric.company_count < 2 ? '2+ needed' : metric.company_count} companies)` : '';
+    return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span>${naSpan('Not enough companies have supplied this figure yet' + countNote)}</div>`;
+  }
+  return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span><span style="font-weight:700;">${prefix}${fmt(metric.average, decimals)}${suffix}</span></div>`;
+}
+
+function renderSurveyBody(overview){
+  const bodyEl = document.getElementById('surveyBody');
+  if (!bodyEl) return;
+
+  if (!overview || !overview.has_data) {
+    const years = (overview && overview.available_fiscal_years) || [];
+    bodyEl.innerHTML = `
+      <div class="panel">
+        <div class="empty">
+          ${years.length
+            ? `No companies on file for fiscal year ${escapeHtml(surveyFiscalYear || '')}. Available: ${years.map(y => `<a href="#" onclick="surveyFiscalYear='${escapeHtml(y)}';renderSurveyPage();return false;">${escapeHtml(y)}</a>`).join(', ')}`
+            : 'No survey data uploaded yet. Upload a Survey Data file above to get started.'}
+        </div>
+      </div>`;
+    return;
+  }
+
+  surveyFiscalYear = overview.fiscal_year;
+  const es = overview.executive_summary;
+  const bo = overview.board_overview;
+  const dr = overview.directors_remuneration;
+  const cr = overview.committee_remuneration;
+  const unitLabel = overview.unit || 'millions';
+  const yearPicker = overview.available_fiscal_years.length > 1
+    ? `<select onchange="surveyFiscalYear=this.value;renderSurveyPage();" style="margin-left:10px;">
+         ${overview.available_fiscal_years.map(y => `<option value="${escapeHtml(y)}" ${y === overview.fiscal_year ? 'selected' : ''}>${escapeHtml(y)}</option>`).join('')}
+       </select>`
+    : '';
+
+  bodyEl.innerHTML = `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head">
+        <h2>${escapeHtml(overview.fiscal_year)} ${yearPicker}</h2>
+        <span class="badge">${overview.companies_surveyed} compan${overview.companies_surveyed === 1 ? 'y' : 'ies'} on file</span>
+      </div>
+      <div class="stat-grid">
+        ${statCard('blue', '🏢', overview.companies_surveyed, 'Companies Surveyed')}
+        ${statCard('green', '💰', es.avg_turnover !== null ? fmtAmount(es.avg_turnover) : 'Not enough data', `Avg. Turnover (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
+        ${statCard('purple', '📈', es.avg_net_profit !== null ? fmtAmount(es.avg_net_profit) : 'Not enough data', `Avg. Net Profit (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
+        ${statCard('amber', '%', es.avg_profit_margin !== null ? fmt(es.avg_profit_margin) + '%' : 'Not enough data', 'Avg. Profit Margin')}
+      </div>
+    </div>
+
+    <div class="row row-3">
+      <div class="panel">
+        <div class="ir-panel-title">Board Composition</div>
+        <div class="ir-kv-list">
+          ${surveyMetricRow('Average Board Size', bo.avg_board_size, {decimals: 1})}
+          ${surveyMetricRow('Avg. Board Meetings / Year', bo.avg_board_meetings_per_year, {decimals: 1})}
+          ${surveyMetricRow('Avg. Committees / Board', bo.avg_committees_per_board, {decimals: 1})}
+          ${surveyMetricRow('Avg. Committee Meetings / Year', bo.avg_committee_meetings_per_year, {decimals: 1})}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Gender & Independence</div>
+        <div class="ir-kv-list">
+          <div class="ir-kv-row"><span class="k">Female Directors (total)</span><span style="font-weight:700;">${bo.total_directors_female !== null ? bo.total_directors_female : '<span style="color:var(--text-faint);">-</span>'}</span></div>
+          <div class="ir-kv-row"><span class="k">Male Directors (total)</span><span style="font-weight:700;">${bo.total_directors_male !== null ? bo.total_directors_male : '<span style="color:var(--text-faint);">-</span>'}</span></div>
+          <div class="ir-kv-row"><span class="k">Independent NEDs (total)</span><span style="font-weight:700;">${bo.total_independent_neds !== null ? bo.total_independent_neds : '<span style="color:var(--text-faint);">-</span>'}</span></div>
+          <div class="ir-kv-row"><span class="k">Non-Independent NEDs (total)</span><span style="font-weight:700;">${bo.total_non_independent_neds !== null ? bo.total_non_independent_neds : '<span style="color:var(--text-faint);">-</span>'}</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Age Profile</div>
+        <div class="ir-kv-list">
+          ${surveyMetricRow('Avg. Age — Executive Directors', bo.avg_age_executive_directors)}
+          ${surveyMetricRow('Avg. Age — Non-Executive Directors', bo.avg_age_non_executive_directors)}
+          ${surveyMetricRow('Avg. Age — Independent NEDs', bo.avg_age_independent_neds)}
+          ${surveyMetricRow('Avg. Age — Non-Independent NEDs', bo.avg_age_non_independent_neds)}
+        </div>
+      </div>
+    </div>
+
+    <div class="row row-3">
+      <div class="panel">
+        <div class="ir-panel-title">Directors' Remuneration (${escapeHtml(overview.currency)})</div>
+        <div class="ir-kv-list">
+          ${surveyMetricRow('Chairperson Annual Retainer', dr.chairperson_annual_retainer, {decimals: 0})}
+          ${surveyMetricRow('Other NED Annual Retainer', dr.other_ned_annual_retainer, {decimals: 0})}
+          ${surveyMetricRow('Chairperson Meeting Allowance', dr.chairperson_meeting_allowance, {decimals: 0})}
+          ${surveyMetricRow('Other NED Meeting Allowance', dr.other_ned_meeting_allowance, {decimals: 0})}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Executive Directors (${escapeHtml(overview.currency)})</div>
+        <div class="ir-kv-list">
+          ${surveyMetricRow('Executive Director Annual Retainer', dr.executive_director_annual_retainer, {decimals: 0})}
+          ${surveyMetricRow('Executive Director Meeting Allowance', dr.executive_director_meeting_allowance, {decimals: 0})}
+          <div class="ir-kv-row"><span class="k">Total Executive Directors</span><span style="font-weight:700;">${bo.total_executive_directors !== null ? bo.total_executive_directors : '<span style="color:var(--text-faint);">-</span>'}</span></div>
+          <div class="ir-kv-row"><span class="k">Total Non-Executive Directors</span><span style="font-weight:700;">${bo.total_non_executive_directors !== null ? bo.total_non_executive_directors : '<span style="color:var(--text-faint);">-</span>'}</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Committee Remuneration (${escapeHtml(overview.currency)})</div>
+        <div class="ir-kv-list">
+          ${surveyMetricRow('Committee Chair Annual Retainer', cr.committee_chair_annual_retainer, {decimals: 0})}
+          ${surveyMetricRow('Committee Member Annual Retainer', cr.committee_member_annual_retainer, {decimals: 0})}
+          ${surveyMetricRow('Committee Chair Meeting Allowance', cr.committee_chair_meeting_allowance, {decimals: 0})}
+          ${surveyMetricRow('Committee Member Meeting Allowance', cr.committee_member_meeting_allowance, {decimals: 0})}
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head"><h2>Comparative Analysis — by Sector</h2></div>
+      <table>
+        <thead><tr><th>Sector</th><th>Companies</th><th>Avg. Other NED Annual Retainer</th></tr></thead>
+        <tbody>
+          ${overview.sector_comparison.map(s => `
+            <tr>
+              <td>${escapeHtml(s.sector)}</td>
+              <td>${s.company_count}</td>
+              <td>${s.avg_other_ned_annual_retainer !== null
+                ? `${escapeHtml(overview.currency)} ${fmtAmount(s.avg_other_ned_annual_retainer)}`
+                : naSpan(`Only ${s.avg_other_ned_annual_retainer_company_count} of ${s.company_count} companies in this sector supplied this figure`)}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Companies in this Survey</h2>
+        <button onclick="exportSurveyPdf()">Export PDF</button>
+      </div>
+      <table>
+        <thead><tr><th>Company</th><th>Sector</th><th>Source File</th></tr></thead>
+        <tbody>
+          ${overview.companies.map(c => `
+            <tr>
+              <td>${escapeHtml(c.name)}</td>
+              <td>${escapeHtml(c.sector || '-')}</td>
+              <td style="color:var(--text-faint);font-size:11.5px;">${escapeHtml(c.source_filename || '-')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function exportSurveyPdf(){
+  window.open('/api/survey/export/report.pdf' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : ''), '_blank');
+}
+
 // ---------- Settings ----------
 
 async function renderSettingsPage(){
@@ -2834,9 +3093,6 @@ function irExecutiveSummaryTab(ir){
   ir.opportunities.forEach(o => highlights.push({icon: '💡', text: o.title}));
   ir.risks.forEach(r => highlights.push({icon: r.severity === 'High' ? '🔴' : '🟠', text: `${r.title} — ${r.metric}`}));
 
-  const bench = ir.nse_benchmark;
-  const sectorsCov = ir.sectors_covered;
-
   const kpis = [
     {label: 'Revenue', value: fmtAmount(s.revenue), delta: s.revenue_yoy, color: 'blue', icon: '💰'},
     {label: 'Net Profit', value: fmtAmount(s.net_income), delta: s.net_income_yoy, color: 'green', icon: '💵'},
@@ -2886,46 +3142,24 @@ function irExecutiveSummaryTab(ir){
       </div>
     </div>
 
-    <div class="row row-3" style="grid-template-columns:1.4fr 1.1fr;">
-      <div class="panel">
-        <div class="ir-panel-title">Financial Position Snapshot — ${escapeHtml(ir.period)}</div>
-        <div class="ir-kv-list">
-          ${posRows.map(r => {
-            if (r.value === null || r.value === undefined) {
-              return `<div class="ir-kv-row"><span class="k">${r.label}</span>${naSpan()}</div>`;
-            }
-            const pct = Math.max(0, Math.min(100, (r.value / r.max) * 100));
-            const isGood = r.good(r.value);
-            const color = isGood ? 'var(--green)' : 'var(--amber)';
-            return `
-              <div class="ir-kv-row" style="flex-direction:column;align-items:stretch;gap:4px;">
-                <div style="display:flex;justify-content:space-between;"><span class="k">${r.label}</span><span style="font-weight:700;">${r.fmtV(r.value)}</span></div>
-                <div style="height:6px;background:var(--bg-panel-2);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${color};border-radius:3px;"></div></div>
-              </div>`;
-          }).join('')}
-        </div>
-      </div>
-      <div class="panel">
-        ${bench ? `
-          <div class="ir-panel-title">NSE Market Benchmark (${bench.companies_surveyed} companies surveyed)</div>
-          <div class="ir-kv-list">
-            <div class="ir-kv-row"><span class="k">Average Revenue</span><span>${fmtAmount(bench.avg_revenue)}M ${bench.avg_revenue_change_pct !== null ? deltaSpan(bench.avg_revenue_change_pct) : ''}</span></div>
-            <div class="ir-kv-row"><span class="k">Average Net Profit</span><span>${fmtAmount(bench.avg_net_profit)}M ${bench.avg_net_profit_change_pct !== null ? deltaSpan(bench.avg_net_profit_change_pct) : ''}</span></div>
-            <div class="ir-kv-row"><span class="k">Average Profit Margin</span><span>${fmt(bench.avg_profit_margin)}% ${bench.avg_profit_margin_change_pp !== null ? deltaSpan(bench.avg_profit_margin_change_pp, {suffix:'pp'}) : ''}</span></div>
-            <div class="ir-kv-row"><span class="k">NSE Capitalisation (${escapeHtml(bench.nse_capitalisation_period || '')})</span><span>KES ${fmt(bench.nse_capitalisation, 1)}T ${bench.nse_capitalisation_change !== null ? deltaSpan(bench.nse_capitalisation_change, {suffix:'T', decimals:1}) : ''}</span></div>
-          </div>
-          <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">Source: ${escapeHtml(bench.survey_title)}</div>
-        ` : `<div class="ir-panel-title">NSE Market Benchmark</div><div class="empty">No market survey imported yet. Import one from the Remuneration tab to populate this panel.</div>`}
+    <div class="panel">
+      <div class="ir-panel-title">Financial Position Snapshot — ${escapeHtml(ir.period)}</div>
+      <div class="ir-kv-list">
+        ${posRows.map(r => {
+          if (r.value === null || r.value === undefined) {
+            return `<div class="ir-kv-row"><span class="k">${r.label}</span>${naSpan()}</div>`;
+          }
+          const pct = Math.max(0, Math.min(100, (r.value / r.max) * 100));
+          const isGood = r.good(r.value);
+          const color = isGood ? 'var(--green)' : 'var(--amber)';
+          return `
+            <div class="ir-kv-row" style="flex-direction:column;align-items:stretch;gap:4px;">
+              <div style="display:flex;justify-content:space-between;"><span class="k">${r.label}</span><span style="font-weight:700;">${r.fmtV(r.value)}</span></div>
+              <div style="height:6px;background:var(--bg-panel-2);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${color};border-radius:3px;"></div></div>
+            </div>`;
+        }).join('')}
       </div>
     </div>
-
-    ${sectorsCov ? `
-    <div class="panel">
-      <div class="ir-panel-title">Sectors Covered (${sectorsCov.total_companies} companies)</div>
-      <div class="ir-sector-grid">
-        ${sectorsCov.sectors.map(s => `<div class="ir-sector-cell"><div class="sc-icon">🏷️</div><div class="sc-name">${escapeHtml(s.sector)}</div><div class="sc-count">${s.count}</div></div>`).join('')}
-      </div>
-    </div>` : ''}
   `;
 }
 
