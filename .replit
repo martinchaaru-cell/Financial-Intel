@@ -12,4 +12,4 @@ localPort = 5000
 externalPort = 80
 
 [nix]
-packages = ["glibcLocales"]
+packages = ["freetype", "glibcLocales"]

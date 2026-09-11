@@ -4,6 +4,8 @@ import io
 import re
 import json
 import hashlib
+import tempfile
+import uuid
 from flask import Flask, render_template, request, jsonify, send_file
 from datetime import datetime
 import openpyxl
@@ -15,8 +17,9 @@ from models import (
     OperationalMetric, FinancialNote,
     MarketDataSnapshot, PrincipalRisk, ManagementGuidance, DirectorRemunerationRow,
 )
-from models_survey import SurveyCompanyData
+from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector
 from survey_data_parse import is_survey_data_format, parse_survey_data
+from intelligence_extractor import extract_survey_schema, extract_policy_disclosures
 from survey_aggregate import build_survey_overview
 from survey_report_pdf import build_survey_pdf
 from ratios import calculate_ratios
@@ -27,6 +30,7 @@ from pdf_parse import (
     extract_director_remuneration,
     extract_market_data, extract_management_guidance, extract_principal_risks,
     extract_director_remuneration_detail,
+    extract_survey_directors,
     is_condensed_format, parse_condensed_filing,
 )
 from report_context import build_report_context
@@ -1911,6 +1915,256 @@ def import_survey_data():
     }), 201
 
 
+@app.route('/api/survey-data/import-pdf', methods=['POST'])
+def import_survey_data_from_pdf():
+    """Accepts a raw filing PDF (multipart/form-data, field name 'file')
+    plus REQUIRED form fields 'company_name' and 'fiscal_year' (the
+    intelligence layer extracts board/pay figures from body content -
+    it doesn't re-derive who the filing is even about, so the caller
+    must already know that from the upload context, same as a person
+    naming the file before they upload it).
+
+    Runs document_chunk + remuneration_ontology + intelligence_extractor
+    against the PDF and upserts a SurveyCompanyData row from whatever
+    it found - exactly the same upsert code path as the hand-typed
+    Survey Data .txt import above, since extract_survey_schema()
+    returns the identical dict shape parse_survey_data() does. A field
+    the extractor wasn't confident about is simply absent from the
+    result, same as an undisclosed field in a hand-typed file - this
+    route never fills a gap with a guess.
+
+    Optional 'start_page'/'end_page' form fields (1-indexed) let the
+    caller scope extraction to a known page range instead of chunking
+    an entire multi-hundred-page report - useful once a person knows
+    roughly where a company's governance/remuneration section starts,
+    since chunking is the slow part of this pipeline (seconds per page
+    on a real filing) and most of a large annual report is irrelevant
+    to what this route is looking for."""
+    if 'file' not in request.files:
+        return jsonify({'error': "No file uploaded (expected form field 'file')."}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'No file selected.'}), 400
+
+    company_name = (request.form.get('company_name') or '').strip()
+    fiscal_year = (request.form.get('fiscal_year') or '').strip()
+    if not company_name:
+        return jsonify({'error': "Form field 'company_name' is required - the PDF "
+                                  "intelligence layer extracts figures from the filing's "
+                                  "body content, it doesn't identify which company the "
+                                  "filing is about."}), 422
+    if not fiscal_year:
+        return jsonify({'error': "Form field 'fiscal_year' is required, e.g. 'FY2025'."}), 422
+
+    try:
+        start_page = int(request.form.get('start_page', 1))
+        end_page_raw = request.form.get('end_page')
+        end_page = int(end_page_raw) if end_page_raw else None
+    except ValueError:
+        return jsonify({'error': "'start_page'/'end_page' must be integers."}), 400
+
+    # Resolve/create the company BEFORE extraction (not after, as the
+    # hand-typed-file import route does) so its own Company.country -
+    # if already on file - can be handed to the currency-inference
+    # fallback in extract_survey_schema. An optional 'company_country'
+    # form field lets the caller supply one for a brand-new company
+    # that has no country on file yet; it is used only for this
+    # extraction call, never written back onto the Company row itself
+    # (this route isn't the place to be setting company identity
+    # fields from a form value nobody asked it to trust for that).
+    company = _find_or_create_company_for_survey(company_name, None)
+    company_country = company.country or (request.form.get('company_country') or '').strip() or None
+
+    tmp_path = os.path.join(tempfile.gettempdir(), f"survey_pdf_{uuid.uuid4().hex}.pdf")
+    file.save(tmp_path)
+    try:
+        parsed = extract_survey_schema(tmp_path, start_page=start_page, end_page=end_page,
+                                        company_country=company_country)
+        with open(tmp_path, 'rb') as f:
+            pdf_bytes = f.read()
+        directors_result = extract_survey_directors(pdf_bytes)
+    except Exception as e:
+        return jsonify({'error': f'Could not process PDF: {e}'}), 400
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    row = SurveyCompanyData.query.filter_by(company_id=company.id, fiscal_year=fiscal_year).first()
+    is_update = row is not None
+    if row is None:
+        row = SurveyCompanyData(company_id=company.id, fiscal_year=fiscal_year)
+        db.session.add(row)
+
+    model_columns = {c.name for c in SurveyCompanyData.__table__.columns}
+    for key, value in parsed.items():
+        if key in model_columns:
+            setattr(row, key, value)
+    row.source_filename = file.filename
+
+    # Directors' Register: replace this company/year's existing rows
+    # entirely rather than appending, so re-uploading a corrected PDF
+    # (or uploading a same-year restated filing) doesn't leave stale
+    # duplicate director rows behind - same "re-upload replaces" model
+    # the SurveyCompanyData row above already follows column-by-column.
+    directors_extracted = directors_result.get('directors', [])
+    if directors_extracted:
+        SurveyDirector.query.filter_by(company_id=company.id, fiscal_year=fiscal_year).delete()
+        for d in directors_extracted:
+            db.session.add(SurveyDirector(
+                company_id=company.id, fiscal_year=fiscal_year,
+                director_name=d['director_name'], position=d.get('position'),
+                role=d.get('role'), independent=d.get('independent'),
+                order_index=d.get('order_index', 0), page=d.get('page'),
+                confidence=None,   # this extractor's pattern-match either finds a clean row or skips it entirely - it doesn't produce a graded confidence score the way the ontology-ranked SurveyCompanyData fields do, so this is left NULL rather than a fabricated fixed number
+            ))
+
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'updated_existing': is_update,
+        'company': company.to_dict(),
+        'survey_data': row.to_dict(),
+        'fields_extracted': len([k for k in parsed if k not in ('field_sources', 'field_confidence')]),
+        'field_confidence': parsed.get('field_confidence', {}),
+        'directors_extracted': len(directors_extracted),
+        'directors_layout_supported': not directors_result.get('unsupported_layout', False),
+    }), 201
+
+
+@app.route('/api/survey-data/import-policy-pdf', methods=['POST'])
+def import_remuneration_policy_from_pdf():
+    """Same shape as /api/survey-data/import-pdf, but for
+    RemunerationPolicy's yes/no + free-text fields instead of
+    SurveyCompanyData's numeric ones - uses
+    intelligence_extractor.extract_policy_disclosures() rather than
+    extract_survey_schema(). Kept as a separate route (not folded into
+    import-pdf) because it upserts a different model and the two
+    extraction functions return differently-shaped dicts - merging
+    them would mean this route silently swallowing whichever set of
+    fields the OTHER extractor happened to find, which is more
+    confusing than two small, clearly-named routes."""
+    if 'file' not in request.files:
+        return jsonify({'error': "No file uploaded (expected form field 'file')."}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'No file selected.'}), 400
+
+    company_name = (request.form.get('company_name') or '').strip()
+    fiscal_year = (request.form.get('fiscal_year') or '').strip()
+    if not company_name:
+        return jsonify({'error': "Form field 'company_name' is required."}), 422
+    if not fiscal_year:
+        return jsonify({'error': "Form field 'fiscal_year' is required, e.g. 'FY2025'."}), 422
+
+    try:
+        start_page = int(request.form.get('start_page', 1))
+        end_page_raw = request.form.get('end_page')
+        end_page = int(end_page_raw) if end_page_raw else None
+    except ValueError:
+        return jsonify({'error': "'start_page'/'end_page' must be integers."}), 400
+
+    tmp_path = os.path.join(tempfile.gettempdir(), f"policy_pdf_{uuid.uuid4().hex}.pdf")
+    file.save(tmp_path)
+    try:
+        parsed = extract_policy_disclosures(tmp_path, start_page=start_page, end_page=end_page)
+    except Exception as e:
+        return jsonify({'error': f'Could not process PDF: {e}'}), 400
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    company = _find_or_create_company_for_survey(company_name, None)
+
+    row = RemunerationPolicy.query.filter_by(company_id=company.id, fiscal_year=fiscal_year).first()
+    is_update = row is not None
+    if row is None:
+        row = RemunerationPolicy(company_id=company.id, fiscal_year=fiscal_year)
+        db.session.add(row)
+
+    model_columns = {c.name for c in RemunerationPolicy.__table__.columns}
+    for key, value in parsed.items():
+        if key in model_columns:
+            setattr(row, key, value)
+
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'updated_existing': is_update,
+        'company': company.to_dict(),
+        'remuneration_policy': row.to_dict(),
+    }), 201
+
+
+@app.route('/api/survey-data/<int:company_id>/<fiscal_year>/review', methods=['POST'])
+def review_survey_field(company_id, fiscal_year):
+    """Approve, reject, or correct ONE extracted field on a
+    SurveyCompanyData row. Body: {"field": "board_size", "action":
+    "approve"} or {"field": "board_size", "action": "correct",
+    "corrected_value": 11}. This is the missing half of the PDF-
+    extraction pipeline - extraction alone (import-pdf) only produces
+    a row with values and a confidence score attached; nothing before
+    this route let a person record that they'd actually looked at a
+    given field and either confirmed it or fixed it. "reject" clears
+    the field back to NULL rather than leaving a value nobody trusts
+    sitting in the live column.
+
+    Only meaningful for a field that's actually IN field_confidence
+    (i.e. came from PDF extraction) - a field a person typed directly
+    into a hand-typed Survey Data file was never "pending review" in
+    the first place, so reviewing it here is a no-op beyond recording
+    the status."""
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if row is None:
+        return jsonify({'error': 'No survey data found for this company/fiscal year.'}), 404
+
+    body = request.get_json(silent=True) or {}
+    field = body.get('field')
+    action = body.get('action')
+    if not field:
+        return jsonify({'error': "'field' is required."}), 400
+    if action not in ('approve', 'reject', 'correct'):
+        return jsonify({'error': "'action' must be one of: approve, reject, correct."}), 400
+
+    model_columns = {c.name for c in SurveyCompanyData.__table__.columns}
+    if field not in model_columns:
+        return jsonify({'error': f"{field!r} is not a SurveyCompanyData field."}), 400
+
+    review_status = dict(row.field_review_status or {})
+    corrections = dict(row.field_review_corrections or {})
+    reviewer = (body.get('reviewed_by') or '').strip() or None
+
+    if action == 'reject':
+        review_status[field] = 'rejected'
+        setattr(row, field, None)
+    elif action == 'approve':
+        review_status[field] = 'approved'
+    elif action == 'correct':
+        if 'corrected_value' not in body:
+            return jsonify({'error': "'corrected_value' is required for action='correct'."}), 400
+        extracted_value = getattr(row, field)
+        corrected_value = body['corrected_value']
+        setattr(row, field, corrected_value)
+        review_status[field] = 'approved'
+        corrections[field] = {
+            'extracted_value': extracted_value,
+            'approved_value': corrected_value,
+            'reviewed_by': reviewer,
+            'reviewed_at': datetime.utcnow().isoformat(),
+        }
+
+    row.field_review_status = review_status
+    row.field_review_corrections = corrections
+    db.session.commit()
+
+    return jsonify({'ok': True, 'survey_data': row.to_dict()}), 200
+
+
 @app.route('/api/survey/companies', methods=['GET'])
 def list_survey_companies():
     """Every company with at least one SurveyCompanyData row, with the
@@ -1929,6 +2183,96 @@ def list_survey_companies():
     return jsonify(list(by_company.values()))
 
 
+SCALAR_SURVEY_FIELDS = [
+    # Every SurveyCompanyData column that can meaningfully be "filled
+    # in or not" for completeness scoring. Deliberately excludes id,
+    # company_id, fiscal_year, uploaded_at, source_filename, currency,
+    # unit (defaults/metadata, not disclosed survey content) and the
+    # JSON/audit-trail columns (field_sources, field_confidence,
+    # field_review_status, field_review_corrections, ned_benefits,
+    # source_notes) which don't compare like-for-like with a numeric
+    # field being present or absent.
+    'turnover', 'net_profit', 'market_cap',
+    'board_size', 'board_meetings_per_year', 'committees_per_board',
+    'committee_meetings_per_year', 'directors_female', 'directors_male',
+    'executive_directors_count', 'non_executive_directors_count',
+    'independent_neds_count', 'non_independent_neds_count',
+    'neds_kenyan_count', 'neds_non_kenyan_count',
+    'avg_age_executive_directors', 'avg_age_non_executive_directors',
+    'avg_age_independent_neds', 'avg_age_non_independent_neds',
+    'chairperson_annual_retainer', 'other_ned_annual_retainer',
+    'chairperson_meeting_allowance', 'other_ned_meeting_allowance',
+    'executive_director_annual_retainer', 'executive_director_meeting_allowance',
+    'committee_chair_annual_retainer', 'committee_member_annual_retainer',
+    'committee_chair_meeting_allowance', 'committee_member_meeting_allowance',
+    'ceo_monthly_salary', 'ceo_monthly_allowances', 'ceo_monthly_incentive_bonus',
+    'ceo_monthly_deferred_incentive', 'ceo_monthly_non_cash_benefits',
+    'ceo_monthly_pension', 'ceo_monthly_gratuity', 'ceo_monthly_share_value',
+    'ceo_monthly_cost_of_employment',
+]
+
+
+def _survey_row_completeness(row):
+    """Count of SCALAR_SURVEY_FIELDS that are non-null on this row, plus
+    a small bonus for having any ned_benefits/field_sources content -
+    used only to pick a sensible default company to land on, never
+    shown to the user as a score."""
+    filled = sum(1 for f in SCALAR_SURVEY_FIELDS if getattr(row, f) is not None)
+    if row.ned_benefits:
+        filled += 1
+    if row.field_sources:
+        filled += 1
+    return filled
+
+
+@app.route('/api/survey/companies/default', methods=['GET'])
+def get_default_survey_company():
+    """The single company/fiscal-year the per-company drill-down page
+    should load on open, so a user never lands on a blank picker
+    screen. Picks the row with the most non-null fields filled in
+    (see _survey_row_completeness) among the given/most-populous
+    fiscal year; ties broken alphabetically by company name for a
+    stable choice across reloads. 404 if no survey data exists yet."""
+    fiscal_year = request.args.get('fiscal_year')
+    query = db.session.query(SurveyCompanyData, Company).join(
+        Company, SurveyCompanyData.company_id == Company.id
+    )
+    if fiscal_year:
+        query = query.filter(SurveyCompanyData.fiscal_year == fiscal_year)
+    else:
+        # No fiscal year requested - use whichever year has the most
+        # companies on file, same rule build_survey_overview() uses,
+        # so the default company's year matches what the aggregate
+        # report would show by default too.
+        counts = db.session.query(
+            SurveyCompanyData.fiscal_year, db.func.count(SurveyCompanyData.id)
+        ).group_by(SurveyCompanyData.fiscal_year).order_by(db.func.count(SurveyCompanyData.id).desc()).first()
+        if counts:
+            fiscal_year = counts[0]
+            query = query.filter(SurveyCompanyData.fiscal_year == fiscal_year)
+
+    rows = query.all()
+    if not rows:
+        return jsonify({'error': 'No survey data available'}), 404
+
+    top_score = max(_survey_row_completeness(r) for r, c in rows)
+    tied = sorted(
+        [(r, c) for r, c in rows if _survey_row_completeness(r) == top_score],
+        key=lambda rc: rc[1].name.lower()
+    )
+    best_row, best_company = tied[0]
+
+    directors = SurveyDirector.query.filter_by(
+        company_id=best_company.id, fiscal_year=best_row.fiscal_year
+    ).order_by(SurveyDirector.order_index).all()
+
+    return jsonify({
+        'company': {'id': best_company.id, 'name': best_company.name, 'sector': best_company.sector},
+        'survey_data': best_row.to_dict(),
+        'directors': [d.to_dict() for d in directors],
+    })
+
+
 @app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['GET'])
 def get_survey_company_data(company_id, fiscal_year):
     """The full SurveyCompanyData row for ONE company/fiscal-year -
@@ -1939,15 +2283,20 @@ def get_survey_company_data(company_id, fiscal_year):
     which never shows a single company's own figures on their own."""
     row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first_or_404()
     company = Company.query.get_or_404(company_id)
+    directors = SurveyDirector.query.filter_by(
+        company_id=company_id, fiscal_year=fiscal_year
+    ).order_by(SurveyDirector.order_index).all()
     return jsonify({
         'company': {'id': company.id, 'name': company.name, 'sector': company.sector},
         'survey_data': row.to_dict(),
+        'directors': [d.to_dict() for d in directors],
     })
 
 
 @app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['DELETE'])
 def delete_survey_company_data(company_id, fiscal_year):
     row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first_or_404()
+    SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).delete()
     db.session.delete(row)
     db.session.commit()
     return jsonify({'deleted': True}), 200

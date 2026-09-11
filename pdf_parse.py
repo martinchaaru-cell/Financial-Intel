@@ -2562,3 +2562,137 @@ def parse_condensed_filing(text: str) -> dict:
         'market_data': market_data, 'management_guidance': management_guidance,
         'principal_risks': principal_risks, 'director_remuneration': director_remuneration,
     }
+
+# ---------- Survey Directors' Register extraction ----------
+# Feeds SurveyDirector (models_survey.py), NOT DirectorRemunerationRow.
+# Deliberately narrow for its first version: only the clean
+# "Name / Designation" corporate-information list pattern (see a real
+# example on Eaagads Limited's FY2025 filing, page 4 of the PDF) is
+# supported. Two other real layouts exist in the wild - a numbered
+# photo-caption grid split across "Standing L-R"/"Seated L-R" groups
+# (seen on KCB Group Plc's 2025 Integrated Report), and two-column
+# narrative director bios with Age/Nationality/Appointed lines - and
+# BOTH are deliberately left unsupported for now rather than risking a
+# wrong parse: the photo-caption grid's numbering resets per group
+# (not a clean 1..N run) and often includes non-director roles (a
+# Company Secretary numbered alongside directors), and the narrative
+# bio pages garble badly under column-splitting when two directors'
+# bios sit side by side on the same page (confirmed on a real filing -
+# "Age: 39Age: 53" with no space, unrecoverable without guessing which
+# digits belong to which person). extract_survey_directors() returns
+# an explicit 'unsupported_layout' reason rather than a best-effort
+# guess when the clean list pattern isn't found, so a caller can show
+# "not extractable yet" honestly instead of silently returning nothing
+# or partial garbage.
+
+_DIRECTORS_SECTION_RE = re.compile(r'^\s*DIRECTORS\s*$', re.MULTILINE)
+_NAME_DESIGNATION_HEADER_RE = re.compile(r'^\s*Name\s+Designation\s*$', re.MULTILINE | re.IGNORECASE)
+# A line ends the roster once it hits the next all-caps section header
+# (SECRETARY, REGISTERED OFFICE, BANKERS, AUDITORS, etc.) or a
+# footnote marker line (e.g. "*Georgian").
+_ROSTER_END_RE = re.compile(r'^\s*(SECRETARY|REGISTERED OFFICE|BANKERS|LAWYERS|ADVOCATES|AUDITORS|POSTAL ADDRESS)\s*$', re.MULTILINE)
+_FOOTNOTE_LINE_RE = re.compile(r'^\s*\*[A-Za-z]')
+
+# A roster line is "<Name...> <Designation...>" with no fixed column
+# boundary in plain-text form, so the split point is found via known
+# designation vocabulary rather than a fixed character offset - this
+# mirrors how _classify_remuneration_kind/role_title_re already
+# classify role text elsewhere in this module, reusing the same
+# vocabulary rather than inventing a second list.
+_DESIGNATION_START_RE = re.compile(
+    r'\b(Chairman|Chairperson|Chief Executive|Executive Director|Non[\s-]*Executive Director|'
+    r'Independent[,]?\s*(?:non[\s-]*)?Executive Director|Managing Director|CEO)\b.*$',
+    re.IGNORECASE,
+)
+
+
+def _classify_survey_director_role(designation_text: str) -> str:
+    """'executive' | 'non_executive' | 'unknown' from a designation
+    string, same convention as DirectorRemunerationRow.role. Checks
+    for a non-executive marker FIRST and returns early - a phrasing
+    like "Independent, non-Executive Director" contains the substring
+    "Executive Director" too, so checking "executive" before
+    "non-executive" would wrongly classify a non-executive director as
+    executive (caught on real data: Eaagads Limited's "Independent,
+    non - Executive Director" designation)."""
+    d = designation_text.lower()
+    if re.search(r'non[\s-]*executive', d):
+        return 'non_executive'
+    if 'executive' in d or d.strip() == 'ceo':
+        return 'executive'
+    return 'unknown'
+
+
+def _classify_survey_director_independence(designation_text: str):
+    """True/False/None from a designation string - None (not stated
+    either way) unless the text explicitly says independent or
+    explicitly says not independent."""
+    d = designation_text.lower()
+    if 'not independent' in d:
+        return False
+    if 'independent' in d:
+        return True
+    return None
+
+
+def extract_survey_directors(pdf_bytes: bytes) -> dict:
+    """Looks for a clean "DIRECTORS / Name Designation / <rows>" list
+    (see module note above) anywhere in the PDF and, if found, returns
+    {'directors': [...], 'page': int}, one dict per row with
+    director_name, position (designation exactly as printed), role,
+    independent, page - gender/nationality/appointed_date/end_of_term/
+    committees are NOT populated by this pattern (that table never
+    prints them) and stay None/absent, to be filled in later by a
+    person or a future extractor for the richer bio-page pattern.
+
+    If no page matches this pattern, returns
+    {'directors': [], 'unsupported_layout': True} so a caller can
+    distinguish "found the section but every field was empty" (not
+    actually possible here, since a match requires at least one
+    parsed row) from "this filing uses a different layout this
+    extractor doesn't handle yet" - the two need different messaging
+    to a person reviewing the result.
+    """
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for pg_idx, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ''
+            if not _DIRECTORS_SECTION_RE.search(text):
+                continue
+            header_m = _NAME_DESIGNATION_HEADER_RE.search(text)
+            if not header_m:
+                continue   # a "DIRECTORS" heading exists on this page but not in the Name/Designation table shape this function supports
+
+            after_header = text[header_m.end():]
+            end_m = _ROSTER_END_RE.search(after_header)
+            roster_block = after_header[:end_m.start()] if end_m else after_header
+
+            directors = []
+            order = 0
+            for line in roster_block.split('\n'):
+                line = line.strip()
+                if not line or _FOOTNOTE_LINE_RE.match(line):
+                    continue
+                desig_m = _DESIGNATION_START_RE.search(line)
+                if not desig_m:
+                    continue   # a line here that doesn't contain recognizable designation vocabulary is skipped, not guessed at (e.g. stray page furniture)
+                name = line[:desig_m.start()].strip(' -')
+                name = re.sub(r'\s*\*\s*$', '', name)   # strip a trailing footnote marker (e.g. Eaagads' "Mr. George Kapanadze *" -> the asterisk points to a footnote like "*Georgian", not part of the name)
+                designation = desig_m.group(0).strip()
+                if not name:
+                    continue
+                directors.append({
+                    'director_name': name,
+                    'position': designation,
+                    'role': _classify_survey_director_role(designation),
+                    'independent': _classify_survey_director_independence(designation),
+                    'order_index': order,
+                    'page': pg_idx,
+                })
+                order += 1
+
+            if directors:
+                return {'directors': directors, 'page': pg_idx}
+            # Header found but nothing parsed cleanly under it - treat as unsupported rather than returning an empty-but-"found" result.
+            break
+
+    return {'directors': [], 'unsupported_layout': True}

@@ -639,6 +639,7 @@ const PAGES = [
   {id:'companies', label:'Companies', icon:'🏢'},
   {id:'intelligence-report', label:'Intelligence Report', icon:'📊'},
   {id:'survey', label:'Survey', icon:'🧭'},
+  {id:'survey-companies', label:'Survey Companies', icon:'🏛️'},
   {id:'compare', label:'Compare Companies', icon:'⚖️'},
   {id:'rankings', label:'Rankings', icon:'🏆'},
   {id:'sectors', label:'Sectors', icon:'🏭'},
@@ -868,6 +869,10 @@ async function render(){
     title.textContent = 'Survey';
     sub.textContent = 'Board & director remuneration benchmark, built from uploaded company filings';
     await renderSurveyPage();
+  } else if (currentPage === 'survey-companies') {
+    title.textContent = 'Survey Companies';
+    sub.textContent = 'One company\'s submitted board & remuneration data, exactly as filed';
+    await renderSurveyCompaniesPage();
   } else if (currentPage === 'company-detail') {
     await renderCompanyDetail(currentCompanyId);
   } else if (currentPage === 'intelligence-report') {
@@ -2768,10 +2773,35 @@ function surveyDetailRow(label, value, opts){
   if (value === null || value === undefined) {
     return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span>${naSpan('Not captured in this company\'s submitted data')}</div>`;
   }
-  const formatted = opts.isAmount ? fmtAmount(value) : (typeof value === 'number' ? fmt(value, opts.decimals !== undefined ? opts.decimals : 0) : escapeHtml(String(value)));
+  const formatted = opts.isAmount ? fmtSurveyAmount(value, opts.amountDecimals) : (typeof value === 'number' ? fmt(value, opts.decimals !== undefined ? opts.decimals : 0) : escapeHtml(String(value)));
   const prefix = opts.prefix || '';
   const suffix = opts.suffix || '';
   return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span><span style="font-weight:700;">${prefix}${formatted}${suffix}</span></div>`;
+}
+
+// Same rounding/thousands-separator behaviour as fmtAmount(), but lets
+// the Survey Companies page ask for decimal places - fmtAmount() itself
+// always rounds to 0 decimals, which is correct for the KES thousands/
+// millions figures used everywhere else in the app but silently drops
+// real precision on a billions-scale figure (e.g. KCB's turnover of
+// 211.8 rendering as "212"). Only the survey page passes a unit-aware
+// decimals value in; every other fmtAmount() call site is untouched.
+function fmtSurveyAmount(val, decimals){
+  if (val === null || val === undefined || val === '') return '-';
+  const num = Number(val);
+  if (Number.isNaN(num)) return '-';
+  const d = decimals || 0;
+  const formatted = Math.abs(num).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+  return num < 0 ? `(${formatted})` : formatted;
+}
+
+// How many decimal places a survey figure should show, based on the
+// company's own stated Unit - "billions" figures are typically given
+// to 1 decimal place in the source filing (e.g. "Ksh 211.8 billion")
+// and rounding to a whole number throws that away; thousands/millions
+// figures round to whole numbers same as the rest of the app.
+function surveyAmountDecimals(unit){
+  return (unit || '').toLowerCase() === 'billions' ? 1 : 0;
 }
 
 async function showSurveyCompanyDetail(companyId, fiscalYear){
@@ -2885,6 +2915,465 @@ async function deleteSurveyCompanyData(companyId, fiscalYear){
   } else {
     alert('Could not remove this entry.');
   }
+}
+
+// ---------- Survey Companies (per-company drill-down) ----------
+// Separate page from the aggregate Survey report above: shows exactly
+// what ONE company submitted, tab by tab, instead of a cross-company
+// average. Defaults to the most-complete company on file so it never
+// opens on a blank picker (see /api/survey/companies/default).
+
+const SC_TABS = [
+  {id:'overview', label:'Company Overview', icon:'🏢'},
+  {id:'board', label:'Board Composition', icon:'👥'},
+  {id:'directors-register', label:"Directors' Register", icon:'📇'},
+  {id:'directors-pay', label:"Directors' Remuneration", icon:'💼'},
+  {id:'committee-pay', label:'Committee Remuneration', icon:'🗂️'},
+  {id:'ceo-pay', label:'CEO/MD Remuneration', icon:'🧾'},
+  {id:'benefits', label:'Benefits', icon:'🎁'},
+  {id:'evidence', label:'Evidence & Sources', icon:'📁'},
+];
+
+let scCompanyId = null;
+let scFiscalYear = null;
+let scData = null;          // {company, survey_data, directors} for the currently shown company/year
+let scCompanyList = [];     // every company with survey data on file, for the switcher
+let scTab = 'overview';
+let scSelectedDirectorId = null;   // which director's detail panel is open on the Directors' Register tab
+
+async function renderSurveyCompaniesPage(){
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="empty">Loading...</div>';
+
+  if (!scCompanyList.length) {
+    scCompanyList = await safeJson(await fetch('/api/survey/companies'), []);
+  }
+
+  // First time on this page (or nothing selected yet) - land on the
+  // most-complete company/year rather than a blank picker.
+  if (!scData) {
+    const def = await safeJson(await fetch('/api/survey/companies/default'), null);
+    if (!def) {
+      app.innerHTML = `<div class="panel"><div class="empty">No survey data uploaded yet. Add company filings from the Survey page first.</div></div>`;
+      return;
+    }
+    scData = def;
+    scCompanyId = def.company.id;
+    scFiscalYear = def.survey_data.fiscal_year;
+  }
+
+  renderScShell();
+}
+
+function scCompanySwitcherHtml(){
+  const options = scCompanyList.map(c => c.fiscal_years.map(fy =>
+    `<option value="${c.company_id}|${escapeHtml(fy)}" ${c.company_id===scCompanyId && fy===scFiscalYear ? 'selected' : ''}>${escapeHtml(c.company_name)} — ${escapeHtml(fy)}</option>`
+  ).join('')).join('');
+  return `
+    <div class="fy-select-block">
+      <div class="fy-label">Company / Fiscal Year</div>
+      <select onchange="switchScCompany(this.value)">${options}</select>
+    </div>`;
+}
+
+async function switchScCompany(value){
+  const [companyId, fiscalYear] = value.split('|');
+  await loadScCompany(parseInt(companyId, 10), fiscalYear);
+}
+
+async function loadScCompany(companyId, fiscalYear){
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="empty">Loading...</div>';
+  const data = await safeJson(await fetch(`/api/survey/companies/${companyId}/${encodeURIComponent(fiscalYear)}`), null);
+  if (!data) {
+    app.innerHTML = `<div class="panel"><div class="empty">Could not load this company's survey data.</div></div>`;
+    return;
+  }
+  scData = data;
+  scCompanyId = companyId;
+  scFiscalYear = fiscalYear;
+  scSelectedDirectorId = null;
+  renderScShell();
+}
+
+function renderScShell(){
+  const app = document.getElementById('app');
+  const sd = scData.survey_data;
+  const c = scData.company;
+
+  const head = `
+    <div class="co-detail-head">
+      <div class="co-detail-logo" style="background:${coAvatarColor(c.name)};">${(c.name||'?').slice(0,2).toUpperCase()}</div>
+      <div class="co-detail-title">
+        <h2>${escapeHtml(c.name)}</h2>
+        <div class="sub">${escapeHtml(c.sector || '')} · ${escapeHtml(sd.fiscal_year)} · ${escapeHtml(sd.currency || 'KES')} (${escapeHtml(sd.unit || 'millions')})</div>
+      </div>
+      <div class="co-detail-right">
+        ${scCompanySwitcherHtml()}
+        <button class="danger" onclick="deleteSurveyCompanyData(${scCompanyId}, '${escapeHtml(scFiscalYear)}')">Remove</button>
+      </div>
+    </div>`;
+
+  const tabBar = `
+    <div class="ir-tabbar">
+      ${SC_TABS.map(t => `<button class="ir-tab-btn ${scTab === t.id ? 'active' : ''}" onclick="switchScTab('${t.id}')">${t.icon} ${t.label}</button>`).join('')}
+    </div>`;
+
+  app.innerHTML = `${head}${tabBar}<div id="sc-tab-body"></div>`;
+  renderScTabBody();
+}
+
+function switchScTab(tabId){
+  scTab = tabId;
+  document.querySelectorAll('.ir-tab-btn').forEach((btn, i) => btn.classList.toggle('active', SC_TABS[i].id === tabId));
+  renderScTabBody();
+}
+
+function renderScTabBody(){
+  const el = document.getElementById('sc-tab-body');
+  const sd = scData.survey_data;
+  if (scTab === 'overview') el.innerHTML = scOverviewTab(sd);
+  else if (scTab === 'board') el.innerHTML = scBoardTab(sd);
+  else if (scTab === 'directors-register') el.innerHTML = scDirectorsRegisterTab(scData.directors || [], sd);
+  else if (scTab === 'directors-pay') el.innerHTML = scDirectorsPayTab(sd);
+  else if (scTab === 'committee-pay') el.innerHTML = scCommitteePayTab(sd);
+  else if (scTab === 'ceo-pay') el.innerHTML = scCeoPayTab(sd);
+  else if (scTab === 'benefits') el.innerHTML = scBenefitsTab(sd);
+  else if (scTab === 'evidence') el.innerHTML = scEvidenceTab(sd);
+  if (scTab === 'directors-register') attachScDirectorsRegisterHandlers();
+}
+
+// A row that shows a confidence badge next to the value ONLY when this
+// field actually has a confidence score on file (PDF-extracted rows
+// only - a hand-typed Survey Data .txt upload has no score at all,
+// per models_survey.py's own documentation, and showing a fake one
+// would misrepresent a person's typed entry as machine-extracted).
+function scRow(sd, field, label, opts){
+  opts = opts || {};
+  const value = sd[field];
+  const conf = (sd.field_confidence || {})[field];
+  const source = (sd.field_sources || {})[field];
+  // Auto-apply the right decimal precision for amount fields based on
+  // this company's own stated Unit, unless the caller already asked
+  // for a specific decimals value - avoids every scRow() call site
+  // needing to know about surveyAmountDecimals() itself.
+  if (opts.isAmount && opts.amountDecimals === undefined) {
+    opts = Object.assign({}, opts, { amountDecimals: surveyAmountDecimals(sd.unit) });
+  }
+  let badge = '';
+  if (typeof conf === 'number') {
+    const pct = Math.round(conf * 100);
+    const band = conf >= 0.75 ? 'high' : conf >= 0.45 ? 'medium' : 'low';
+    const color = band === 'high' ? 'var(--green)' : band === 'medium' ? 'var(--amber)' : 'var(--red)';
+    badge = ` <span style="font-size:10px;color:${color};border:1px solid ${color};border-radius:4px;padding:1px 5px;margin-left:6px;" title="Extraction confidence">${pct}%</span>`;
+  }
+  const row = surveyDetailRow(label, value, opts);
+  if (!badge && !source) return row;
+  return row.replace('</div>', `${badge}${source ? `<span style="display:block;font-size:10.5px;color:var(--text-faint);margin-top:1px;">Source: ${escapeHtml(source)}</span>` : ''}</div>`);
+}
+
+function scOverviewTab(sd){
+  const cur = sd.currency || 'KES';
+  return `
+    <div class="row row-3">
+      <div class="panel">
+        <div class="ir-panel-title">Filing</div>
+        <div class="ir-kv-list">
+          ${surveyDetailRow('Fiscal Year', sd.fiscal_year)}
+          ${surveyDetailRow('Sector (survey bucket)', sd.sector)}
+          ${surveyDetailRow('Source File', sd.source_filename)}
+          ${surveyDetailRow('Uploaded', sd.uploaded_at ? new Date(sd.uploaded_at).toLocaleString() : null)}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Performance (${escapeHtml(cur)}, ${escapeHtml(sd.unit || 'millions')})</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'turnover', 'Turnover', {isAmount: true})}
+          ${scRow(sd, 'net_profit', 'Net Profit', {isAmount: true})}
+          ${scRow(sd, 'market_cap', 'Market Cap', {isAmount: true})}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Review Status</div>
+        <div class="ir-kv-list">
+          ${surveyDetailRow('Fields with a confidence score', (sd.field_confidence ? Object.keys(sd.field_confidence).length : null))}
+          ${surveyDetailRow('Awaiting review', sd.pending_review_fields ? sd.pending_review_fields.length : null)}
+          ${surveyDetailRow('Flagged for review (medium confidence)', sd.requires_review_fields ? sd.requires_review_fields.length : null)}
+        </div>
+        <p style="font-size:11px;color:var(--text-faint);margin:8px 0 0;">
+          ${sd.field_confidence && Object.keys(sd.field_confidence).length ? 'This company\'s data was PDF-extracted; per-field confidence appears next to each value across the other tabs.' : 'This company\'s data was entered directly, so there\'s no separate confidence score per field.'}
+        </p>
+      </div>
+    </div>`;
+}
+
+function scBoardTab(sd){
+  return `
+    <div class="row row-3">
+      <div class="panel">
+        <div class="ir-panel-title">Board Composition</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'board_size', 'Board Size')}
+          ${scRow(sd, 'board_meetings_per_year', 'Board Meetings / Year')}
+          ${scRow(sd, 'committees_per_board', 'Committees / Board')}
+          ${scRow(sd, 'committee_meetings_per_year', 'Committee Meetings / Year')}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Gender & Independence</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'directors_female', 'Female Directors')}
+          ${scRow(sd, 'directors_male', 'Male Directors')}
+          ${scRow(sd, 'executive_directors_count', 'Executive Directors')}
+          ${scRow(sd, 'non_executive_directors_count', 'Non-Executive Directors')}
+          ${scRow(sd, 'independent_neds_count', 'Independent NEDs')}
+          ${scRow(sd, 'non_independent_neds_count', 'Non-Independent NEDs')}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Domicile & Age Profile</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'neds_kenyan_count', 'NEDs — Kenyan')}
+          ${scRow(sd, 'neds_non_kenyan_count', 'NEDs — Non-Kenyan')}
+          ${scRow(sd, 'avg_age_executive_directors', 'Avg. Age — Executive Directors', {suffix: ' yrs', decimals: 1})}
+          ${scRow(sd, 'avg_age_non_executive_directors', 'Avg. Age — Non-Executive Directors', {suffix: ' yrs', decimals: 1})}
+          ${scRow(sd, 'avg_age_independent_neds', 'Avg. Age — Independent NEDs', {suffix: ' yrs', decimals: 1})}
+          ${scRow(sd, 'avg_age_non_independent_neds', 'Avg. Age — Non-Independent NEDs', {suffix: ' yrs', decimals: 1})}
+        </div>
+      </div>
+    </div>`;
+}
+
+function scDirectorsPayTab(sd){
+  const cur = sd.currency || 'KES';
+  return `
+    <div class="row row-2">
+      <div class="panel">
+        <div class="ir-panel-title">Non-Executive Directors (${escapeHtml(cur)})</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'chairperson_annual_retainer', 'Chairperson Annual Retainer', {isAmount: true})}
+          ${scRow(sd, 'other_ned_annual_retainer', 'Other NED Annual Retainer', {isAmount: true})}
+          ${scRow(sd, 'chairperson_meeting_allowance', 'Chairperson Meeting Allowance', {isAmount: true})}
+          ${scRow(sd, 'other_ned_meeting_allowance', 'Other NED Meeting Allowance', {isAmount: true})}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Executive Directors (${escapeHtml(cur)})</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'executive_director_annual_retainer', 'Executive Director Annual Retainer', {isAmount: true})}
+          ${scRow(sd, 'executive_director_meeting_allowance', 'Executive Director Meeting Allowance', {isAmount: true})}
+        </div>
+      </div>
+    </div>`;
+}
+
+function scCommitteePayTab(sd){
+  const cur = sd.currency || 'KES';
+  return `
+    <div class="row row-2">
+      <div class="panel">
+        <div class="ir-panel-title">Committee Chair (${escapeHtml(cur)})</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'committee_chair_annual_retainer', 'Annual Retainer', {isAmount: true})}
+          ${scRow(sd, 'committee_chair_meeting_allowance', 'Meeting Allowance', {isAmount: true})}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Committee Member (${escapeHtml(cur)})</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'committee_member_annual_retainer', 'Annual Retainer', {isAmount: true})}
+          ${scRow(sd, 'committee_member_meeting_allowance', 'Meeting Allowance', {isAmount: true})}
+        </div>
+      </div>
+    </div>`;
+}
+
+function scCeoPayTab(sd){
+  const cur = sd.currency || 'KES';
+  const anyCeoData = ['ceo_monthly_salary','ceo_monthly_allowances','ceo_monthly_incentive_bonus',
+    'ceo_monthly_deferred_incentive','ceo_monthly_non_cash_benefits','ceo_monthly_pension',
+    'ceo_monthly_gratuity','ceo_monthly_share_value','ceo_monthly_cost_of_employment']
+    .some(f => sd[f] !== null && sd[f] !== undefined);
+
+  if (!anyCeoData) {
+    return `<div class="panel"><div class="empty">This company's filing didn't disclose CEO/MD pay at a company-level monthly basis, or it hasn't been entered yet.</div></div>`;
+  }
+
+  return `
+    <div class="row row-2">
+      <div class="panel">
+        <div class="ir-panel-title">Monthly CEO/MD Compensation (${escapeHtml(cur)})</div>
+        <div class="ir-kv-list">
+          ${scRow(sd, 'ceo_monthly_salary', 'Salary', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_allowances', 'Allowances', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_incentive_bonus', 'Incentive / Bonus', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_deferred_incentive', 'Deferred Incentive', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_non_cash_benefits', 'Non-Cash Benefits', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_pension', 'Pension', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_gratuity', 'Gratuity', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_share_value', 'Share Value', {isAmount: true})}
+          ${scRow(sd, 'ceo_monthly_cost_of_employment', 'Total Cost of Employment', {isAmount: true})}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Derivation (if converted from the filing's own figures)</div>
+        <div class="ir-kv-list">
+          ${surveyDetailRow('Annual Salary as Stated', sd.ceo_annual_salary_as_stated, {isAmount: true, prefix: cur + ' ', amountDecimals: surveyAmountDecimals(sd.unit)})}
+          ${surveyDetailRow('Conversion Basis', sd.ceo_monthly_conversion_basis)}
+        </div>
+        <p style="font-size:11px;color:var(--text-faint);margin:8px 0 0;">
+          Shown only when the monthly figures above were derived from an annual, named-individual figure in the filing rather than transcribed directly.
+        </p>
+      </div>
+    </div>`;
+}
+
+function scBenefitsTab(sd){
+  const benefits = sd.ned_benefits || {};
+  const keys = Object.keys(benefits);
+  if (!keys.length) {
+    return `<div class="panel"><div class="empty">No director benefits were addressed in this company's submitted data.</div></div>`;
+  }
+  const rows = keys.map(k => {
+    const b = benefits[k] || {};
+    const status = b.provided === true ? `<span style="color:var(--green);font-weight:700;">Provided</span>`
+      : b.provided === false ? `<span style="color:var(--text-faint);">Not Provided</span>`
+      : naSpan('Not addressed in the filing');
+    return `<div class="ir-kv-row"><span class="k">${escapeHtml(k)}</span><span>${status}${b.detail ? ` <span style="color:var(--text-faint);font-size:11px;">— ${escapeHtml(b.detail)}</span>` : ''}</span></div>`;
+  }).join('');
+  return `<div class="panel"><div class="ir-panel-title">Director Benefits</div><div class="ir-kv-list">${rows}</div></div>`;
+}
+
+// ---------- Directors' Register tab ----------
+// Built only from SurveyDirector rows (see models_survey.py) - real,
+// PDF-extracted or hand-entered per-director facts, never invented.
+// The extractor behind this (extract_survey_directors, pdf_parse.py)
+// currently only supports the clean "Name / Designation" list layout
+// some filers use (confirmed against Eaagads Limited's FY2025 filing);
+// it does NOT yet populate gender, nationality, appointed_date,
+// end_of_term, or committees - those columns exist on the model for
+// when a future extractor pass (or manual entry) fills them in, but
+// today they are genuinely absent for every row, not just unlucky
+// ones. Every place below that would show them renders an honest
+// "Not captured" instead of blank space or a fabricated value.
+
+function scDirectorsCount(directors, pred){
+  return directors.filter(pred).length;
+}
+
+function scDirectorsRegisterTab(directors, sd){
+  if (!directors.length) {
+    return `<div class="panel"><div class="empty">No named director register was extracted or entered for this company's filing. This is currently only supported for filings with a clean "Name / Designation" board list - a photo-caption grid or narrative bio layout isn't parsed into named rows yet.</div></div>`;
+  }
+
+  const total = directors.length;
+  const execCount = scDirectorsCount(directors, d => d.role === 'executive');
+  const nonExecCount = scDirectorsCount(directors, d => d.role === 'non_executive');
+  const independentCount = scDirectorsCount(directors, d => d.independent === true);
+  const genderKnown = directors.filter(d => d.gender);
+
+  const statCards = `
+    <div class="row row-4" style="margin-bottom:16px;">
+      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${total}</div><div style="font-size:11.5px;color:var(--text-faint);">Total Directors</div></div>
+      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${execCount}</div><div style="font-size:11.5px;color:var(--text-faint);">Executive Directors</div></div>
+      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${nonExecCount}</div><div style="font-size:11.5px;color:var(--text-faint);">Non-Executive Directors</div></div>
+      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${independentCount}</div><div style="font-size:11.5px;color:var(--text-faint);">Stated Independent</div></div>
+    </div>`;
+
+  const rows = directors.map(d => {
+    const roleLabel = d.role === 'executive' ? 'Executive' : d.role === 'non_executive' ? 'Non-Executive' : naSpan('Not stated');
+    const indepLabel = d.independent === true ? `<span style="color:var(--green);font-weight:600;">Independent</span>`
+      : d.independent === false ? `<span style="color:var(--text-faint);">Not Independent</span>`
+      : naSpan('Not stated');
+    const confBadge = typeof d.confidence === 'number'
+      ? ` <span style="font-size:10px;color:var(--text-faint);border:1px solid var(--border);border-radius:4px;padding:1px 5px;">${Math.round(d.confidence * 100)}%</span>`
+      : '';
+    return `
+      <tr onclick="scSelectDirector(${d.id})" style="cursor:pointer;${scSelectedDirectorId===d.id ? 'background:var(--row-active,#eef4ff);' : ''}">
+        <td>${escapeHtml(d.director_name)}</td>
+        <td>${escapeHtml(d.position || '-')}</td>
+        <td>${roleLabel}</td>
+        <td>${indepLabel}</td>
+        <td>${d.page ? `p.${d.page}` : '-'}${confBadge}</td>
+      </tr>`;
+  }).join('');
+
+  const table = `
+    <div class="panel">
+      <div class="ir-panel-title">Directors (${total})</div>
+      <table>
+        <thead><tr><th>Name</th><th>Position (as filed)</th><th>Role</th><th>Independence</th><th>Source</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+
+  const selected = scSelectedDirectorId ? directors.find(d => d.id === scSelectedDirectorId) : null;
+  const detail = selected ? scDirectorDetailPanel(selected) : `
+    <div class="panel">
+      <div class="empty">Select a director from the table to see their full record.</div>
+    </div>`;
+
+  return `
+    ${statCards}
+    <div class="row row-2">
+      <div>${table}</div>
+      <div>${detail}</div>
+    </div>`;
+}
+
+function scDirectorDetailPanel(d){
+  const roleLabel = d.role === 'executive' ? 'Executive' : d.role === 'non_executive' ? 'Non-Executive' : null;
+  return `
+    <div class="panel">
+      <div class="ir-panel-title">${escapeHtml(d.director_name)}</div>
+      <div class="ir-kv-list">
+        ${surveyDetailRow('Position (as filed)', d.position)}
+        ${surveyDetailRow('Role', roleLabel)}
+        ${surveyDetailRow('Independence', d.independent === true ? 'Independent' : d.independent === false ? 'Not Independent' : null)}
+        ${surveyDetailRow('Gender', d.gender)}
+        ${surveyDetailRow('Nationality', d.nationality)}
+        ${surveyDetailRow('Appointed', d.appointed_date)}
+        ${surveyDetailRow('End of Term', d.end_of_term)}
+        ${surveyDetailRow('Committees', d.committees && d.committees.length ? d.committees.join(', ') : null)}
+        ${surveyDetailRow('Source Page', d.page ? `p.${d.page}` : null)}
+        ${d.confidence !== null && d.confidence !== undefined
+          ? surveyDetailRow('Extraction Confidence', Math.round(d.confidence * 100), {suffix: '%'})
+          : `<div class="ir-kv-row"><span class="k">Extraction Confidence</span><span style="color:var(--text-faint);font-size:11.5px;">Not scored (hand-entered or pattern-matched, not a graded extraction)</span></div>`}
+      </div>
+      <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;">
+        Gender, nationality, and appointment/end-of-term dates aren't captured by this filing's supported extraction pattern yet - shown as "Not captured" rather than guessed.
+      </p>
+    </div>`;
+}
+
+function scSelectDirector(directorId){
+  scSelectedDirectorId = directorId;
+  renderScTabBody();
+}
+
+function attachScDirectorsRegisterHandlers(){
+  // Row clicks are wired via inline onclick in the row markup above;
+  // nothing additional to attach today, but kept as its own hook
+  // (matching the naming convention other sc*Tab renders could adopt)
+  // in case row actions grow beyond a single click-to-select later.
+}
+
+function scEvidenceTab(sd){
+  const sources = sd.field_sources || {};
+  const sourceKeys = Object.keys(sources);
+  return `
+    <div class="row row-2">
+      <div class="panel">
+        <div class="ir-panel-title">Per-Field Sources</div>
+        ${sourceKeys.length ? `<div class="ir-kv-list">${sourceKeys.map(k =>
+          `<div class="ir-kv-row"><span class="k">${escapeHtml(k)}</span><span style="font-size:11.5px;">${escapeHtml(sources[k])}</span></div>`
+        ).join('')}</div>` : `<div class="empty">No per-field source references were recorded for this company.</div>`}
+      </div>
+      <div class="panel">
+        <div class="ir-panel-title">Source Notes</div>
+        ${sd.source_notes ? `<pre style="white-space:pre-wrap;font-family:inherit;font-size:11.5px;color:var(--text-dim);margin:0;">${escapeHtml(sd.source_notes)}</pre>` : `<div class="empty">No free-text methodology notes on file.</div>`}
+      </div>
+    </div>`;
 }
 
 function exportSurveyPdf(){
