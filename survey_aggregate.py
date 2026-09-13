@@ -331,3 +331,187 @@ def build_survey_overview(fiscal_year=None):
         'ned_benefits_summary': ned_benefits_summary,
         'companies': company_list,
     }
+
+
+# ---------------------------------------------------------------------
+# Intelligence Layer support (added 2026-09-13) - per-company rows and a
+# governance score, neither of which build_survey_overview() above
+# returns (it only aggregates). Used by the Benchmarking, Company
+# Profiles, Company Rankings, and Governance & Compliance tabs, which
+# all need to compare INDIVIDUAL companies against each other or against
+# the aggregate, not just read the aggregate itself.
+# ---------------------------------------------------------------------
+
+# CMA Code of Corporate Governance thresholds this illustrative score is
+# built from - deliberately simple and fully shown in the UI next to the
+# score, NOT a claim of regulatory compliance. Real CMA compliance
+# assessment would need far more than these two ratios (risk management
+# disclosure, shareholder rights process, remuneration policy existence,
+# etc - none of which this app extracts structurally today).
+GOVERNANCE_INDEPENDENCE_THRESHOLD = 1/3   # CMA: at least 1/3 of the board should be independent NEDs
+GOVERNANCE_GENDER_THRESHOLD = 1/3         # CMA: at least 1/3 gender diversity recommended
+
+
+def _governance_score(row):
+    """A simple, transparent 0-100 illustrative score for ONE company's
+    SurveyCompanyData row: 50 points for meeting the independence
+    threshold (scaled down if under, capped at 50 if over), 50 points
+    for meeting the gender-diversity threshold, same scaling. Returns
+    None (not a fake score) if the row lacks the raw counts needed.
+    Always paired with the raw underlying % in the UI, never shown
+    alone - see GOVERNANCE_SCORE_METHODOLOGY string below, which the
+    frontend displays verbatim next to every score."""
+    indep = row.independent_neds_count
+    non_indep = row.non_independent_neds_count
+    female = row.directors_female
+    male = row.directors_male
+    if indep is None or non_indep is None or (indep + non_indep) == 0:
+        indep_pct = None
+    else:
+        indep_pct = indep / (indep + non_indep)
+    if female is None or male is None or (female + male) == 0:
+        gender_pct = None
+    else:
+        gender_pct = female / (female + male)
+    if indep_pct is None and gender_pct is None:
+        return {'score': None, 'independence_pct': None, 'gender_pct': None}
+    parts = []
+    if indep_pct is not None:
+        parts.append(min(50, round(50 * indep_pct / GOVERNANCE_INDEPENDENCE_THRESHOLD)))
+    if gender_pct is not None:
+        parts.append(min(50, round(50 * gender_pct / GOVERNANCE_GENDER_THRESHOLD)))
+    # If only one half is known, scale that half up to 100 rather than
+    # silently capping at 50 - an unknown half should not look like a
+    # known bad half.
+    score = round(sum(parts) * (100 / (50 * len(parts)))) if parts else None
+    return {
+        'score': score,
+        'independence_pct': round(indep_pct * 100, 1) if indep_pct is not None else None,
+        'gender_pct': round(gender_pct * 100, 1) if gender_pct is not None else None,
+        'independence_compliant': indep_pct is not None and indep_pct >= GOVERNANCE_INDEPENDENCE_THRESHOLD,
+        'gender_compliant': gender_pct is not None and gender_pct >= GOVERNANCE_GENDER_THRESHOLD,
+    }
+
+
+GOVERNANCE_SCORE_METHODOLOGY = (
+    "Illustrative score only, not a regulatory compliance determination. "
+    "Based on two CMA Code of Corporate Governance thresholds this app can "
+    "measure from survey data: board independence \u2265 1/3 and gender "
+    "diversity \u2265 1/3, each worth up to 50 points, scaled linearly up to "
+    "the threshold and capped there. A real CMA assessment covers many "
+    "criteria (risk disclosure, remuneration policy, shareholder rights "
+    "process, etc.) this app does not extract."
+)
+
+
+def build_company_rows(fiscal_year=None):
+    """One row per company with SurveyCompanyData for the given fiscal
+    year (defaults like build_survey_overview), each carrying its own
+    raw board/pay figures plus _governance_score() - the per-company
+    comparison unit the Intelligence Layer's tabs need. NOT filtered by
+    currency/unit the way build_survey_overview's PERFORMANCE averages
+    are (each row stands alone; no cross-company arithmetic happens
+    here), so every row with any data is included."""
+    if not fiscal_year:
+        fiscal_year = default_fiscal_year()
+        if not fiscal_year:
+            return {'has_data': False, 'available_fiscal_years': [], 'rows': []}
+    row_pairs = db.session.query(SurveyCompanyData, Company).join(
+        Company, SurveyCompanyData.company_id == Company.id
+    ).filter(SurveyCompanyData.fiscal_year == fiscal_year).all()
+    if not row_pairs:
+        return {'has_data': False, 'fiscal_year': fiscal_year,
+                'available_fiscal_years': sorted(available_fiscal_years(), reverse=True), 'rows': []}
+    out = []
+    for r, c in row_pairs:
+        gov = _governance_score(r)
+        out.append({
+            'company_id': c.id, 'name': c.name, 'sector': r.sector or c.sector, 'ticker': c.ticker,
+            'fiscal_year': r.fiscal_year, 'currency': r.currency, 'unit': r.unit,
+            'board_size': r.board_size, 'board_meetings_per_year': r.board_meetings_per_year,
+            'independent_neds_count': r.independent_neds_count, 'non_independent_neds_count': r.non_independent_neds_count,
+            'directors_female': r.directors_female, 'directors_male': r.directors_male,
+            'chairperson_annual_retainer': r.chairperson_annual_retainer,
+            'other_ned_annual_retainer': r.other_ned_annual_retainer,
+            'executive_director_annual_retainer': r.executive_director_annual_retainer,
+            'total_director_remuneration': _sum_or_none([
+                r.chairperson_annual_retainer, r.other_ned_annual_retainer, r.executive_director_annual_retainer,
+            ]),
+            'governance': gov,
+        })
+    return {
+        'has_data': True, 'fiscal_year': fiscal_year,
+        'available_fiscal_years': sorted(available_fiscal_years(), reverse=True),
+        'governance_methodology': GOVERNANCE_SCORE_METHODOLOGY,
+        'rows': out,
+    }
+
+
+def build_historical_trends():
+    """One build_survey_overview() call per available fiscal year, so
+    the Historical Trends tab can chart real multi-year series - never
+    interpolated or backfilled, a year with no SurveyCompanyData rows
+    simply doesn't appear in the series."""
+    years = sorted(available_fiscal_years())
+    series = []
+    for y in years:
+        ov = build_survey_overview(fiscal_year=y)
+        if ov.get('has_data'):
+            series.append(ov)
+    return {'has_data': len(series) > 0, 'years': years, 'series': series}
+
+
+# ---------------------------------------------------------------------
+# Portfolio-wide data quality (added 2026-09-13, for Overview) - SAME
+# field list and per-field complete/needs-review/missing classification
+# the Survey Report page's Data Quality tab already applies to one
+# company (see SR_MAPPABLE_FIELDS in the frontend), just summed across
+# every company's LATEST fiscal year instead of shown one company at a
+# time. Kept in sync with SR_MAPPABLE_FIELDS by hand (no single shared
+# source of truth between Python and the template) - if one changes,
+# the other should too.
+# ---------------------------------------------------------------------
+QUALITY_FIELDS = [
+    'board_size', 'board_meetings_per_year', 'committees_per_board', 'committee_meetings_per_year',
+    'directors_female', 'directors_male', 'executive_directors_count', 'non_executive_directors_count',
+    'independent_neds_count', 'non_independent_neds_count', 'chairperson_annual_retainer',
+    'other_ned_annual_retainer', 'chairperson_meeting_allowance', 'other_ned_meeting_allowance',
+    'executive_director_annual_retainer', 'executive_director_meeting_allowance',
+    'committee_chair_annual_retainer', 'committee_member_annual_retainer',
+    'committee_chair_meeting_allowance', 'committee_member_meeting_allowance',
+    'turnover', 'net_profit', 'market_cap',
+]
+
+
+def build_portfolio_data_quality():
+    """Complete / Needs Review / Missing counts across QUALITY_FIELDS,
+    summed over every company's most recent SurveyCompanyData row (one
+    row per company - a company with multiple fiscal years only counts
+    its latest). 'Complete' = has a value AND (no confidence score OR
+    confidence >= 0.75); 'Needs Review' = has a value with confidence <
+    0.75; 'Missing' = no value at all. Returns has_data: False if no
+    company has any SurveyCompanyData at all."""
+    all_rows = SurveyCompanyData.query.order_by(SurveyCompanyData.fiscal_year.desc()).all()
+    latest_by_company = {}
+    for r in all_rows:
+        if r.company_id not in latest_by_company:
+            latest_by_company[r.company_id] = r
+    rows = list(latest_by_company.values())
+    if not rows:
+        return {'has_data': False, 'complete': 0, 'needs_review': 0, 'missing': 0, 'total_fields': 0, 'companies_counted': 0}
+
+    complete = needs_review = missing = 0
+    for r in rows:
+        conf = r.field_confidence or {}
+        for f in QUALITY_FIELDS:
+            val = getattr(r, f, None)
+            if val is None:
+                missing += 1
+            elif f in conf and conf[f] is not None and conf[f] < 0.75:
+                needs_review += 1
+            else:
+                complete += 1
+    return {
+        'has_data': True, 'complete': complete, 'needs_review': needs_review, 'missing': missing,
+        'total_fields': complete + needs_review + missing, 'companies_counted': len(rows),
+    }
