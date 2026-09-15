@@ -50,7 +50,8 @@ class SurveyCompanyData(db.Model):
     net_profit = db.Column(db.Float)
     market_cap = db.Column(db.Float)
     currency = db.Column(db.String(10), default='KES')
-    unit = db.Column(db.String(20), default='millions')   # e.g. "millions", "billions" — states the scale of turnover/net_profit/market_cap
+    unit = db.Column(db.String(20), default='millions')   # e.g. "millions", "billions" — states the scale of turnover/net_profit/market_cap ONLY
+    director_figures_unit = db.Column(db.String(20))       # scale of director/committee/CEO pay and benefit figures (chairperson_annual_retainer, ceo_monthly_*, SurveyDirectorBenefit.total_amount, etc.) - NULLABLE, and deliberately separate from `unit` above: a real filing (confirmed: KCB Group Plc's FY2025 report) states its headline turnover/profit in billions but its director remuneration TABLES in thousands, so one column can't correctly describe both scales for that company. NULL means "same as `unit`" (the common case, where a filing only ever uses one scale) - a caller reads director_figures_unit and falls back to `unit` when it's NULL, never the other way around.
 
     # ---- Board composition (Board Overview / Executive Summary) ----
     board_size = db.Column(db.Integer)
@@ -204,6 +205,7 @@ class SurveyCompanyData(db.Model):
             'uploaded_at': self.uploaded_at.isoformat() if self.uploaded_at else None,
             'currency': self.currency,
             'unit': self.unit,
+            'director_figures_unit': self.director_figures_unit,
             'turnover': self.turnover,
             'net_profit': self.net_profit,
             'market_cap': self.market_cap,
@@ -471,6 +473,106 @@ class SurveyDirector(db.Model):
             'appointed_date': self.appointed_date, 'end_of_term': self.end_of_term,
             'committees': self.committees,
             'order_index': self.order_index,
+            'source_document_id': self.source_document_id, 'page': self.page, 'confidence': self.confidence,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class SurveyDirectorBenefit(db.Model):
+    """One director's non-cash benefit TOTAL for one company/fiscal
+    year - the thing most real filings actually disclose in a table
+    (confirmed on a real filing: Eaagads Limited's combined director
+    remuneration table has an "Estimated value for non-cash benefits"
+    column, one number per director, sometimes nil). This is
+    deliberately separate from SurveyBenefitCategory below (the
+    Housing/Vehicle/Medical-style itemized breakdown a much smaller
+    number of filings state, usually in prose or a different note
+    entirely) - a company can have this without ever having a category
+    breakdown, and the UI should show whichever level of detail
+    actually exists rather than forcing one shape.
+
+    Linked to a director by NAME + fiscal_year, not by a
+    SurveyDirector foreign key - the two extractors run over different
+    parts of a filing (the board/composition pages vs the remuneration
+    report table) and won't always agree on order or even both run
+    successfully for the same company, so matching by name string at
+    display time (case-insensitive, same convention used elsewhere in
+    this app for cross-referencing named people) is more robust than a
+    hard FK that could dangle if one extraction succeeds and the other
+    doesn't.
+    """
+    __tablename__ = 'survey_director_benefit'
+    id = db.Column(db.Integer, primary_key=True)
+    company_id = db.Column(db.Integer, db.ForeignKey('company.id'), nullable=False)
+    fiscal_year = db.Column(db.String(20), nullable=False)
+
+    director_name = db.Column(db.String(150), nullable=False)
+    position = db.Column(db.String(80))              # as printed on the remuneration table's row label, may differ slightly in wording from SurveyDirector.position for the same person
+
+    total_amount = db.Column(db.Float)                 # in the SAME currency/unit as SurveyCompanyData for this company/year - NOT its own separate currency field, deliberately, to avoid two competing unit systems for one company/year
+    detail = db.Column(db.String(300))                  # free text, e.g. "medical cover and indemnity insurance" - only when the filing states what the benefit actually comprises, not inferred
+
+    source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
+    page = db.Column(db.Integer)
+    confidence = db.Column(db.Float)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'company_id': self.company_id, 'fiscal_year': self.fiscal_year,
+            'director_name': self.director_name, 'position': self.position,
+            'total_amount': self.total_amount, 'detail': self.detail,
+            'source_document_id': self.source_document_id, 'page': self.page, 'confidence': self.confidence,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class SurveyBenefitCategory(db.Model):
+    """One line of an ITEMIZED benefits breakdown (Housing, Vehicle,
+    Medical, Travel, Pension, Other, etc.) for a company/fiscal year -
+    the richer disclosure a much smaller number of filings actually
+    state, almost always in the notes to the financial statements
+    (a "Directors' benefits" or similar note) rather than the
+    remuneration report table itself. No automated extractor produces
+    this yet as of this build - real filings state these categories in
+    prose ("directors are entitled to medical cover, housing
+    allowance...") far more often than in a clean amount-per-category
+    table, so this table exists to be filled in by hand (or by a
+    future, narrower extractor if a filing with a genuinely tabular
+    category breakdown is found) rather than left out of the schema
+    entirely - a company that DOES have this disclosure shouldn't be
+    capped at the single-total level SurveyDirectorBenefit offers.
+
+    director_name is nullable: a category row can be COMPANY-LEVEL
+    (the filing states "total housing allowance for all directors was
+    KES X" with no per-person split) or PER-DIRECTOR (a full
+    Housing/Vehicle/Medical/etc. breakdown for one named person, as
+    the Benefits & Allowances mockup's "Benefits by Director" table
+    shows) - both are real, valid shapes a filing might use, and which
+    one applies is itself something to record, not assume.
+    """
+    __tablename__ = 'survey_benefit_category'
+    id = db.Column(db.Integer, primary_key=True)
+    company_id = db.Column(db.Integer, db.ForeignKey('company.id'), nullable=False)
+    fiscal_year = db.Column(db.String(20), nullable=False)
+
+    director_name = db.Column(db.String(150))          # NULL = company-level aggregate for this category, not tied to one person
+    category = db.Column(db.String(60), nullable=False)  # e.g. "Housing Allowance", "Vehicle Allowance", "Medical Cover", "Travel Allowance", "Pension Contributions", "Other Benefits" - free text, not a fixed enum, since filings word these differently
+    description = db.Column(db.String(200))              # e.g. "House rent subsidy / mortgage support" - only if the filing itself describes the category
+    amount = db.Column(db.Float, nullable=False)          # in the same currency/unit as SurveyCompanyData for this company/year
+
+    source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
+    page = db.Column(db.Integer)
+    confidence = db.Column(db.Float)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'company_id': self.company_id, 'fiscal_year': self.fiscal_year,
+            'director_name': self.director_name, 'category': self.category,
+            'description': self.description, 'amount': self.amount,
             'source_document_id': self.source_document_id, 'page': self.page, 'confidence': self.confidence,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

@@ -623,6 +623,7 @@ th.sortable .sort-ic{opacity:.5;font-size:9px;margin-left:2px;}
 th.sortable.active .sort-ic{opacity:1;color:var(--blue);}
 tr.clickable{cursor:pointer;}
 tr.clickable:hover{background:var(--bg-hover);}
+tr.clickable.active{background:var(--bg-hover);box-shadow:inset 2px 0 0 var(--blue);}
 .rank-medal{font-size:14px;}
 .score-badge{padding:2px 8px;border-radius:6px;font-weight:700;font-size:12px;display:inline-block;}
 .score-strong{background:var(--green-soft);color:var(--green);}
@@ -858,26 +859,22 @@ const PAGES = [
   {id:'survey-report', label:'Survey Report', icon:'🧭'},
   {id:'survey-analytics', label:'Survey Analytics & Reporting', icon:'📈'},
   {id:'intelligence-layer', label:'Intelligence Layer', icon:'🧠'},
-  {id:'survey-companies', label:'Survey Companies', icon:'🏛️'},
   {id:'settings', label:'Settings', icon:'⚙️'},
 ];
 // Removed from the visible nav per user request (2026-09-12/13 sessions):
 // Compare Companies, Rankings, Sectors, Watchlist, Saved Views, Data
 // Explorer, Financial Analytics, Exports, AND (latest request) Companies,
-// Intelligence Report, Alerts, Reports. The underlying render functions
-// (renderComparePage, renderRankingsPage, renderSectorsPage,
-// renderAnalyticsPage, renderExportsPage, renderCompaniesPage,
-// renderCompanyDetail, renderAlertsPage, renderReportsPage) and their
-// /api routes are ALL left in the codebase, just unreachable from the
-// nav/router now - not deleted, in case any are wanted back or are still
-// linked to internally (e.g. goToCompany/goToIntelligenceReport calls
-// from other pages still navigate to company-detail/intelligence-report
-// even though there's no nav entry for them anymore - these are now
-// nav-less "detail" destinations reachable only by drilling in from
-// somewhere else, e.g. a company name in a table).
-// renderRankingsPage, renderSectorsPage, renderAnalyticsPage,
-// renderExportsPage) and their /api routes are left in the codebase,
-// just unreachable from the nav/router, in case they're wanted again.
+// Intelligence Report, Alerts, Reports. Companies/Alerts/Reports/
+// Company Detail (renderCompaniesPage, renderAlertsPage, renderReportsPage,
+// renderCompanyDetail) and their /api routes are left in the codebase,
+// just unreachable from the sidebar nav - they're still reached via
+// goTo('companies')/goTo('alerts')/goTo('reports') calls elsewhere in
+// the UI (back-links, the notif bell, "Go to Companies" CTAs) and via
+// goToCompany/goToIntelligenceReport drill-ins from tables. Compare,
+// Rankings, Sectors, and Financial Analytics (renderComparePage,
+// renderRankingsPage, renderSectorsPage, renderAnalyticsPage) and
+// Exports (renderExportsPage) had no remaining call sites at all and
+// were deleted (2026-09-13 cleanup) rather than kept as dead code.
 // "Overview" currently still points at the old portfolio dashboard
 // (renderOverview) - user is sending a design image to rebuild this as
 // an admin-dashboard-style page; not yet replaced.
@@ -1082,10 +1079,6 @@ async function render(){
     await renderSurveyAnalyticsPage();
   } else if (currentPage === 'intelligence-layer') {
     await renderIntelligenceLayerPage();
-  } else if (currentPage === 'survey-companies') {
-    title.textContent = 'Survey Companies';
-    sub.textContent = 'One company\'s submitted board & remuneration data, exactly as filed';
-    await renderSurveyCompaniesPage();
   } else if (currentPage === 'company-detail') {
     await renderCompanyDetail(currentCompanyId);
   } else if (currentPage === 'intelligence-report') {
@@ -1420,144 +1413,12 @@ function statCard(color, icon, value, label, trendHtml){
     </div>`;
 }
 
-function buildRevenueTrendChart(trend){
-  const head = `<div class="chart-head"><h3>Revenue Growth Trend (Portfolio)</h3><span class="chart-select">Last ${(trend||[]).length || 4} Years</span></div>`;
-  if (!trend || trend.length < 2) {
-    return `<div class="chart-panel">${head}<div class="empty">Add financials across at least 2 years to see a trend.</div></div>`;
-  }
-  const w = 280, h = 110, pad = 10;
-  const pts = trend.filter(t => t.growth_pct !== null);
-  if (pts.length < 1) {
-    return `<div class="chart-panel">${head}<div class="empty">Not enough prior-year data yet to compute growth.</div></div>`;
-  }
-  const vals = pts.map(p => p.growth_pct);
-  const minV = Math.min(0, ...vals), maxV = Math.max(...vals) * 1.15 || 1;
-  const stepX = pts.length > 1 ? (w - pad*2) / (pts.length - 1) : 0;
-  const yFor = v => h - pad - ((v - minV) / (maxV - minV || 1)) * (h - pad*2);
-  const coords = pts.map((p, i) => ({x: pad + i*stepX, y: yFor(p.growth_pct), p}));
-  const line = coords.map((c, i) => (i === 0 ? 'M' : 'L') + c.x.toFixed(1) + ',' + c.y.toFixed(1)).join(' ');
-  const dots = coords.map(c => `<circle class="trend-dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3"></circle>
-    <text class="trend-label" x="${c.x.toFixed(1)}" y="${(c.y-8).toFixed(1)}" text-anchor="middle">${fmt(c.p.growth_pct)}%</text>`).join('');
-  const labels = coords.map(c => `<text class="axis-label" x="${c.x.toFixed(1)}" y="${h-1}" text-anchor="middle">${c.p.year}</text>`).join('');
-  return `<div class="chart-panel">${head}
-    <svg class="linechart-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-      <line class="grid-line" x1="0" y1="${h-14}" x2="${w}" y2="${h-14}"></line>
-      <path class="trend-line" d="${line}"></path>
-      ${dots}${labels}
-    </svg>
-  </div>`;
-}
 
-function buildProfitabilityChart(list){
-  const head = `<div class="chart-head"><h3>Profitability Comparison</h3><span class="chart-select">Latest Period</span></div>`;
-  if (!list || list.length === 0) {
-    return `<div class="chart-panel">${head}<div class="empty">No margin data yet.</div></div>`;
-  }
-  const maxV = Math.max(...list.map(p => p.net_margin), 1);
-  const bars = list.map(p => `
-    <div class="vbar-col">
-      <div class="vbar-val">${fmt(p.net_margin)}%</div>
-      <div class="vbar" style="height:${Math.max(4, p.net_margin / maxV * 90)}px;"></div>
-      <div class="vbar-label">${escapeHtml(p.ticker || p.name)}</div>
-    </div>`).join('');
-  return `<div class="chart-panel">${head}<div class="vbar-chart">${bars}</div></div>`;
-}
 
-function buildHealthDistributionMiniDonut(hd, hdTotal, donutStyle){
-  const head = `<div class="chart-head"><h3>Financial Health Distribution</h3></div>`;
-  if (hdTotal === 0) {
-    return `<div class="chart-panel">${head}<div class="empty">No scored companies yet.</div></div>`;
-  }
-  return `<div class="chart-panel">${head}
-    <div class="mini-donut-wrap">
-      <div class="mini-donut" style="${donutStyle}">
-        <div class="donut-hole" style="width:48px;height:48px;"></div>
-      </div>
-      <div class="mini-legend">
-        <div><span class="dot" style="background:var(--green);display:inline-block;border-radius:50%;margin-right:5px;"></span>Strong: ${hd.strong} (${Math.round(hd.strong/hdTotal*100)}%)</div>
-        <div><span class="dot" style="background:var(--amber);display:inline-block;border-radius:50%;margin-right:5px;"></span>Moderate: ${hd.moderate} (${Math.round(hd.moderate/hdTotal*100)}%)</div>
-        <div><span class="dot" style="background:var(--red);display:inline-block;border-radius:50%;margin-right:5px;"></span>Weak: ${hd.weak} (${Math.round(hd.weak/hdTotal*100)}%)</div>
-      </div>
-    </div>
-  </div>`;
-}
 
-function buildSectorPerformanceChart(list){
-  const head = `<div class="chart-head"><h3>Sector Performance (Avg Score)</h3><span class="chart-select">By Score</span></div>`;
-  if (!list || list.length === 0) {
-    return `<div class="chart-panel">${head}<div class="empty">No sector data yet.</div></div>`;
-  }
-  const rows = list.map(s => {
-    const color = s.avg_score >= 70 ? 'var(--green)' : s.avg_score >= 40 ? 'var(--amber)' : 'var(--red)';
-    return `<div class="hbar-row">
-      <div class="hbar-label">${escapeHtml(s.sector)}</div>
-      <div class="hbar-track"><div class="hbar-fill" style="width:${s.avg_score}%;background:${color};"></div></div>
-      <div class="hbar-val">${s.avg_score}</div>
-    </div>`;
-  }).join('');
-  return `<div class="chart-panel">${head}<div class="hbar-list">${rows}</div></div>`;
-}
 
-function buildAttentionTable(issues){
-  if (!issues || issues.length === 0) {
-    return `<div class="panel">
-      <div class="panel-head"><h2>Companies Requiring Attention</h2></div>
-      <div class="empty">No companies currently flagged. Issues are detected from high debt/equity, falling profit, and revenue decline vs the prior period.</div>
-    </div>`;
-  }
-  const rows = issues.map(i => `
-    <tr class="clickable" onclick="goToIntelligenceReport(${i.company_id})">
-      <td><span class="company-flag">${escapeHtml(i.company_name.slice(0,1).toUpperCase())}</span>${escapeHtml(i.company_name)}</td>
-      <td>${escapeHtml(i.issue)}</td>
-      <td>${escapeHtml(i.metric)}</td>
-      <td><span class="severity-badge severity-${i.severity}">${i.severity}</span></td>
-      <td>${timeAgo(i.last_updated)}</td>
-    </tr>`).join('');
-  return `<div class="panel">
-    <div class="panel-head"><h2>Companies Requiring Attention</h2></div>
-    <table>
-      <thead><tr><th>Company</th><th>Issue</th><th>Metric</th><th>Severity</th><th>Last Updated</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  </div>`;
-}
 
-function buildDataSummary(ds){
-  if (!ds) return '';
-  const rows = [
-    ['📄', 'Total Financial Statements', ds.total_statements],
-    ['📅', 'Quarterly Reports', ds.quarterly_reports],
-    ['📁', 'Annual Reports', ds.annual_reports],
-    ['📈', 'KPIs Tracked', ds.kpis_tracked],
-    ['🗂️', 'Data Sources', ds.data_sources],
-  ];
-  const body = rows.map(([icon, label, val]) => `
-    <div class="data-summary-row">
-      <div class="ds-label"><span class="ds-icon">${icon}</span>${escapeHtml(label)}</div>
-      <div class="ds-val">${val}</div>
-    </div>`).join('');
-  return `<div class="panel">
-    <div class="panel-head"><h2>Data Summary</h2></div>
-    ${body}
-  </div>`;
-}
 
-function buildAlertsList(alerts){
-  if (!alerts || alerts.length === 0) {
-    return `<div class="empty">No alerts or opportunities right now. These are detected from debt/equity, profit, and revenue changes vs the prior period.</div>`;
-  }
-  return alerts.map(a => `
-    <div class="alert-item clickable" onclick="goToIntelligenceReport(${a.company_id})">
-      <div>
-        <div class="alert-title risk-${a.severity}">${escapeHtml(a.title)}</div>
-        <div class="alert-company">${escapeHtml(a.company_name)}</div>
-      </div>
-      <div class="alert-meta">
-        <div class="alert-metric">${escapeHtml(a.metric)}</div>
-        <div class="alert-time">${timeAgo(a.last_updated)}</div>
-      </div>
-    </div>`).join('');
-}
 
 async function addCompany(){
   const errorEl = document.getElementById('add-company-error');
@@ -1856,11 +1717,6 @@ function toggleCoColumn(key, checked){
   if (checked) coVisibleColumns.add(key); else coVisibleColumns.delete(key);
   renderCompaniesTable(coFilterText);
 }
-function toggleRowMenu(id, e){
-  e.stopPropagation();
-  document.querySelectorAll('.row-menu').forEach(m => { if (m.id !== `rowMenu${id}`) m.classList.add('hidden'); });
-  document.getElementById(`rowMenu${id}`).classList.toggle('hidden');
-}
 
 function sparklineSvg(scores){
   if (!scores || scores.length < 2) return `<span class="empty" style="padding:0;">-</span>`;
@@ -2125,11 +1981,6 @@ function toggleRankOnlyWithData(el){
 }
 function setRankTopCategory(v){ rankTopCategory = v; renderTopCategoryPanel(); }
 
-async function renderRankingsPage(){
-  const res = await fetch('/api/companies?sort=score');
-  rankCategoryCache = await res.json();
-  renderRankingsTable();
-}
 
 function renderRankingsTable(){
   const app = document.getElementById('app');
@@ -2274,150 +2125,12 @@ function renderTopCategoryPanel(){
   `;
 }
 
-async function renderSectorsPage(){
-  const app = document.getElementById('app');
-  app.innerHTML = `<div class="empty">Loading sectors…</div>`;
-
-  const res = await fetch('/api/sectors');
-  const data = await res.json();
-  const sectors = data.sectors || [];
-
-  if (sectors.length === 0) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies with financial data yet. Add some from the Companies page.</div></div>`;
-    return;
-  }
-
-  // Highlight cards - each picks the sector that leads on that metric.
-  // Only sectors with a non-null value for that metric are eligible.
-  const by = (key) => sectors.filter(s => s[key] !== null).sort((a, b) => b[key] - a[key]);
-  const topGrowth = by('avg_revenue_growth')[0];
-  const topHealth = by('avg_financial_score')[0];
-  const topMargin = by('avg_net_margin')[0];
-  const topSize = by('total_revenue')[0];
-
-  const highlightCards = `
-    <div class="stat-grid" style="margin-bottom:18px;">
-      ${statCard('green', '📈', topGrowth ? escapeHtml(topGrowth.sector) : '-', 'Top Sector by Revenue Growth', `<div class="stat-trend up">${topGrowth ? fmt(topGrowth.avg_revenue_growth) + '% YoY' : 'No YoY data yet'}</div>`)}
-      ${statCard('blue', '🛡️', topHealth ? escapeHtml(topHealth.sector) : '-', 'Best Financial Health', `<div class="stat-trend">${topHealth ? topHealth.avg_financial_score + ' / 100' : '-'}</div>`)}
-      ${statCard('purple', '💰', topMargin ? escapeHtml(topMargin.sector) : '-', 'Highest Profit Margin', `<div class="stat-trend">${topMargin ? fmt(topMargin.avg_net_margin) + '% net margin' : '-'}</div>`)}
-      ${statCard('amber', '📊', topSize ? escapeHtml(topSize.sector) : '-', 'Largest Sector by Revenue', `<div class="stat-trend">${topSize ? topSize.weight_pct + '% of tracked revenue' : '-'}</div>`)}
-      ${statCard('red', '🏢', fmtAmount(data.total_revenue), 'Total Reported Revenue', `<div class="stat-trend">${sectors.reduce((s, x) => s + x.company_count, 0)} companies across ${sectors.length} sectors</div>`)}
-    </div>`;
-
-  const insights = [];
-  if (topGrowth) insights.push({ icon: '📈', color: 'green', title: `${topGrowth.sector} sector led on growth`, body: `Average reported revenue growth of ${fmt(topGrowth.avg_revenue_growth)}% year over year, the highest of any tracked sector.` });
-  if (topHealth) insights.push({ icon: '🛡️', color: 'blue', title: `${topHealth.sector} sector is the most financially sound`, body: `Highest average financial health score at ${topHealth.avg_financial_score}/100.` });
-  if (topMargin && topMargin.sector !== topHealth?.sector) insights.push({ icon: '💰', color: 'purple', title: `${topMargin.sector} shows the strongest margins`, body: `Average net margin of ${fmt(topMargin.avg_net_margin)}%, ahead of every other sector tracked.` });
-
-  const rows = sectors.map(s => `
-    <tr class="clickable" onclick="filterCompaniesBySector('${escapeHtml(s.sector).replace(/'/g, "\\'")}')">
-      <td>${escapeHtml(s.sector)}</td>
-      <td>${s.company_count}</td>
-      <td>${fmtAmount(s.total_revenue)}</td>
-      <td>${s.weight_pct !== null ? s.weight_pct + '%' : '-'}</td>
-      <td class="${s.avg_revenue_growth > 0 ? 'trend-up' : s.avg_revenue_growth < 0 ? 'trend-down' : ''}">${s.avg_revenue_growth !== null ? fmt(s.avg_revenue_growth) + '%' : '-'}</td>
-      <td>${s.avg_net_margin !== null ? fmt(s.avg_net_margin) + '%' : '-'}</td>
-      <td>${s.avg_financial_score !== null ? `<span class="score-badge score-${s.avg_financial_score >= 70 ? 'strong' : s.avg_financial_score >= 40 ? 'moderate' : 'weak'}">${s.avg_financial_score} / 100</span>` : '-'}</td>
-    </tr>`).join('');
-
-  app.innerHTML = `
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:14px;">
-      <button class="export-btn" onclick="window.location.href='/api/export/portfolio'">⭳ Export</button>
-    </div>
-    ${highlightCards}
-    <div class="grid-3col" style="display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:14px;margin-bottom:14px;">
-      <div class="panel">
-        <div class="panel-head"><h2>Revenue Growth by Sector (YoY)</h2></div>
-        <div style="font-size:11px;color:var(--text-faint);margin-bottom:8px;">Based on the two most recent saved periods per company - not stock-market return, which this app doesn't track.</div>
-        <div class="chart-wrap"><canvas id="sectors-bar-chart"></canvas></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Revenue by Sector</h2></div>
-        <div class="chart-wrap"><canvas id="sectors-donut-chart"></canvas></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>💡 Insights</h2></div>
-        ${insights.map(i => `
-          <div style="margin-bottom:14px;">
-            <div style="font-size:13px;font-weight:600;margin-bottom:3px;">${i.icon} ${escapeHtml(i.title)}</div>
-            <div style="font-size:12px;color:var(--text-dim);">${escapeHtml(i.body)}</div>
-          </div>`).join('') || '<div class="empty">Not enough data yet for insights.</div>'}
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h2>Sector Overview</h2></div>
-      <table>
-        <thead><tr><th>Sector</th><th>Companies</th><th>Total Revenue</th><th>Weight</th><th>Revenue Growth (YoY)</th><th>Avg Net Margin</th><th>Financial Health</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-  `;
-
-  const labels = sectors.map(s => s.sector);
-  if (sectorsBarChart) sectorsBarChart.destroy();
-  if (sectorsDonutChart) sectorsDonutChart.destroy();
-
-  const chartOpts = {
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
-      y: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
-    },
-  };
-
-  sectorsBarChart = new Chart(document.getElementById('sectors-bar-chart'), {
-    type: 'bar',
-    data: { labels, datasets: [{
-      data: sectors.map(s => s.avg_revenue_growth),
-      backgroundColor: sectors.map(s => (s.avg_revenue_growth || 0) >= 0 ? '#3ddc84' : '#ff6161'),
-    }] },
-    options: chartOpts,
-  });
-
-  const donutColors = ['#5b9bff','#3ddc84','#ffb020','#b79bfc','#ff6161','#22d3ee','#f472b6','#a3a3a3'];
-  sectorsDonutChart = new Chart(document.getElementById('sectors-donut-chart'), {
-    type: 'doughnut',
-    data: { labels, datasets: [{ data: sectors.map(s => s.total_revenue), backgroundColor: donutColors }] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom', labels: { color: '#aab4cc', boxWidth: 10, font: { size: 10.5 } } } },
-    },
-  });
-}
 
 function filterCompaniesBySector(sector){
   coSectorFilter = sector;
   goTo('companies');
 }
 
-function renderExportsPage(){
-  const app = document.getElementById('app');
-  app.innerHTML = `
-    <div class="panel" style="margin-bottom:14px;">
-      <div class="panel-head"><h2>Portfolio Export</h2></div>
-      <p style="color:var(--text-dim);font-size:12.5px;margin-bottom:12px;">
-        Single sheet, one row per company with latest KPIs — good for a quick watchlist snapshot.
-      </p>
-      <a href="/api/export/portfolio"><button>Download Portfolio (.xlsx)</button></a>
-    </div>
-    <div class="panel" style="margin-bottom:14px;">
-      <div class="panel-head"><h2>Comparison Report</h2></div>
-      <p style="color:var(--text-dim);font-size:12.5px;margin-bottom:12px;">
-        All companies with a summary ranking sheet plus one detailed sheet per company.
-      </p>
-      <a href="/api/export/comparison"><button>Download Comparison (.xlsx)</button></a>
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h2>Raw Company Data</h2></div>
-      <p style="color:var(--text-dim);font-size:12.5px;margin-bottom:12px;">
-        Pick a company to download its full underlying financials as CSV, for external modeling.
-      </p>
-      <div id="exports-company-list">${allCompaniesCache.length ? '' : '<div class="empty">Loading companies…</div>'}</div>
-    </div>
-  `;
-  populateExportsCompanyList();
-}
 
 async function populateExportsCompanyList(){
   if (!allCompaniesCache.length) {
@@ -2444,20 +2157,6 @@ let compareSelectedIds = [];
 let compareSelectedPeriod = '';   // '' = each company's own latest
 let comparePeriodOptions = [];
 
-async function renderComparePage(){
-  const app = document.getElementById('app');
-  if (!allCompaniesCache.length) {
-    const res = await fetch('/api/companies');
-    allCompaniesCache = await res.json();
-  }
-  if (!allCompaniesCache.length) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
-    return;
-  }
-  await refreshComparePeriodOptions();
-  renderCompareShell();
-  if (compareSelectedIds.length >= 2) await runCompare();
-}
 
 function renderCompareShell(){
   const app = document.getElementById('app');
@@ -2662,33 +2361,6 @@ let analyticsChart3 = null;
 let sectorsBarChart = null;
 let sectorsDonutChart = null;
 
-async function renderAnalyticsPage(){
-  const app = document.getElementById('app');
-  if (!allCompaniesCache.length) {
-    const res = await fetch('/api/companies');
-    allCompaniesCache = await res.json();
-  }
-  if (!allCompaniesCache.length) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet. Add one from the Companies page.</div></div>`;
-    return;
-  }
-  if (!analyticsCompanyId) analyticsCompanyId = allCompaniesCache[0].id;
-
-  const opts = allCompaniesCache.map(c =>
-    `<option value="${c.id}" ${c.id === analyticsCompanyId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
-  ).join('');
-
-  app.innerHTML = `
-    <div class="panel">
-      <div class="panel-head">
-        <h2>Financial Analytics</h2>
-        <select class="period-select" onchange="switchAnalyticsCompany(this.value)">${opts}</select>
-      </div>
-      <div id="analytics-body"><div class="empty">Loading trend data...</div></div>
-    </div>
-  `;
-  await loadAnalyticsTrends();
-}
 
 async function switchAnalyticsCompany(id){
   analyticsCompanyId = parseInt(id, 10);
@@ -2813,6 +2485,7 @@ let srTab = 'company-overview';
 let srCompanyId = null;
 let srDataCache = null;
 let srSelectedDirectorIdx = 0;
+let srSurveyAvgCache = null; // portfolio-wide averages from /api/survey/overview, for "vs market" comparisons - fetched lazily, once, the first time a tab needs it
 
 async function renderSurveyReportPage(){
   const app = document.getElementById('app');
@@ -2880,6 +2553,15 @@ function srKpi(icon, value, label){
 function srSwitchCompany(companyId){
   srCompanyId = Number(companyId);
   srSelectedDirectorIdx = 0;
+  srEditableCommittees = null;
+  srCommitteesEditMode = false;
+  srBenefitsSubtab = 'executive';
+  srMappingStatusFilter = 'all';
+  srMappingSectionFilter = 'all';
+  srMappingSearch = '';
+  srDQIssueFilter = 'all';
+  srDQSearch = '';
+  srEvidenceSubtab = 'executive';
   renderSurveyReportPage();
 }
 function switchSRTab(tabId){
@@ -2892,14 +2574,22 @@ function renderSRTabBody(){
   if (!body) return;
   const data = srDataCache;
   if (srTab === 'company-overview') body.innerHTML = srCompanyOverviewTab(data);
-  else if (srTab === 'board-composition') body.innerHTML = srBoardCompositionTab(data);
+  else if (srTab === 'board-composition') {
+    body.innerHTML = srBoardCompositionTab(data);
+    if (!srSurveyAvgCache) {
+      fetch('/api/survey/overview').then(r => r.json()).then(overview => {
+        srSurveyAvgCache = overview;
+        if (srTab === 'board-composition') body.innerHTML = srBoardCompositionTab(data);
+      }).catch(() => {});
+    }
+  }
   else if (srTab === 'directors-register') body.innerHTML = srDirectorsRegisterTab(data);
   else if (srTab === 'remuneration') body.innerHTML = srRemunerationTab(data);
   else if (srTab === 'committees') body.innerHTML = srCommitteesTab(data);
   else if (srTab === 'benefits') body.innerHTML = srBenefitsTab(data);
   else if (srTab === 'evidence') body.innerHTML = srEvidenceTab(data);
   else if (srTab === 'survey-mapping') body.innerHTML = srSurveyMappingTab(data);
-  else if (srTab === 'data-quality') body.innerHTML = srDataQualityTab(data);
+  else if (srTab === 'data-quality') { body.innerHTML = srDataQualityTab(data); srDrawDataQualityTrend(data); }
   if (srTab === 'committees') attachSRCommitteeHandlers();
 }
 
@@ -2913,10 +2603,6 @@ function srConfBadge(survey, fieldName){
   const pct = Math.round(c * 100);
   const cls = c >= 0.75 ? 'sr-conf-high' : c >= 0.45 ? 'sr-conf-med' : 'sr-conf-low';
   return `<span class="sr-conf-badge ${cls}">${pct}%</span>`;
-}
-function srSourceRef(survey, fieldName){
-  if (!survey || !survey.field_sources || !survey.field_sources[fieldName]) return null;
-  return survey.field_sources[fieldName];
 }
 
 // ---- Tab 1: Company Overview ----
@@ -2969,10 +2655,32 @@ function srCompanyOverviewTab(data){
           <div class="empty">${naSpan('Narrative key-information summaries are not generated by this app \u2014 the figures above are shown as filed, without an auto-written interpretation')}</div>
         </div>
         <div class="panel" style="margin-bottom:14px;">
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">5. Non-Executive Director Remuneration</h2><span class="ov-panel-link" onclick="switchSRTab('remuneration')">View full details &rarr;</span></div>
+          ${srCompanyOverviewRemunerationTable(s, [
+            ['Chairperson Annual Retainer','chairperson_annual_retainer'],
+            ['Other NED Annual Retainer','other_ned_annual_retainer'],
+            ['Chairperson Meeting Allowance','chairperson_meeting_allowance'],
+            ['Other NED Meeting Allowance','other_ned_meeting_allowance'],
+          ])}
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">6. Executive Director Remuneration</h2><span class="ov-panel-link" onclick="switchSRTab('remuneration')">View full details &rarr;</span></div>
+          ${srCompanyOverviewRemunerationTable(s, [
+            ['Executive Director Annual Retainer','executive_director_annual_retainer'],
+            ['Executive Director Meeting Allowance','executive_director_meeting_allowance'],
+            ['CEO Monthly Salary','ceo_monthly_salary'],
+            ['CEO Total Cost of Employment','ceo_monthly_cost_of_employment'],
+          ])}
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
           <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">7. Committees</h2><span class="ov-panel-link" onclick="switchSRTab('committees')">View all committees &rarr;</span></div>
           ${data.has_committee_data ? `<table><thead><tr><th>Committee</th><th>Chair</th><th>Members</th></tr></thead><tbody>
             ${data.committees.slice(0,5).map(cm => `<tr><td>${escapeHtml(cm.name)}</td><td>${escapeHtml(cm.chairperson_name || '-')}</td><td>${cm.member_count !== null && cm.member_count !== undefined ? cm.member_count : cm.members.length}</td></tr>`).join('')}
           </tbody></table>` : `<div class="empty">${naSpan('No committee data added for this company yet')}</div>`}
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">8. Disclosure Evidence</h2><span class="ov-panel-link" onclick="switchSRTab('evidence')">View all sources &rarr;</span></div>
+          ${srDisclosureEvidenceTable(s)}
         </div>
         <div class="panel">
           <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">9. Missing Disclosures</h2><span class="ov-panel-link" onclick="switchSRTab('data-quality')">View all &rarr;</span></div>
@@ -2980,6 +2688,38 @@ function srCompanyOverviewTab(data){
         </div>
       </div>
     </div>`;
+}
+// Small reusable helper for panels 5/6 on this tab - a short subset of
+// the same fields the full Remuneration tab shows, each with the same
+// confidence badge so a reader doesn't need to leave this page to
+// sanity-check the summary numbers.
+function srCompanyOverviewRemunerationTable(s, fieldPairs){
+  if (!s) return `<div class="empty">${naSpan('No survey data on file for this company yet')}</div>`;
+  return `<table><tbody>
+    ${fieldPairs.map(([label, f]) => `<tr><td>${escapeHtml(label)}</td><td>${s[f] !== null && s[f] !== undefined ? escapeHtml(s.currency || '') + ' ' + fmtAmount(s[f]) : naSpan('Not filed')}</td><td>${srConfBadge(s, f)}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+// Panel 8 in the design: which SOURCE DOCUMENT/PAGE backs a handful of
+// the survey's most load-bearing figures, at a glance - a smaller,
+// curated version of what the full Evidence & Sources tab shows for
+// every field, using the same field_sources/field_confidence data.
+const SR_DISCLOSURE_EVIDENCE_FIELDS = [
+  ['board_size', 'Board Size'],
+  ['independent_neds_count', 'Independent Directors'],
+  ['chairperson_annual_retainer', 'Chairperson Annual Retainer'],
+  ['executive_director_annual_retainer', 'Executive Director Retainer'],
+];
+function srDisclosureEvidenceTable(s){
+  if (!s) return `<div class="empty">${naSpan('No survey data on file for this company yet')}</div>`;
+  const rows = SR_DISCLOSURE_EVIDENCE_FIELDS.map(([f, label]) => ({
+    label, value: s[f], source: (s.field_sources || {})[f], confidence: (s.field_confidence || {})[f],
+  }));
+  if (rows.every(r => r.value === null || r.value === undefined)) {
+    return `<div class="empty">${naSpan('None of these fields are filed for this company yet')}</div>`;
+  }
+  return `<table><thead><tr><th>Field</th><th>Value</th><th>Source</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${escapeHtml(r.label)}</td><td>${r.value !== null && r.value !== undefined ? escapeHtml(String(r.value)) : naSpan('Missing')}</td><td style="font-size:11px;">${r.source ? escapeHtml(r.source) : naSpan('\u2014')}</td></tr>`).join('')}
+  </tbody></table>`;
 }
 // Fields the design's "Missing Disclosures" panels care about most -
 // walks the real SurveyCompanyData row (when present) and lists which
@@ -3002,11 +2742,30 @@ function srMissingDisclosuresList(s){
 }
 
 // ---- Tab 2: Board Composition ----
+// Portfolio comparison figures (the "vs market average" panel) come
+// from /api/survey/overview's board_overview block, cached lazily in
+// srSurveyAvgCache. That block gives PORTFOLIO TOTALS (e.g.
+// total_independent_neds, total_directors_female), not a pre-computed
+// average of each company's own percentage - so ratios here are
+// computed as (portfolio total / portfolio total board size), a
+// genuine portfolio-wide rate, and labelled "portfolio rate" rather
+// than "average %" so it's not confused with an average-of-averages.
+const SR_BOARD_FIELD_ROWS = [
+  ['Board Size', 'board_size'],
+  ['Executive Directors', 'executive_directors_count'],
+  ['Non-Executive Directors', 'non_executive_directors_count'],
+  ['Independent Directors', 'independent_neds_count'],
+  ['Female Directors', 'directors_female'],
+  ['Male Directors', 'directors_male'],
+  ['Average Age', 'avg_age_executive_directors'],
+  ['Board Meetings Held', 'board_meetings_per_year'],
+];
 function srBoardCompositionTab(data){
   const s = data.survey;
   if (!s) return `<div class="panel"><div class="empty">${naSpan('No survey data on file for this company yet')}</div></div>`;
   const exec = s.executive_directors_count, nonExec = s.non_executive_directors_count;
   const female = s.directors_female, male = s.directors_male;
+
   return `
     <div class="panel" style="margin-bottom:14px;">
       <div class="sa-panel-title">Board Composition</div>
@@ -3034,11 +2793,99 @@ function srBoardCompositionTab(data){
           : `<div class="empty">${naSpan('Not filed in survey data')}</div>`}
       </div>
     </div>
-    <div class="panel">
+    <div class="row row-2" style="grid-template-columns:1.6fr 1fr;">
+      <div class="panel">
+        <div class="sa-panel-title">Board Composition Details</div>
+        <table><thead><tr><th>Item</th><th>Value</th><th>Source Page</th><th>Confidence</th><th>Status</th></tr></thead><tbody>
+          ${SR_BOARD_FIELD_ROWS.map(([label, f]) => {
+            const val = s[f];
+            const src = s.field_sources && s.field_sources[f];
+            const conf = s.field_confidence && s.field_confidence[f];
+            const hasVal = val !== null && val !== undefined;
+            return `<tr>
+              <td>${escapeHtml(label)}</td>
+              <td>${hasVal ? val : naSpan('Not filed')}</td>
+              <td>${src ? escapeHtml(src) : naSpan('\u2014')}</td>
+              <td>${conf !== undefined ? Math.round(conf*100) + '%' : naSpan('\u2014')}</td>
+              <td>${hasVal ? '<span class="ov-status-pill completed">Extracted</span>' : '<span class="ov-status-pill failed">Missing</span>'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody></table>
+      </div>
+      <div>
+        ${srBoardKeyInsightsPanel(s, exec, nonExec, female, male)}
+        ${srBoardComparisonPanel(s)}
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
       <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Board Members</h2><span class="ov-panel-link" onclick="switchSRTab('directors-register')">Full register &rarr;</span></div>
       ${data.has_director_data ? `<table><thead><tr><th>#</th><th>Name</th><th>Role</th></tr></thead><tbody>
         ${data.director_rows.filter(r => !r.is_grand_total && !r.is_total_row).map((r,i) => `<tr><td>${i+1}</td><td>${escapeHtml(r.director_name)}</td><td>${escapeHtml(r.role || '-')}</td></tr>`).join('')}
       </tbody></table>` : `<div class="empty">${naSpan('No named-director data filed for this company yet')}</div>`}
+    </div>
+    <div class="panel">
+      <div class="sa-panel-title">Source Documents</div>
+      ${(data.source_documents || []).length ? `<table><thead><tr><th>Document</th><th>Financial Year</th><th>Pages</th></tr></thead><tbody>
+        ${data.source_documents.map(d => `<tr><td>${escapeHtml(d.filename || d.url || 'Untitled document')}</td><td>${d.period_label ? escapeHtml(d.period_label) : naSpan('\u2014')}</td><td>${d.page_count !== null && d.page_count !== undefined ? d.page_count : naSpan('\u2014')}</td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">${naSpan('No source documents on file for this company yet')}</div>`}
+    </div>`;
+}
+// Deterministic, non-fabricated observations - only fires a line when
+// the underlying figures are actually on file, never a generic filler.
+function srBoardKeyInsightsPanel(s, exec, nonExec, female, male){
+  const insights = [];
+  if (s.independent_neds_count !== null && s.board_size) {
+    const pct = Math.round(s.independent_neds_count / s.board_size * 100);
+    insights.push(`Independent directors make up ${pct}% of the board (${s.independent_neds_count} of ${s.board_size}).`);
+  }
+  if (female !== null && male !== null && (female + male) > 0) {
+    const pct = Math.round(female / (female + male) * 100);
+    insights.push(`Female representation stands at ${pct}% (${female} of ${female + male} directors).`);
+  }
+  if (s.board_meetings_per_year !== null) {
+    insights.push(`The board met ${s.board_meetings_per_year} time${s.board_meetings_per_year === 1 ? '' : 's'} during the fiscal year.`);
+  }
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Key Insights</div>
+      ${insights.length ? `<ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">${insights.map(i => `<li>${i}</li>`).join('')}</ul>`
+        : `<div class="empty">${naSpan('Not enough board composition data on file to generate insights')}</div>`}
+    </div>`;
+}
+// See SR_BOARD_FIELD_ROWS comment above - these are portfolio-wide
+// rates (sum/sum), not an average of each company's own percentage.
+function srBoardComparisonPanel(s){
+  if (!srSurveyAvgCache) return `<div class="panel"><div class="sa-panel-title">Comparison to Market</div><div class="empty">Loading portfolio averages\u2026</div></div>`;
+  if (!srSurveyAvgCache.has_data) return `<div class="panel"><div class="sa-panel-title">Comparison to Market</div><div class="empty">${naSpan('Not enough companies with survey data to compute a portfolio comparison')}</div></div>`;
+  const bo = srSurveyAvgCache.board_overview;
+  const rows = [];
+  if (s.board_size !== null && bo.avg_board_size && bo.avg_board_size.average !== null) {
+    rows.push(['Board Size', s.board_size, Math.round(bo.avg_board_size.average * 10) / 10, s.board_size >= bo.avg_board_size.average]);
+  }
+  const totalBoardSeats = (bo.total_executive_directors || 0) + (bo.total_non_executive_directors || 0);
+  if (s.independent_neds_count !== null && s.board_size && bo.total_independent_neds !== null && totalBoardSeats) {
+    const companyPct = Math.round(s.independent_neds_count / s.board_size * 100);
+    const portfolioPct = Math.round(bo.total_independent_neds / totalBoardSeats * 100);
+    rows.push(['Independent Directors', companyPct + '%', portfolioPct + '% (portfolio rate)', companyPct >= portfolioPct]);
+  }
+  if (s.directors_female !== null && s.board_size && bo.total_directors_female !== null && (bo.total_directors_female + (bo.total_directors_male||0)) > 0) {
+    const companyPct = Math.round(s.directors_female / s.board_size * 100);
+    const portfolioPct = Math.round(bo.total_directors_female / (bo.total_directors_female + bo.total_directors_male) * 100);
+    rows.push(['Female Directors', companyPct + '%', portfolioPct + '% (portfolio rate)', companyPct >= portfolioPct]);
+  }
+  if (s.board_meetings_per_year !== null && bo.avg_board_meetings_per_year && bo.avg_board_meetings_per_year.average !== null) {
+    rows.push(['Board Meetings', s.board_meetings_per_year, Math.round(bo.avg_board_meetings_per_year.average * 10) / 10, s.board_meetings_per_year >= bo.avg_board_meetings_per_year.average]);
+  }
+  return `
+    <div class="panel">
+      <div class="sa-panel-title">Comparison to Market</div>
+      ${rows.length ? `<table><tbody>
+        ${rows.map(([label, val, avg, above]) => `<tr>
+          <td>${escapeHtml(label)}</td><td style="font-weight:700;">${val}</td>
+          <td style="color:var(--text-faint);font-size:11px;">vs ${avg} (portfolio)</td>
+          <td>${above ? '<span style="color:var(--green);">\u2191 Above average</span>' : '<span style="color:var(--amber);">\u2193 Below average</span>'}</td>
+        </tr>`).join('')}
+      </tbody></table>` : `<div class="empty">${naSpan('Not enough matching data to compare')}</div>`}
     </div>`;
 }
 function srStat(icon, value, label, total, field){
@@ -3050,45 +2897,140 @@ function srStat(icon, value, label, total, field){
 }
 
 // ---- Tab 3: Directors' Register ----
+// Two independent sources, never merged (see SurveyDirector's own
+// docstring): survey_director_rows (models_survey.py) holds PROFILE
+// facts - position/gender/nationality/independence/appointed date/
+// committees, from a filing's board-composition pages; director_rows
+// (DirectorRemunerationRow, models.py) holds each person's own filed
+// PAY breakdown, from the filing's remuneration tables. A real company
+// usually has both for the same person, but this tab never assumes a
+// name in one table is the same person in the other - it looks up a
+// name-matched pay row only to display alongside the profile, and
+// says so when no matching pay row exists rather than showing "-".
+const SR_DIRECTOR_DETAIL_TABS = [
+  {id: 'profile', label: 'Profile'},
+  {id: 'committees', label: 'Committee Memberships'},
+];
+let srDirectorDetailTab = 'profile';
 function srDirectorsRegisterTab(data){
-  if (!data.has_director_data) {
-    return `<div class="panel"><div class="empty">${naSpan('No named-director remuneration has been filed for this company yet \u2014 upload an annual report with a Directors\u2019 Remuneration table from the company\u2019s page to populate this')}</div></div>`;
+  if (!data.has_survey_director_data) {
+    return `<div class="panel"><div class="empty">${naSpan('No named-director register has been filed for this company yet \u2014 this needs a filing\u2019s board-composition/directors\u2019-register pages to be extracted or hand-entered; a Directors\u2019 Remuneration table alone (see the Remuneration tab) does not populate this')}</div></div>`;
   }
-  const rows = data.director_rows.filter(r => !r.is_grand_total && !r.is_total_row);
+  const rows = data.survey_director_rows;
   const selected = rows[srSelectedDirectorIdx] || rows[0];
+  const payByName = {};
+  (data.director_rows || []).filter(r => !r.is_grand_total && !r.is_total_row).forEach(r => { payByName[r.director_name] = r; });
+
+  const total = rows.length;
+  const execCount = rows.filter(d => d.role === 'executive').length;
+  const nonExecCount = rows.filter(d => d.role === 'non_executive').length;
+  const independentCount = rows.filter(d => d.independent === true).length;
+  const genderKnown = rows.filter(d => d.gender).length;
+  const femaleCount = rows.filter(d => (d.gender || '').toLowerCase() === 'female').length;
+  const avgAgeNote = null; // SurveyDirector has no date-of-birth/age field - never fabricated here
+
   return `
-    <div class="row row-2" style="grid-template-columns:1.6fr 1fr;">
+    <div class="sr-stat-grid" style="margin-bottom:14px;">
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc65</div><div class="sr-stat-label">Total Directors</div></div><div class="sr-stat-value">${total}</div></div>
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc64</div><div class="sr-stat-label">Executive Directors</div></div><div class="sr-stat-value">${execCount}</div></div>
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc65</div><div class="sr-stat-label">Non-Executive Directors</div></div><div class="sr-stat-value">${nonExecCount}</div></div>
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udee1\ufe0f</div><div class="sr-stat-label">Independent Directors</div></div><div class="sr-stat-value">${independentCount}${total ? ` <span style="font-size:11px;color:var(--text-faint);">(${Math.round(independentCount/total*100)}%)</span>` : ''}</div></div>
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\u2640\ufe0f</div><div class="sr-stat-label">Female Directors</div></div><div class="sr-stat-value">${genderKnown ? `${femaleCount} <span style="font-size:11px;color:var(--text-faint);">(${Math.round(femaleCount/genderKnown*100)}%)</span>` : naSpan('Gender not stated for any director')}</div></div>
+    </div>
+    <div class="row row-2" style="grid-template-columns:1.7fr 1fr;">
       <div class="panel">
         <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Directors' Register</h2></div>
-        <table><thead><tr><th>#</th><th>Name</th><th>Role</th><th>Table</th><th>Total</th></tr></thead><tbody>
-          ${rows.map((r,i) => `
-            <tr class="clickable" onclick="srSelectedDirectorIdx=${i};renderSRTabBody();">
-              <td>${i+1}</td><td>${escapeHtml(r.director_name)}</td><td>${escapeHtml(r.role || '-')}</td>
-              <td>${escapeHtml(r.table_kind || '-')}</td><td>${r.total !== null ? fmtAmount(r.total) : '-'}</td>
-            </tr>`).join('')}
+        <table><thead><tr><th>#</th><th>Name</th><th>Position</th><th>Gender</th><th>Nationality</th><th>Independence</th><th>Appointed</th><th>Committees</th><th>Status</th></tr></thead><tbody>
+          ${rows.map((d,i) => {
+            const indepLabel = d.independent === true ? `<span style="color:var(--green);font-weight:600;">Independent</span>`
+              : d.independent === false ? `<span style="color:var(--text-faint);">Not Independent</span>`
+              : naSpan('Not stated');
+            const committeeCount = d.committees && d.committees.length ? d.committees.length : null;
+            return `
+            <tr class="clickable ${srSelectedDirectorIdx === i ? 'active' : ''}" onclick="srSelectedDirectorIdx=${i};renderSRTabBody();">
+              <td>${i+1}</td><td>${escapeHtml(d.director_name)}</td><td>${d.position ? escapeHtml(d.position) : naSpan('\u2014')}</td>
+              <td>${d.gender ? escapeHtml(d.gender) : naSpan('\u2014')}</td><td>${d.nationality ? escapeHtml(d.nationality) : naSpan('\u2014')}</td>
+              <td>${indepLabel}</td><td>${d.appointed_date ? escapeHtml(d.appointed_date) : naSpan('\u2014')}</td>
+              <td style="text-align:center;">${committeeCount !== null ? committeeCount : naSpan('\u2014')}</td>
+              <td><span class="ov-status-pill completed">Verified</span></td>
+            </tr>`;
+          }).join('')}
         </tbody></table>
       </div>
       <div class="panel">
-        ${selected ? `
-        <div class="sa-panel-title">${escapeHtml(selected.director_name)}</div>
-        <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(selected.role || 'Role not specified')}</div>
-        <table><tbody>
-          ${selected.components ? Object.entries(selected.components).map(([k,v]) => `<tr><td>${escapeHtml(k)}</td><td style="font-weight:700;">${fmtAmount(v)}</td></tr>`).join('') : ''}
-          <tr><td style="font-weight:700;">Total</td><td style="font-weight:700;">${selected.total !== null ? fmtAmount(selected.total) : '-'}</td></tr>
-        </tbody></table>
-        ${selected.page ? `<div style="margin-top:10px;font-size:10.5px;color:var(--text-faint);">Source: page ${selected.page}${selected.confidence !== null ? ' · ' + Math.round(selected.confidence*100) + '% confidence' : ''}</div>` : ''}
-        ` : `<div class="empty">Select a director from the register.</div>`}
+        ${selected ? srDirectorDetailPanel(selected, payByName[selected.director_name]) : `<div class="empty">Select a director from the register.</div>`}
       </div>
     </div>`;
+}
+function srDirectorDetailPanel(d, pay){
+  const roleLabel = d.role === 'executive' ? 'Executive Director' : d.role === 'non_executive' ? 'Non-Executive Director (NED)' : null;
+  const tabBar = `
+    <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px;">
+      ${SR_DIRECTOR_DETAIL_TABS.map(t => `
+        <button onclick="srDirectorDetailTab='${t.id}';renderSRTabBody();"
+          style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${srDirectorDetailTab===t.id?'700':'500'};color:${srDirectorDetailTab===t.id?'var(--text)':'var(--text-faint)'};border-bottom:2px solid ${srDirectorDetailTab===t.id?'var(--blue)':'transparent'};">
+          ${t.label}
+        </button>`).join('')}
+    </div>`;
+  let body;
+  if (srDirectorDetailTab === 'committees') {
+    const committees = d.committees || [];
+    body = committees.length
+      ? `<ul style="margin:0;padding-left:18px;font-size:12.5px;">${committees.map(c => `<li style="margin-bottom:4px;">${escapeHtml(c)}</li>`).join('')}</ul>`
+      : `<div class="empty">${naSpan('No committee memberships stated for this director in the filing')}</div>`;
+  } else {
+    body = `
+      <div class="ir-kv-list">
+        ${surveyDetailRow('Position (as filed)', d.position)}
+        ${surveyDetailRow('Independence', d.independent === true ? 'Independent' : d.independent === false ? 'Not Independent' : null)}
+        ${surveyDetailRow('Gender', d.gender)}
+        ${surveyDetailRow('Nationality', d.nationality)}
+        ${surveyDetailRow('Appointed', d.appointed_date)}
+        ${surveyDetailRow('End of Term', d.end_of_term)}
+        ${surveyDetailRow('Source Page', d.page ? `p.${d.page}` : null)}
+        ${d.confidence !== null && d.confidence !== undefined
+          ? surveyDetailRow('Extraction Confidence', Math.round(d.confidence * 100), {suffix: '%'})
+          : `<div class="ir-kv-row"><span class="k">Extraction Confidence</span><span style="color:var(--text-faint);font-size:11.5px;">Not scored (hand-entered, not a graded extraction)</span></div>`}
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;font-weight:700;color:var(--text-faint);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;">Filed Remuneration</div>
+        ${pay ? `
+          <table><tbody>
+            ${pay.components ? Object.entries(pay.components).map(([k,v]) => `<tr><td>${escapeHtml(k)}</td><td style="font-weight:700;">${fmtAmount(v)}</td></tr>`).join('') : ''}
+            <tr><td style="font-weight:700;">Total</td><td style="font-weight:700;">${pay.total !== null ? fmtAmount(pay.total) : '-'}</td></tr>
+          </tbody></table>
+          ${pay.page ? `<div style="margin-top:8px;font-size:10.5px;color:var(--text-faint);">Source: page ${pay.page}${pay.confidence !== null ? ' \u00b7 ' + Math.round(pay.confidence*100) + '% confidence' : ''}</div>` : ''}
+        ` : `<div class="empty" style="padding:10px 0;">${naSpan('No remuneration row filed under this exact name \u2014 see the Remuneration tab for all named-director pay on file')}</div>`}
+      </div>`;
+  }
+  return `
+    <div class="sa-panel-title">${escapeHtml(d.director_name)}</div>
+    <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px;">${roleLabel ? escapeHtml(roleLabel) : naSpan('Role not specified')}</div>
+    ${tabBar}
+    ${body}`;
 }
 
 // ---- Tab 4: Remuneration (Directors) ----
 function srRemunerationTab(data){
   const s = data.survey;
   if (!s && !data.has_director_data) return `<div class="panel"><div class="empty">${naSpan('No survey or filed director data on record for this company yet')}</div></div>`;
+  const directorRows = (data.director_rows || []).filter(r => !r.is_grand_total && !r.is_total_row);
+  const execRows = directorRows.filter(r => r.role === 'executive');
+  const nonExecRows = directorRows.filter(r => r.role === 'non_executive');
+  const profileByName = {};
+  (data.survey_director_rows || []).forEach(d => { profileByName[d.director_name] = d; });
+
   return `
     <div class="row row-2" style="grid-template-columns:1.6fr 1fr;">
       <div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Executive Directors Remuneration</h2></div>
+          ${srPerDirectorRemunerationTable(execRows, profileByName)}
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Non-Executive Directors Remuneration</h2></div>
+          ${srPerDirectorRemunerationTable(nonExecRows, profileByName)}
+        </div>
         <div class="panel" style="margin-bottom:14px;">
           <div class="sa-panel-title">Company-Level Remuneration (Survey Data)</div>
           ${s ? `<table><thead><tr><th>Field</th><th>Value</th><th>Confidence</th></tr></thead><tbody>
@@ -3099,36 +3041,173 @@ function srRemunerationTab(data){
               ['Other NED Meeting Allowance','other_ned_meeting_allowance'],
               ['Executive Director Annual Retainer','executive_director_annual_retainer'],
               ['Executive Director Meeting Allowance','executive_director_meeting_allowance'],
+              ['Committee Chair Annual Retainer','committee_chair_annual_retainer'],
+              ['Committee Member Annual Retainer','committee_member_annual_retainer'],
+              ['Committee Chair Meeting Allowance','committee_chair_meeting_allowance'],
+              ['Committee Member Meeting Allowance','committee_member_meeting_allowance'],
             ].map(([label,f]) => `<tr><td>${label}</td><td>${s[f] !== null && s[f] !== undefined ? escapeHtml(s.currency) + ' ' + fmtAmount(s[f]) : naSpan('Not filed in survey data')}</td><td>${srConfBadge(s,f)}</td></tr>`).join('')}
           </tbody></table>` : `<div class="empty">${naSpan('No survey data on file for this company yet')}</div>`}
         </div>
+        ${srCeoRemunerationPanel(s)}
         <div class="panel">
-          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Named Directors' Filed Remuneration</h2></div>
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Named Directors' Filed Remuneration \u2014 All Rows</h2></div>
           ${data.has_director_data ? `<table><thead><tr><th>Director Name</th><th>Position</th><th>Total</th><th>Page</th><th>Confidence</th></tr></thead><tbody>
             ${data.director_rows.map(r => `<tr><td>${escapeHtml(r.director_name)}${r.is_grand_total ? ' <b>(Grand Total)</b>' : r.is_total_row ? ' <i>(subtotal)</i>' : ''}</td><td>${escapeHtml(r.role || '-')}</td><td>${r.total !== null ? fmtAmount(r.total) : '-'}</td><td>${r.page || '-'}</td><td>${r.confidence !== null ? Math.round(r.confidence*100) + '%' : '-'}</td></tr>`).join('')}
           </tbody></table>` : `<div class="empty">${naSpan('No named-director remuneration filed for this company yet')}</div>`}
         </div>
       </div>
-      <div class="panel">
-        <div class="sa-panel-title">Missing Disclosures</div>
-        ${srMissingDisclosuresList(s)}
+      <div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="sa-panel-title">Source Document Evidence</div>
+          ${srRemunerationSourceEvidenceList(s)}
+        </div>
+        <div class="panel">
+          <div class="sa-panel-title">Missing Disclosures</div>
+          ${srMissingDisclosuresList(s)}
+        </div>
       </div>
+    </div>`;
+}
+// Per-director table with EACH FILED PAY COMPONENT as its own column
+// (Salary/Bonus/Benefits/LTIP/Pension, or whatever the filing itself
+// labelled its columns - see DirectorRemunerationRow.components'
+// own docstring in models.py: no fixed schema is assumed). Gender/
+// Independence come from a SEPARATE source (SurveyDirector, matched
+// by name, same convention as srDirectorDetailPanel) since
+// DirectorRemunerationRow itself has no such fields - shown as
+// "\u2014" rather than guessed when no SurveyDirector row shares that
+// exact name.
+function srPerDirectorRemunerationTable(rows, profileByName){
+  if (!rows.length) return `<div class="empty">${naSpan('No named directors of this type filed for this company yet')}</div>`;
+  const allKeys = new Set();
+  rows.forEach(r => { if (r.components) Object.keys(r.components).forEach(k => allKeys.add(k)); });
+  const keys = Array.from(allKeys);
+  return `<table><thead><tr><th>#</th><th>Director Name</th><th>Position</th><th>Gender</th>${keys.map(k => `<th>${escapeHtml(k)}</th>`).join('')}<th>Total</th><th>Page</th></tr></thead><tbody>
+    ${rows.map((r,i) => {
+      const profile = profileByName[r.director_name];
+      return `<tr>
+        <td>${i+1}</td><td>${escapeHtml(r.director_name)}</td><td>${escapeHtml(r.role === 'executive' ? 'Executive Director' : 'Non-Executive Director')}</td>
+        <td>${profile && profile.gender ? escapeHtml(profile.gender) : naSpan('\u2014')}</td>
+        ${keys.map(k => `<td>${r.components && r.components[k] !== undefined ? fmtAmount(r.components[k]) : naSpan('\u2014')}</td>`).join('')}
+        <td style="font-weight:700;">${r.total !== null ? fmtAmount(r.total) : '-'}</td>
+        <td>${r.page || naSpan('\u2014')}</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>`;
+}
+// A curated few high-value fields with their exact filed wording, if
+// the extractor captured a quote - most fields only have field_sources
+// (a page reference string), not a stored quote, so this only shows a
+// quote where one genuinely exists rather than fabricating one.
+const SR_REMUNERATION_EVIDENCE_FIELDS = [
+  'chairperson_annual_retainer', 'executive_director_annual_retainer', 'ceo_monthly_salary',
+];
+function srRemunerationSourceEvidenceList(s){
+  if (!s) return `<div class="empty">${naSpan('No survey data on file for this company yet')}</div>`;
+  const rows = SR_REMUNERATION_EVIDENCE_FIELDS
+    .map(f => ({field: f, source: (s.field_sources || {})[f]}))
+    .filter(r => r.source);
+  if (!rows.length) return `<div class="empty">${naSpan('No sourced remuneration fields on file for this company yet')}</div>`;
+  return rows.map(r => `<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border);">
+    <div style="font-size:11.5px;font-weight:700;">${escapeHtml(r.field.replace(/_/g,' '))}</div>
+    <div style="font-size:11px;color:var(--text-faint);">${escapeHtml(r.source)}</div>
+  </div>`).join('');
+}
+// Merged in from the (now-removed) Survey Companies page's CEO/MD
+// Remuneration tab - these are company-level MONTHLY figures (a
+// different unit than the annual retainer/allowance fields above),
+// so kept as its own panel rather than folded into the annual table.
+function srCeoRemunerationPanel(s){
+  if (!s) return '';
+  const ceoFields = ['ceo_monthly_salary','ceo_monthly_allowances','ceo_monthly_incentive_bonus',
+    'ceo_monthly_deferred_incentive','ceo_monthly_non_cash_benefits','ceo_monthly_pension',
+    'ceo_monthly_gratuity','ceo_monthly_share_value','ceo_monthly_cost_of_employment'];
+  const anyCeoData = ceoFields.some(f => s[f] !== null && s[f] !== undefined);
+  if (!anyCeoData) return '';
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">CEO/MD Remuneration \u2014 Monthly (${escapeHtml(s.currency || 'KES')})</div>
+      <table><thead><tr><th>Field</th><th>Value</th><th>Confidence</th></tr></thead><tbody>
+        ${[
+          ['Salary','ceo_monthly_salary'], ['Allowances','ceo_monthly_allowances'],
+          ['Incentive / Bonus','ceo_monthly_incentive_bonus'], ['Deferred Incentive','ceo_monthly_deferred_incentive'],
+          ['Non-Cash Benefits','ceo_monthly_non_cash_benefits'], ['Pension','ceo_monthly_pension'],
+          ['Gratuity','ceo_monthly_gratuity'], ['Share Value','ceo_monthly_share_value'],
+          ['Total Cost of Employment','ceo_monthly_cost_of_employment'],
+        ].map(([label,f]) => `<tr><td>${label}</td><td>${s[f] !== null && s[f] !== undefined ? escapeHtml(s.currency || 'KES') + ' ' + fmtAmount(s[f]) : naSpan('Not filed')}</td><td>${srConfBadge(s,f)}</td></tr>`).join('')}
+      </tbody></table>
     </div>`;
 }
 
 // ---- Tab 5: Committees ----
+// Read-only data display by default (matches the design mockup: stat
+// cards, a Committee Structure table with real page/confidence
+// evidence, a Committee Members table). Editing (the original
+// hand-entry form this tab used to open directly into) is now behind
+// an explicit "Edit Committees" toggle instead of being the default
+// view, since most visits are to review filed data, not add it.
 let srEditableCommittees = null;
+let srCommitteesEditMode = false;
 function srCommitteesTab(data){
   const committees = data.committees || [];
+  if (!srCommitteesEditMode) return srCommitteesReadView(committees);
   if (!srEditableCommittees) srEditableCommittees = JSON.parse(JSON.stringify(committees));
   return `
     <div class="panel" style="margin-bottom:14px;">
-      <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Board Committees</h2>
-        <button class="secondary" onclick="srAddCommitteeRow()">+ Add Committee</button>
+      <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Edit Board Committees</h2>
+        <span>
+          <button class="secondary" onclick="srAddCommitteeRow()">+ Add Committee</button>
+          <button class="secondary" onclick="srCommitteesEditMode=false;renderSRTabBody();">Done Editing</button>
+        </span>
       </div>
       ${!committees.length && !srEditableCommittees.length ? `<div class="empty">${naSpan('No committee data has been added for this company yet \u2014 use "+ Add Committee" to start recording committee structure')}</div>` : ''}
       <div id="srCommitteeList">${srRenderCommitteeRows()}</div>
       ${srEditableCommittees.length ? `<button class="btn-primary-cta" style="margin-top:12px;" onclick="srSaveCommittees()">Save Committees</button>` : ''}
+    </div>`;
+}
+function srCommitteesReadView(committees){
+  if (!committees.length) {
+    return `<div class="panel"><div class="empty">${naSpan('No committee data has been added for this company yet')}</div>
+      <button class="secondary" style="margin-top:10px;" onclick="srCommitteesEditMode=true;renderSRTabBody();">+ Add Committee</button></div>`;
+  }
+  const totalCommittees = committees.length;
+  const totalMembers = committees.reduce((sum, c) => sum + (c.members ? c.members.length : (c.member_count || 0)), 0);
+  const totalMeetings = committees.reduce((sum, c) => sum + (c.meetings_held || 0), 0);
+  const withAttendance = committees.filter(c => c.attendance_rate !== null && c.attendance_rate !== undefined);
+  const avgAttendance = withAttendance.length ? Math.round(withAttendance.reduce((s,c) => s + c.attendance_rate, 0) / withAttendance.length) : null;
+
+  const allMembers = [];
+  committees.forEach(c => (c.members || []).forEach(m => allMembers.push({...m, committee_name: c.name})));
+
+  return `
+    <div class="sa-stat-grid" style="margin-bottom:14px;">
+      ${saStatCard('\ud83d\udc65', totalCommittees, 'Total Committees')}
+      ${saStatCard('\ud83d\udc64', totalMembers, 'Total Members (across all committees)')}
+      ${saStatCard('\ud83d\udcc5', totalMeetings || naSpan('Not filed'), 'Total Meetings Held')}
+      ${saStatCard('\ud83d\udcca', avgAttendance !== null ? avgAttendance + '%' : naSpan('Not filed'), 'Average Meeting Attendance')}
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Committee Structure</h2>
+        <button class="secondary" onclick="srCommitteesEditMode=true;renderSRTabBody();">Edit Committees</button>
+      </div>
+      <table><thead><tr><th>Committee</th><th>Chairperson</th><th>Members</th><th>Meetings Held</th><th>Attendance Rate</th><th>Source Page</th><th>Confidence</th></tr></thead><tbody>
+        ${committees.map(c => `
+          <tr>
+            <td>${escapeHtml(c.name)}</td>
+            <td>${c.chairperson_name ? escapeHtml(c.chairperson_name) : naSpan('Not stated')}</td>
+            <td>${c.member_count !== null && c.member_count !== undefined ? c.member_count : (c.members ? c.members.length : naSpan('\u2014'))}</td>
+            <td>${c.meetings_held !== null && c.meetings_held !== undefined ? c.meetings_held : naSpan('\u2014')}</td>
+            <td>${c.attendance_rate !== null && c.attendance_rate !== undefined ? Math.round(c.attendance_rate) + '%' : naSpan('\u2014')}</td>
+            <td>${c.page ? 'p.' + c.page : naSpan('\u2014')}</td>
+            <td>${c.confidence !== null && c.confidence !== undefined ? Math.round(c.confidence*100) + '%' : naSpan('\u2014')}</td>
+          </tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div class="panel">
+      <div class="sa-panel-title">Committee Members</div>
+      ${allMembers.length ? `<table><thead><tr><th>Name</th><th>Committee</th><th>Role</th></tr></thead><tbody>
+        ${allMembers.map(m => `<tr><td>${escapeHtml(m.director_name)}</td><td>${escapeHtml(m.committee_name)}</td><td>${m.role_on_committee === 'chair' ? '<b>Chair</b>' : 'Member'}</td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">${naSpan('No individual committee members recorded \u2014 only committee-level counts are on file')}</div>`}
     </div>`;
 }
 function srRenderCommitteeRows(){
@@ -3168,58 +3247,227 @@ async function srSaveCommittees(){
   });
   if (res.ok) {
     srEditableCommittees = null;
+    srCommitteesEditMode = false;
     await renderSurveyReportPage();
     switchSRTab('committees');
   }
 }
 
 // ---- Tab 6: Benefits & Allowances ----
+// ---- Tab 6: Benefits & Allowances ----
+// Two real, independent data sources: SurveyCompanyData.ned_benefits
+// (a filed benefit-name -> {provided, detail} map, boolean only, no
+// amounts) and DirectorRemunerationRow.components (a filing's own
+// remuneration-table columns, keyed exactly as printed - see that
+// column's own docstring in pdf_parse.py). Some filings' components
+// genuinely include a benefits-shaped column (e.g. "Benefits (KES)"),
+// but there's no fixed schema, so this tab scans for component keys
+// that look benefit/allowance-related rather than assuming a fixed
+// Housing/Vehicle/Medical/Travel/Pension category list - showing
+// whichever columns a given filing actually has, never inventing
+// categories the filing didn't print.
+const SR_BENEFITS_SUBTABS = [
+  {id: 'executive', label: 'Executive Directors'},
+  {id: 'non_executive', label: 'Non-Executive Directors'},
+  {id: 'per_director', label: 'Per Director Breakdown'},
+];
+let srBenefitsSubtab = 'executive';
+const BENEFIT_KEY_PATTERN = /housing|vehicle|car|medical|health|travel|pension|benefit|allowance|insurance|mortgage|fuel/i;
+
 function srBenefitsTab(data){
   const s = data.survey;
   const benefits = (s && s.ned_benefits) || null;
+  const directorRows = (data.director_rows || []).filter(r => !r.is_grand_total && !r.is_total_row);
+  const surveyBenefits = data.survey_director_benefits || [];
+
   return `
-    <div class="panel">
-      <div class="sa-panel-title">NED Benefits & Allowances</div>
-      ${benefits && Object.keys(benefits).length ? `
+    <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:14px;">
+      ${SR_BENEFITS_SUBTABS.map(t => `
+        <button onclick="srBenefitsSubtab='${t.id}';renderSRTabBody();"
+          style="background:none;border:none;padding:9px 12px;font-size:12.5px;cursor:pointer;font-weight:${srBenefitsSubtab===t.id?'700':'500'};color:${srBenefitsSubtab===t.id?'var(--text)':'var(--text-faint)'};border-bottom:2px solid ${srBenefitsSubtab===t.id?'var(--blue)':'transparent'};">
+          ${t.label}
+        </button>`).join('')}
+    </div>
+    ${srBenefitsSubtab === 'per_director' ? srBenefitsPerDirectorView(directorRows, surveyBenefits) : srBenefitsRoleView(srBenefitsSubtab, benefits, directorRows)}`;
+}
+
+function srBenefitsRoleView(role, benefits, directorRows){
+  const roleRows = directorRows.filter(r => r.role === role);
+  const amounts = [];
+  roleRows.forEach(r => {
+    if (!r.components) return;
+    Object.entries(r.components).forEach(([k, v]) => {
+      if (BENEFIT_KEY_PATTERN.test(k) && typeof v === 'number') amounts.push(v);
+    });
+  });
+  const total = amounts.length ? amounts.reduce((a,b) => a+b, 0) : null;
+  const avg = amounts.length ? total / roleRows.length : null;
+
+  // NED-specific boolean benefits list only makes sense for non-executive
+  const showNedBenefitsTable = role === 'non_executive' && benefits && Object.keys(benefits).length > 0;
+
+  return `
+    <div class="sa-stat-grid" style="margin-bottom:14px;">
+      ${saStatCard('\ud83d\udcb0', total !== null ? fmtAmount(total) : naSpan('Not filed'), 'Total Benefits (filed components)')}
+      ${saStatCard('\ud83d\udc64', avg !== null ? fmtAmount(avg) : naSpan('\u2014'), 'Avg. per Director')}
+      ${saStatCard('\ud83d\udcca', roleRows.length, role === 'executive' ? 'Executive Directors Covered' : 'Non-Executive Directors Covered')}
+    </div>
+    ${showNedBenefitsTable ? `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Benefits Provided (as filed)</div>
       <table><thead><tr><th>Benefit</th><th>Provided</th><th>Detail</th></tr></thead><tbody>
         ${Object.entries(benefits).map(([key, v]) => `
-          <tr><td>${escapeHtml(key)}</td><td><span class="ov-status-pill ${v.provided ? 'completed' : 'pending'}">${v.provided ? 'Provided' : 'Not Provided'}</span></td><td>${escapeHtml(v.detail || '-')}</td></tr>`).join('')}
-      </tbody></table>` : `<div class="empty">${naSpan('No NED benefits data filed for this company yet')}</div>`}
-    </div>
-    <div class="panel" style="margin-top:14px;">
-      <div class="sa-panel-title">Per-Director Benefits Breakdown</div>
-      <div class="empty">${naSpan('Per-director benefits are not stored separately from a director\u2019s filed total \u2014 DirectorRemunerationRow.components may include a benefits-related column when the filing itself breaks it out (see the Remuneration tab for this company\u2019s named-director figures)')}</div>
+          <tr><td>${escapeHtml(key)}</td><td><span class="ov-status-pill ${v.provided ? 'completed' : 'pending'}">${v.provided ? 'Provided' : 'Not Provided'}</span></td><td>${v.detail ? escapeHtml(v.detail) : naSpan('\u2014')}</td></tr>`).join('')}
+      </tbody></table>
+    </div>` : ''}
+    <div class="panel">
+      <div class="sa-panel-title">Benefit Components in Filed Remuneration</div>
+      ${roleRows.length ? `<table><thead><tr><th>Director</th>${srBenefitColumnHeaders(roleRows)}</tr></thead><tbody>
+        ${roleRows.map(r => `<tr><td>${escapeHtml(r.director_name)}</td>${srBenefitColumnCells(roleRows, r)}</tr>`).join('')}
+      </tbody></table>` : `<div class="empty">${naSpan(`No named ${role === 'executive' ? 'executive' : 'non-executive'} directors filed for this company yet`)}</div>`}
+    </div>`;
+}
+function srBenefitColumnKeys(rows){
+  const keys = new Set();
+  rows.forEach(r => { if (r.components) Object.keys(r.components).forEach(k => { if (BENEFIT_KEY_PATTERN.test(k)) keys.add(k); }); });
+  return Array.from(keys);
+}
+function srBenefitColumnHeaders(rows){
+  const keys = srBenefitColumnKeys(rows);
+  return keys.length ? keys.map(k => `<th>${escapeHtml(k)}</th>`).join('') : '<th>Benefit Components</th>';
+}
+function srBenefitColumnCells(allRoleRows, r){
+  const keys = srBenefitColumnKeys(allRoleRows);
+  if (!keys.length) return `<td>${naSpan('No benefit-related column in this filing\u2019s table')}</td>`;
+  return keys.map(k => `<td>${r.components && r.components[k] !== undefined ? fmtAmount(r.components[k]) : naSpan('\u2014')}</td>`).join('');
+}
+// Real per-director non-cash-benefit TOTALS (SurveyDirectorBenefit,
+// models_survey.py) - a separate, independently-run extractor from
+// the components-scan above (which only reverse-engineers a benefit
+// figure from whatever columns a director's own remuneration table
+// row happened to have). Shown as its own section since the two
+// sources aren't guaranteed to agree or even both exist for the same
+// director - see SurveyDirectorBenefit's own docstring for why they're
+// matched by name, not merged into one row at write time.
+function srBenefitsPerDirectorView(directorRows, surveyBenefits){
+  const withComponents = directorRows.filter(r => r.components && Object.keys(r.components).some(k => BENEFIT_KEY_PATTERN.test(k)));
+  return `
+    ${srSurveyDirectorBenefitsPanel(surveyBenefits)}
+    <div class="panel">
+      <div class="sa-panel-title">Benefit Components in Filed Director Remuneration Tables</div>
+      ${withComponents.length ? (() => {
+        const allKeys = srBenefitColumnKeys(withComponents);
+        return `<table><thead><tr><th>Director</th><th>Position</th>${allKeys.map(k => `<th>${escapeHtml(k)}</th>`).join('')}<th>Total</th></tr></thead><tbody>
+          ${withComponents.map(r => `<tr>
+            <td>${escapeHtml(r.director_name)}</td><td>${escapeHtml(r.role || '-')}</td>
+            ${allKeys.map(k => `<td>${r.components[k] !== undefined ? fmtAmount(r.components[k]) : naSpan('\u2014')}</td>`).join('')}
+            <td style="font-weight:700;">${r.total !== null ? fmtAmount(r.total) : '-'}</td>
+          </tr>`).join('')}
+        </tbody></table>`;
+      })() : `<div class="empty">${naSpan('No director\u2019s filed remuneration table includes a benefits-related column for this company')}</div>`}
+    </div>`;
+}
+// SurveyDirectorBenefit rows: a real, separately-run extractor that
+// reads a filing's own "non-cash benefits" column directly, rather
+// than reverse-engineering one from whichever columns a remuneration
+// table happens to have (see srBenefitColumnKeys above). Matched to a
+// director by name only - see SurveyDirectorBenefit's own docstring
+// for why this is never merged into one row with the components-scan
+// table above.
+function srSurveyDirectorBenefitsPanel(surveyBenefits){
+  if (!surveyBenefits || !surveyBenefits.length) {
+    return `<div class="panel" style="margin-bottom:14px;"><div class="sa-panel-title">Non-Cash Benefits (as filed)</div><div class="empty">${naSpan('No non-cash benefit figures extracted for named directors at this company yet')}</div></div>`;
+  }
+  const total = surveyBenefits.reduce((sum, b) => sum + (b.total_amount || 0), 0);
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Non-Cash Benefits (as filed)</div>
+      <table><thead><tr><th>Director</th><th>Position</th><th>Total Benefit</th><th>Detail</th><th>Source Page</th><th>Confidence</th></tr></thead><tbody>
+        ${surveyBenefits.map(b => `<tr>
+          <td>${escapeHtml(b.director_name)}</td>
+          <td>${b.position ? escapeHtml(b.position) : naSpan('\u2014')}</td>
+          <td style="font-weight:700;">${b.total_amount !== null && b.total_amount !== undefined ? fmtAmount(b.total_amount) : naSpan('\u2014')}</td>
+          <td style="font-size:11.5px;">${b.detail ? escapeHtml(b.detail) : naSpan('\u2014')}</td>
+          <td>${b.page ? 'p.' + b.page : naSpan('\u2014')}</td>
+          <td>${b.confidence !== null && b.confidence !== undefined ? Math.round(b.confidence*100) + '%' : naSpan('\u2014')}</td>
+        </tr>`).join('')}
+        <tr><td style="font-weight:700;">Total</td><td></td><td style="font-weight:700;">${fmtAmount(total)}</td><td></td><td></td><td></td></tr>
+      </tbody></table>
     </div>`;
 }
 
 // ---- Tab 7: Evidence & Sources ----
+// ---- Tab 7: Evidence & Sources ----
+const SR_EVIDENCE_SUBTABS = [
+  {id: 'executive', label: 'Executive Directors'},
+  {id: 'non_executive', label: 'Non-Executive Directors'},
+];
+let srEvidenceSubtab = 'executive';
 function srEvidenceTab(data){
   const docs = data.source_documents || [];
   const s = data.survey;
+  const directorRows = (data.director_rows || []).filter(r => !r.is_grand_total && !r.is_total_row);
+  const profileByName = {};
+  (data.survey_director_rows || []).forEach(d => { profileByName[d.director_name] = d; });
+
+  return `
+    <div class="row row-2" style="grid-template-columns:1.6fr 1fr;">
+      <div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Source Documents</h2></div>
+          ${docs.length ? `<table><thead><tr><th>Document</th><th>Financial Year</th><th>Pages</th></tr></thead><tbody>
+            ${docs.map(d => `<tr><td>${escapeHtml(d.filename || d.url || 'Untitled document')}</td><td>${d.period_label ? escapeHtml(d.period_label) : naSpan('\u2014')}</td><td>${d.page_count !== null && d.page_count !== undefined ? d.page_count : naSpan('\u2014')}</td>${d.url ? `<td><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">View</a></td>` : '<td></td>'}</tr>`).join('')}
+          </tbody></table>` : `<div class="empty">${naSpan('No source documents on file for this company yet')}</div>`}
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Extracted Remuneration Data</h2></div>
+          <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px;">
+            ${SR_EVIDENCE_SUBTABS.map(t => `
+              <button onclick="srEvidenceSubtab='${t.id}';renderSRTabBody();"
+                style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${srEvidenceSubtab===t.id?'700':'500'};border-bottom:2px solid ${srEvidenceSubtab===t.id?'var(--blue)':'transparent'};">
+                ${t.label}
+              </button>`).join('')}
+          </div>
+          ${srPerDirectorRemunerationTable(directorRows.filter(r => r.role === srEvidenceSubtab), profileByName)}
+        </div>
+        <div class="panel">
+          <div class="sa-panel-title">Per-Field Source References (Survey Data)</div>
+          ${s && s.field_sources && Object.keys(s.field_sources).length ? `
+          <table><thead><tr><th>Field</th><th>Source</th></tr></thead><tbody>
+            ${Object.entries(s.field_sources).map(([f, ref]) => `<tr><td>${escapeHtml(f)}</td><td>${escapeHtml(ref)}</td></tr>`).join('')}
+          </tbody></table>` : `<div class="empty">${naSpan('No per-field source references recorded for this company\u2019s survey data')}</div>`}
+        </div>
+      </div>
+      <div>
+        ${srDocumentInsightsPanel(docs, s)}
+        <div class="panel">
+          <div class="sa-panel-title">Named-Director Filed Rows (Evidence Trail)</div>
+          ${data.has_director_data ? `<table><thead><tr><th>Director</th><th>Page</th><th>Confidence</th></tr></thead><tbody>
+            ${data.director_rows.map(r => `<tr><td>${escapeHtml(r.director_name)}</td><td>${r.page || '-'}</td><td>${r.confidence !== null ? Math.round(r.confidence*100) + '%' : '-'}</td></tr>`).join('')}
+          </tbody></table>` : `<div class="empty">${naSpan('No named-director remuneration filed for this company yet')}</div>`}
+        </div>
+      </div>
+    </div>`;
+}
+// A real, computed summary - NOT the mockup's literal per-document
+// "312 pages / 118 of 124 fields extracted / Processed" status, since
+// SourceDocument has no per-document extracted-field-count or status
+// column (see its own definition in models.py) and no doc-level
+// extraction status is tracked anywhere in this app. What IS real and
+// shown instead: how many documents are on file, their total page
+// count, and how many of this company's survey fields have SOME
+// source reference at all (a genuine, if coarser, completeness signal).
+function srDocumentInsightsPanel(docs, s){
+  const totalPages = docs.reduce((sum, d) => sum + (d.page_count || 0), 0);
+  const sourcedFieldCount = s && s.field_sources ? Object.keys(s.field_sources).length : 0;
   return `
     <div class="panel" style="margin-bottom:14px;">
-      <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Source Documents</h2></div>
-      ${docs.length ? docs.map(d => `
-        <div class="sr-doc-row">
-          <div class="sr-doc-icon">📄</div>
-          <div style="flex:1;">${escapeHtml(d.filename || d.url || 'Untitled document')}</div>
-          <div style="color:var(--text-faint);">${d.period_label ? escapeHtml(d.period_label) : ''}</div>
-          <div style="color:var(--text-faint);">${d.page_count ? d.page_count + ' pages' : ''}</div>
-          ${d.url ? `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">View</a>` : ''}
-        </div>`).join('') : `<div class="empty">${naSpan('No source documents on file for this company yet')}</div>`}
-    </div>
-    <div class="panel" style="margin-bottom:14px;">
-      <div class="sa-panel-title">Per-Field Source References (Survey Data)</div>
-      ${s && s.field_sources && Object.keys(s.field_sources).length ? `
-      <table><thead><tr><th>Field</th><th>Source</th></tr></thead><tbody>
-        ${Object.entries(s.field_sources).map(([f, ref]) => `<tr><td>${escapeHtml(f)}</td><td>${escapeHtml(ref)}</td></tr>`).join('')}
-      </tbody></table>` : `<div class="empty">${naSpan('No per-field source references recorded for this company\u2019s survey data')}</div>`}
-    </div>
-    <div class="panel">
-      <div class="sa-panel-title">Named-Director Filed Rows (Evidence Trail)</div>
-      ${data.has_director_data ? `<table><thead><tr><th>Director</th><th>Page</th><th>Confidence</th></tr></thead><tbody>
-        ${data.director_rows.map(r => `<tr><td>${escapeHtml(r.director_name)}</td><td>${r.page || '-'}</td><td>${r.confidence !== null ? Math.round(r.confidence*100) + '%' : '-'}</td></tr>`).join('')}
-      </tbody></table>` : `<div class="empty">${naSpan('No named-director remuneration filed for this company yet')}</div>`}
+      <div class="sa-panel-title">Document Insights</div>
+      <ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">
+        <li>${docs.length} source document${docs.length === 1 ? '' : 's'} on file for this company.</li>
+        ${totalPages ? `<li>${totalPages} total page${totalPages === 1 ? '' : 's'} across those documents.</li>` : ''}
+        ${s ? `<li>${sourcedFieldCount} survey field${sourcedFieldCount === 1 ? '' : 's'} have a recorded source reference.</li>` : `<li>${naSpan('No survey data on file to check field-level sourcing')}</li>`}
+      </ul>
     </div>`;
 }
 
@@ -3242,48 +3490,110 @@ const SR_MAPPABLE_FIELDS = [
   'committee_chair_meeting_allowance','committee_member_meeting_allowance',
   'turnover','net_profit','market_cap',
 ];
+let srMappingStatusFilter = 'all';
+let srMappingSectionFilter = 'all';
+let srMappingSearch = '';
 function srSurveyMappingTab(data){
   const s = data.survey;
   if (!s) return `<div class="panel"><div class="empty">${naSpan('No survey data on file for this company yet')}</div></div>`;
-  const rows = SR_MAPPABLE_FIELDS.map(f => {
-    const val = s[f];
-    const hasEvidence = (s.field_confidence && f in s.field_confidence) || (s.field_sources && f in s.field_sources);
-    let status;
-    if (val === null || val === undefined) status = 'Unmapped';
-    else if (hasEvidence) status = 'Mapped';
-    else status = 'Partially Mapped';
-    return {field: f, val, status};
+  // Uses MAPPING_FIELDS and renderMappingTab, shared with the Data
+  // Quality tab below (see renderMappingTab's own comment).
+  return renderMappingTab(s, {
+    statusFilter: srMappingStatusFilter, sectionFilter: srMappingSectionFilter, search: srMappingSearch,
+    onSetStatusFilter: 'srSetMappingStatusFilter', onSetSectionFilter: 'srSetMappingSectionFilter',
+    onSetSearch: 'srSetMappingSearch', onApprove: 'srApproveField', onCorrect: 'srPromptCorrectField',
   });
-  const mapped = rows.filter(r => r.status === 'Mapped').length;
-  const partial = rows.filter(r => r.status === 'Partially Mapped').length;
-  const unmapped = rows.filter(r => r.status === 'Unmapped').length;
-  return `
-    <div class="panel" style="margin-bottom:14px;font-size:10.5px;color:var(--text-faint);">
-      "Mapped" means this field has a value with a recorded source or confidence score; "Partially Mapped" means it has a value but no evidence attached; "Unmapped" means the field itself was never filed. This is a simpler check than a full extracted-value-to-survey-field mapping workflow, which this app does not yet model.
-    </div>
-    <div class="row row-2" style="grid-template-columns:1.6fr 1fr;">
-      <div class="panel">
-        <table><thead><tr><th>Survey Field</th><th>Value</th><th>Status</th></tr></thead><tbody>
-          ${rows.map(r => `<tr><td>${escapeHtml(r.field)}</td><td>${r.val !== null && r.val !== undefined ? fmtAmount(r.val) : '-'}</td>
-            <td><span class="ov-status-pill ${r.status === 'Mapped' ? 'completed' : r.status === 'Partially Mapped' ? 'pending' : 'failed'}">${r.status}</span></td></tr>`).join('')}
-        </tbody></table>
-      </div>
-      <div class="panel">
-        <div class="sa-panel-title">Mapping Summary</div>
-        ${saDonut2([['Mapped', Math.round(mapped/rows.length*100), 'var(--green)'], ['Partially Mapped', Math.round(partial/rows.length*100), 'var(--amber)'], ['Unmapped', Math.round(unmapped/rows.length*100), 'var(--red)']], `${rows.length}`)}
-      </div>
-    </div>`;
+}
+function srSetMappingStatusFilter(v){ srMappingStatusFilter = v; renderSRTabBody(); }
+function srSetMappingSectionFilter(v){ srMappingSectionFilter = v; renderSRTabBody(); }
+function srSetMappingSearch(v){ srMappingSearch = v; renderSRTabBody(); }
+async function srApproveField(field){ await srReviewField(field, 'approve'); }
+function srPromptCorrectField(field, currentValue){
+  const next = prompt('Corrected value:', currentValue);
+  if (next === null || next.trim() === '') return;
+  const numeric = Number(next);
+  srReviewField(field, 'correct', Number.isNaN(numeric) ? next : numeric);
+}
+async function srReviewField(field, action, correctedValue){
+  const body = {field, action};
+  if (action === 'correct') body.corrected_value = correctedValue;
+  const fiscalYear = srDataCache && srDataCache.survey ? srDataCache.survey.fiscal_year : null;
+  if (!fiscalYear) return;
+  const result = await safeJson(await fetch(`/api/survey-data/${srCompanyId}/${encodeURIComponent(fiscalYear)}/review`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  }), null);
+  if (result && result.ok) {
+    srDataCache.survey = {...srDataCache.survey, ...result.survey_data};
+    renderSRTabBody();
+  }
 }
 
 // ---- Tab 9: Data Quality ----
+// ---- Tab 9: Data Quality ----
+// "Manual Overrides" = fields with a field_review_corrections entry
+// (a person actually typed a replacement value - see review_survey_
+// field's docstring in app.py). "Validation Errors" = open
+// EvidenceConflict rows (two different chunks of the same filing
+// disagreed on a field's value and neither was auto-picked - see
+// EvidenceConflict's own docstring in models_survey.py). Both are
+// real, queryable concepts, not estimates - unlike the mockup's literal
+// "Manual Overrides (7)" / "Validation Errors (3)" cards, this shows
+// whatever the real counts are for this company, which may be zero.
+let srDQIssueFilter = 'all';
+let srDQSearch = '';
+let srDataQualityChart = null;
 function srDataQualityTab(data){
   const s = data.survey;
   if (!s) return `<div class="panel"><div class="empty">${naSpan('No survey data on file for this company yet')}</div></div>`;
-  const rows = SR_MAPPABLE_FIELDS.map(f => ({field: f, val: s[f], conf: s.field_confidence && s.field_confidence[f]}));
+  const rows = MAPPING_FIELDS.map(m => ({
+    ...m,
+    val: s[m.field],
+    conf: s.field_confidence && s.field_confidence[m.field],
+    source: s.field_sources && s.field_sources[m.field],
+    overridden: !!(s.field_review_corrections && s.field_review_corrections[m.field]),
+  }));
   const complete = rows.filter(r => r.val !== null && r.val !== undefined && (r.conf === undefined || r.conf >= 0.75)).length;
   const needsReview = rows.filter(r => r.val !== null && r.val !== undefined && r.conf !== undefined && r.conf < 0.75).length;
   const missing = rows.filter(r => r.val === null || r.val === undefined).length;
-  const score = Math.round(complete / rows.length * 100);
+  const manualOverrides = rows.filter(r => r.overridden).length;
+  const openConflicts = (data.evidence_conflicts || []).filter(ec => ec.is_open);
+  const score = rows.length ? Math.round(complete / rows.length * 100) : 0;
+
+  const issueRows = rows.filter(r => r.val === null || r.val === undefined || r.overridden || (r.conf !== undefined && r.conf < 0.75))
+    .map(r => {
+      let issueType, issueDetail;
+      if (r.val === null || r.val === undefined) { issueType = 'missing'; issueDetail = 'Missing'; }
+      else if (r.overridden) { issueType = 'override'; issueDetail = 'Manual Override'; }
+      else { issueType = 'low_confidence'; issueDetail = 'Low Confidence'; }
+      return {...r, issueType, issueDetail};
+    });
+  // EvidenceConflicts are field-level too, but live in a separate table
+  // (see EvidenceConflict's own docstring) - surfaced as their own
+  // "validation_error" issue rows rather than folded into issueRows above,
+  // since a conflict isn't tied to a single candidate value the way a
+  // missing/low-confidence/overridden SurveyCompanyData field is.
+  const conflictRows = openConflicts.map(ec => ({
+    field: ec.field_name, label: ec.field_name, section: 'Evidence Conflict',
+    issueType: 'validation_error', issueDetail: 'Validation Error',
+    val: null, conf: undefined, source: null,
+  }));
+  const allIssues = [...issueRows, ...conflictRows];
+
+  let filteredIssues = allIssues;
+  if (srDQIssueFilter !== 'all') filteredIssues = filteredIssues.filter(r => r.issueType === srDQIssueFilter);
+  if (srDQSearch.trim()) {
+    const q = srDQSearch.trim().toLowerCase();
+    filteredIssues = filteredIssues.filter(r => r.label.toLowerCase().includes(q) || (r.source || '').toLowerCase().includes(q));
+  }
+
+  const issueTabs = [
+    ['all', `All Issues (${allIssues.length})`],
+    ['missing', `Missing Fields (${missing})`],
+    ['low_confidence', `Low Confidence (${needsReview})`],
+    ['override', `Manual Overrides (${manualOverrides})`],
+    ['validation_error', `Validation Errors (${openConflicts.length})`],
+  ];
+
   return `
     <div class="row row-2" style="grid-template-columns:1fr 1.6fr;">
       <div class="panel">
@@ -3292,21 +3602,102 @@ function srDataQualityTab(data){
       </div>
       <div class="panel">
         <div class="sa-panel-title">Data Issues Summary</div>
-        <div class="sa-stat-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="sa-stat-grid" style="grid-template-columns:repeat(4,1fr);">
           ${saStatCard('❗', missing, 'Missing Fields')}
-          ${saStatCard('⚠️', needsReview, 'Low Confidence Fields')}
-          ${saStatCard('✅', complete, 'Complete / Verified')}
+          ${saStatCard('⚠️', needsReview, 'Low Confidence')}
+          ${saStatCard('✏️', manualOverrides, 'Manual Overrides')}
+          ${saStatCard('🚫', openConflicts.length, 'Validation Errors')}
         </div>
       </div>
     </div>
-    <div class="panel">
-      <div class="sa-panel-title">Field-by-Field Detail</div>
-      <table><thead><tr><th>Field</th><th>Value</th><th>Confidence</th><th>Status</th></tr></thead><tbody>
-        ${rows.map(r => `<tr><td>${escapeHtml(r.field)}</td><td>${r.val !== null && r.val !== undefined ? fmtAmount(r.val) : naSpan('Missing')}</td>
-          <td>${r.conf !== undefined ? Math.round(r.conf*100) + '%' : '-'}</td>
-          <td>${r.val === null || r.val === undefined ? '<span class="ov-status-pill failed">Missing</span>' : (r.conf !== undefined && r.conf < 0.75) ? '<span class="ov-status-pill pending">Needs Review</span>' : '<span class="ov-status-pill completed">Complete</span>'}</td></tr>`).join('')}
-      </tbody></table>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Quality Trend</div>
+      ${(data.quality_by_year || []).length > 1
+        ? `<div style="height:220px;"><canvas id="srDQTrendChart"></canvas></div>`
+        : `<div class="empty">${naSpan('Only one fiscal year on file for this company \u2014 a trend needs at least two')}</div>`}
+    </div>
+    <div class="row row-2" style="grid-template-columns:1.6fr 1fr;">
+      <div class="panel">
+        <div class="ov-panel-head" style="margin-bottom:10px;">
+          <h2 class="sa-panel-title" style="margin:0;">Data Quality Issues</h2>
+          <input type="text" placeholder="Search issues..." value="${escapeHtml(srDQSearch)}" oninput="srDQSearch=this.value;renderSRTabBody();" style="padding:6px 10px;font-size:12.5px;width:220px;">
+        </div>
+        <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap;">
+          ${issueTabs.map(([id, label]) => `
+            <button onclick="srDQIssueFilter='${id}';renderSRTabBody();" style="background:none;border:none;padding:8px 10px;font-size:11.5px;cursor:pointer;font-weight:${srDQIssueFilter===id?'700':'500'};border-bottom:2px solid ${srDQIssueFilter===id?'var(--blue)':'transparent'};">${label}</button>`).join('')}
+        </div>
+        <table><thead><tr><th>Field</th><th>Section</th><th>Issue Type</th><th>Value</th><th>Source</th><th>Confidence</th></tr></thead><tbody>
+          ${filteredIssues.length ? filteredIssues.map(r => `<tr>
+              <td>${escapeHtml(r.label)}</td>
+              <td style="color:var(--text-faint);font-size:11px;">${escapeHtml(r.section)}</td>
+              <td>${srDQIssueBadge(r.issueType, r.issueDetail)}</td>
+              <td>${r.val !== null && r.val !== undefined ? escapeHtml(String(r.val)) : naSpan('\u2014')}</td>
+              <td style="font-size:11px;">${r.source ? escapeHtml(r.source) : naSpan('\u2014')}</td>
+              <td>${r.conf !== undefined ? Math.round(r.conf*100) + '%' : naSpan('\u2014')}</td>
+            </tr>`).join('') : `<tr><td colspan="6"><div class="empty">No issues match this filter.</div></td></tr>`}
+        </tbody></table>
+      </div>
+      <div>
+        ${srDQKeyInsightsPanel(rows, missing, needsReview, manualOverrides, openConflicts, score)}
+        ${srDQRecommendedActionsPanel(missing, needsReview, openConflicts)}
+      </div>
     </div>`;
+}
+function srDQIssueBadge(type, label){
+  const color = type === 'missing' ? 'var(--red)' : type === 'validation_error' ? 'var(--red)' : type === 'override' ? 'var(--blue)' : 'var(--amber)';
+  return `<span style="color:${color};font-weight:700;font-size:11px;">${escapeHtml(label)}</span>`;
+}
+function srDQKeyInsightsPanel(rows, missing, needsReview, manualOverrides, openConflicts, score){
+  const insights = [];
+  if (missing) insights.push(`${missing} field${missing === 1 ? ' is' : 's are'} missing from the filing on record.`);
+  if (needsReview) insights.push(`${needsReview} field${needsReview === 1 ? ' has' : 's have'} a confidence score below 75% and may need verification.`);
+  if (manualOverrides) insights.push(`${manualOverrides} field${manualOverrides === 1 ? ' was' : 's were'} manually corrected during review.`);
+  if (openConflicts.length) insights.push(`${openConflicts.length} field${openConflicts.length === 1 ? '' : 's'} ${openConflicts.length === 1 ? 'has' : 'have'} two conflicting extracted values still unresolved.`);
+  insights.push(`Overall data quality score is ${score}% (${score >= 75 ? 'Good' : score >= 50 ? 'Fair' : 'Needs Attention'}).`);
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Key Insights</div>
+      <ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">${insights.map(i => `<li>${i}</li>`).join('')}</ul>
+    </div>`;
+}
+function srDQRecommendedActionsPanel(missing, needsReview, openConflicts){
+  const actions = [];
+  if (missing) actions.push('Collect and file the missing fields from the company\u2019s source documents.');
+  if (needsReview) actions.push('Review and confirm the low-confidence extracted values.');
+  if (openConflicts.length) actions.push('Resolve the open evidence conflicts by choosing the correct candidate value for each.');
+  return `
+    <div class="panel">
+      <div class="sa-panel-title">Recommended Actions</div>
+      ${actions.length ? `<ol style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.8;">${actions.map(a => `<li>${a}</li>`).join('')}</ol>`
+        : `<div class="empty">${naSpan('No outstanding data quality issues for this company')}</div>`}
+    </div>`;
+}
+function srDrawDataQualityTrend(data){
+  const canvas = document.getElementById('srDQTrendChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const years = data.quality_by_year || [];
+  if (years.length < 2) return;
+  if (srDataQualityChart) srDataQualityChart.destroy();
+  const labels = years.map(y => y.fiscal_year);
+  const scores = years.map(y => {
+    const confMap = y.field_confidence || {};
+    const scored = Object.values(confMap);
+    if (!scored.length) return null;
+    const complete = scored.filter(c => c >= 0.75).length;
+    return Math.round(complete / scored.length * 100);
+  });
+  srDataQualityChart = new Chart(canvas, {
+    type: 'line',
+    data: {labels, datasets: [{label: 'Data Quality Score', data: scores, borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.15)', tension: .3}]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {legend: {labels: {color: '#aab4cc'}}},
+      scales: {
+        x: {ticks: {color: '#7986a3'}, grid: {color: 'rgba(255,255,255,.05)'}},
+        y: {ticks: {color: '#7986a3'}, grid: {color: 'rgba(255,255,255,.05)'}, min: 0, max: 100},
+      },
+    },
+  });
 }
 
 // ---------- Intelligence Layer (interactive, 6 tabs) ----------
@@ -3408,14 +3799,24 @@ function ilSectorRows(sector){
 }
 
 // ---- Tab 1: Benchmarking ----
+// ---- Tab 1: Benchmarking ----
+const IL_BENCHMARK_METRICS = [
+  {field: 'total_director_remuneration', label: 'Total Director Remuneration'},
+  {field: 'chairperson_annual_retainer', label: 'Chairperson Annual Retainer'},
+  {field: 'executive_director_annual_retainer', label: 'Executive Director Annual Retainer'},
+  {field: 'other_ned_annual_retainer', label: 'Non-Executive Director Annual Retainer'},
+];
+let ilBenchmarkMetric = 'total_director_remuneration';
 function ilBenchmarkingTab(){
   const rows = ilCompaniesCache.rows;
   const company = rows.find(r => r.company_id === ilBenchmarkCompanyId) || rows[0];
-  const sectorRows = ilSectorRows(company.sector || 'all').filter(r => r.total_director_remuneration !== null);
-  const sectorAvg = sectorRows.length ? sectorRows.reduce((a,r) => a + r.total_director_remuneration, 0) / sectorRows.length : null;
-  const withPay = rows.filter(r => r.total_director_remuneration !== null);
-  const top = withPay.length ? withPay.reduce((a,b) => a.total_director_remuneration > b.total_director_remuneration ? a : b) : null;
-  const lowest = withPay.length ? withPay.reduce((a,b) => a.total_director_remuneration < b.total_director_remuneration ? a : b) : null;
+  const metricField = ilBenchmarkMetric;
+  const metricLabel = (IL_BENCHMARK_METRICS.find(m => m.field === metricField) || {}).label || metricField;
+  const sectorRows = ilSectorRows(company.sector || 'all').filter(r => r[metricField] !== null);
+  const sectorAvg = sectorRows.length ? sectorRows.reduce((a,r) => a + r[metricField], 0) / sectorRows.length : null;
+  const withMetric = rows.filter(r => r[metricField] !== null);
+  const top = withMetric.length ? withMetric.reduce((a,b) => a[metricField] > b[metricField] ? a : b) : null;
+  const lowest = withMetric.length ? withMetric.reduce((a,b) => a[metricField] < b[metricField] ? a : b) : null;
 
   return `
     <div class="il-filter-bar">
@@ -3429,32 +3830,83 @@ function ilBenchmarkingTab(){
           <option>${escapeHtml(company.sector || 'Unclassified')} Sector</option>
         </select>
       </div>
+      <div class="il-filter-field"><label>Metric</label>
+        <select onchange="ilBenchmarkMetric=this.value;renderILTabBody();">
+          ${IL_BENCHMARK_METRICS.map(m => `<option value="${m.field}" ${m.field === metricField ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
+        </select>
+      </div>
     </div>
     <div class="sa-stat-grid">
-      ${saStatCard('👤', company.total_director_remuneration !== null ? fmtAmount(company.total_director_remuneration) : naSpan('Not filed'), escapeHtml(company.name), 'Total Director Remuneration')}
-      ${saStatCard('🏦', sectorAvg !== null ? fmtAmount(sectorAvg) : naSpan('Not enough sector data'), escapeHtml(company.sector || 'Sector') + ' Average', 'Total Director Remuneration')}
-      ${saStatCard('🏆', top ? fmtAmount(top.total_director_remuneration) : naSpan('Not enough data'), 'Top Performer (Sector)', top ? escapeHtml(top.name) : '')}
-      ${saStatCard('📉', lowest ? fmtAmount(lowest.total_director_remuneration) : naSpan('Not enough data'), 'Lowest Performer (Sector)', lowest ? escapeHtml(lowest.name) : '')}
+      ${saStatCard('👤', company[metricField] !== null ? fmtAmount(company[metricField]) : naSpan('Not filed'), escapeHtml(company.name), metricLabel)}
+      ${saStatCard('🏦', sectorAvg !== null ? fmtAmount(sectorAvg) : naSpan('Not enough sector data'), escapeHtml(company.sector || 'Sector') + ' Average', metricLabel)}
+      ${saStatCard('🏆', top ? fmtAmount(top[metricField]) : naSpan('Not enough data'), 'Top Performer (Sector)', top ? escapeHtml(top.name) : '')}
+      ${saStatCard('📉', lowest ? fmtAmount(lowest[metricField]) : naSpan('Not enough data'), 'Lowest Performer (Sector)', lowest ? escapeHtml(lowest.name) : '')}
     </div>
     <div class="row row-2">
       <div class="panel">
-        <div class="sa-panel-title">Total Director Remuneration \u2014 Company vs Sector</div>
-        ${company.total_director_remuneration !== null || sectorAvg !== null ? `
+        <div class="sa-panel-title">${escapeHtml(metricLabel)} \u2014 Company vs Sector</div>
+        ${company[metricField] !== null || sectorAvg !== null ? `
         <div class="sa-bar-list">
-          ${company.total_director_remuneration !== null ? saBar(company.name, fmtAmount(company.total_director_remuneration), Math.max(company.total_director_remuneration, sectorAvg||0, top ? top.total_director_remuneration : 0)) : ''}
-          ${sectorAvg !== null ? saBar('Sector Average', fmtAmount(sectorAvg), Math.max(company.total_director_remuneration||0, sectorAvg, top ? top.total_director_remuneration : 0), 'var(--green)') : ''}
-          ${top ? saBar('Top Performer', fmtAmount(top.total_director_remuneration), Math.max(company.total_director_remuneration||0, sectorAvg||0, top.total_director_remuneration), 'var(--purple)') : ''}
+          ${company[metricField] !== null ? saBar(company.name, fmtAmount(company[metricField]), Math.max(company[metricField], sectorAvg||0, top ? top[metricField] : 0)) : ''}
+          ${sectorAvg !== null ? saBar('Sector Average', fmtAmount(sectorAvg), Math.max(company[metricField]||0, sectorAvg, top ? top[metricField] : 0), 'var(--green)') : ''}
+          ${top ? saBar('Top Performer', fmtAmount(top[metricField]), Math.max(company[metricField]||0, sectorAvg||0, top[metricField]), 'var(--purple)') : ''}
         </div>` : `<div class="empty">${naSpan('Not enough data')}</div>`}
       </div>
       <div class="panel">
-        <div class="sa-panel-title">Director Remuneration by Sector</div>
-        ${ilSectorAvgBarList('total_director_remuneration')}
+        <div class="sa-panel-title">${escapeHtml(metricLabel)} by Sector</div>
+        ${ilSectorAvgBarList(metricField)}
+      </div>
+    </div>
+    <div class="row row-2">
+      <div class="panel">
+        <div class="sa-panel-title">Board Size Comparison</div>
+        ${ilBoardSizeComparisonPanel(company, sectorRows, top, lowest)}
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Key Governance Metrics</div>
+        ${ilKeyGovernanceMetricsPanel(company)}
       </div>
     </div>
     <div class="panel">
-      <div class="sa-panel-title">Top 5 Companies by Total Director Remuneration</div>
-      ${ilTopCompaniesTable(withPay, 'total_director_remuneration', 5)}
+      <div class="sa-panel-title">Top 5 Companies by ${escapeHtml(metricLabel)}</div>
+      ${ilTopCompaniesTable(withMetric, metricField, 5)}
     </div>`;
+}
+function ilBoardSizeComparisonPanel(company, sectorRows, top, lowest){
+  const sectorWithSize = sectorRows.filter(r => r.board_size !== null);
+  const sectorAvgSize = sectorWithSize.length ? Math.round(sectorWithSize.reduce((a,r) => a + r.board_size, 0) / sectorWithSize.length) : null;
+  const bars = [];
+  if (company.board_size !== null) bars.push(['Company', company.board_size]);
+  if (sectorAvgSize !== null) bars.push(['Sector Avg', sectorAvgSize]);
+  if (top && top.board_size !== null && top.board_size !== undefined) bars.push(['Top Performer', top.board_size]);
+  if (lowest && lowest.board_size !== null && lowest.board_size !== undefined) bars.push(['Lowest Performer', lowest.board_size]);
+  if (!bars.length) return `<div class="empty">${naSpan('Board size not filed for this company or its sector peers')}</div>`;
+  const max = Math.max(...bars.map(b => b[1]));
+  return `<div class="sa-bar-list">${bars.map(([label, val]) => saBar(label, val, max)).join('')}</div>`;
+}
+// Uses the same _governance_score()/'governance' block build_company_rows
+// already computes per company (survey_aggregate.py) - see that
+// function's docstring for the exact CMA-threshold methodology. No
+// CMA Compliance Rate or Committee Meetings donut here: neither is
+// computed anywhere in the backend for a single company (Committee
+// Meetings exists only as committee_meetings_per_year, a company-wide
+// count with no compliance threshold attached), so those two mockup
+// cards are left out rather than approximated from an unrelated number.
+function ilKeyGovernanceMetricsPanel(company){
+  const gov = company.governance || {};
+  const items = [
+    ['Board Independence', gov.independence_pct, gov.independence_compliant],
+    ['Gender Diversity (Board)', gov.gender_pct, gov.gender_compliant],
+  ];
+  return `
+    <div class="row row-2">
+      ${items.map(([label, pct, compliant]) => pct !== null && pct !== undefined ? `
+        <div style="text-align:center;">
+          ${saDonut2([[label, Math.round(pct), compliant ? 'var(--green)' : 'var(--amber)'], ['Remaining', Math.round(100-pct), 'var(--bg-hover)']], Math.round(pct)+'%')}
+          <div style="font-size:11px;color:var(--text-faint);margin-top:4px;">${escapeHtml(label)}</div>
+        </div>` : `<div class="empty" style="align-self:center;">${naSpan(label + ' not enough data')}</div>`).join('')}
+    </div>
+    <div style="font-size:10px;color:var(--text-faint);margin-top:10px;">${escapeHtml(ilCompaniesCache.governance_methodology || '')}</div>`;
 }
 function ilSectorAvgBarList(field){
   const sectors = ilSectorList();
@@ -3667,6 +4119,18 @@ function ilRankingsSectorRankings(){
 }
 
 // ---- Tab 6: Governance & Compliance ----
+// ---- Tab 6: Governance & Compliance ----
+// Only 2 stat cards/panels correspond to real, computable backend
+// concepts: Board Independence and Gender Diversity (both driven by
+// _governance_score(), survey_aggregate.py). The mockup's other 3
+// stat cards - CMA Compliance Rate, Companies with Audit Committee,
+// Average Director Tenure - have no backing data anywhere in this
+// app (no CMA-principle-by-principle model, no portfolio-wide
+// "has an Audit Committee" flag, no tenure/appointment-date-derived
+// calculation), so they're left out rather than approximated. The
+// existing GOVERNANCE_SCORE_METHODOLOGY string already says as much:
+// this app measures 2 of a real CMA assessment's several criteria.
+let ilGCTrendsCache = null;
 function ilGovernanceComplianceTab(){
   const rows = ilCompaniesCache.rows;
   const scored = rows.filter(r => r.governance.score !== null);
@@ -3676,6 +4140,16 @@ function ilGovernanceComplianceTab(){
   const genderCompliant = withGender.filter(r => r.governance.gender_compliant).length;
   const avgScore = scored.length ? Math.round(scored.reduce((a,r) => a + r.governance.score, 0) / scored.length) : null;
   const sorted = [...scored].sort((a,b) => b.governance.score - a.governance.score);
+  const topPerformer = sorted[0];
+  const lowestPerformer = sorted[sorted.length - 1];
+
+  if (!ilGCTrendsCache) {
+    fetch('/api/intelligence-layer/historical-trends').then(r => r.json()).then(t => {
+      ilGCTrendsCache = t;
+      const body = document.getElementById('ilTabBody');
+      if (body && ilTab === 'governance-compliance') body.innerHTML = ilGovernanceComplianceTab();
+    }).catch(() => { ilGCTrendsCache = {has_data: false}; });
+  }
 
   return `
     <div class="sa-stat-grid">
@@ -3687,6 +4161,16 @@ function ilGovernanceComplianceTab(){
     <div class="il-methodology-note" style="margin-bottom:14px;">${escapeHtml(ilCompaniesCache.governance_methodology)}</div>
     <div class="row row-2">
       <div class="panel">
+        <div class="sa-panel-title">Board Independence Trend</div>
+        ${ilGovernanceTrendPanel('independence')}
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Gender Diversity Trend</div>
+        ${ilGovernanceTrendPanel('gender')}
+      </div>
+    </div>
+    <div class="row row-2">
+      <div class="panel">
         <div class="sa-panel-title">Board Independence by Company</div>
         ${withIndep.length ? `<div class="sa-bar-list">${[...withIndep].sort((a,b) => b.governance.independence_pct - a.governance.independence_pct).slice(0,10).map(r => saBar(r.name, r.governance.independence_pct + '%', 100, r.governance.independence_compliant ? 'var(--green)' : 'var(--amber)')).join('')}</div>` : `<div class="empty">${naSpan('Not enough data')}</div>`}
       </div>
@@ -3695,7 +4179,21 @@ function ilGovernanceComplianceTab(){
         ${withGender.length ? `<div class="sa-bar-list">${[...withGender].sort((a,b) => b.governance.gender_pct - a.governance.gender_pct).slice(0,10).map(r => saBar(r.name, r.governance.gender_pct + '%', 100, r.governance.gender_compliant ? 'var(--green)' : 'var(--purple)')).join('')}</div>` : `<div class="empty">${naSpan('Not enough data')}</div>`}
       </div>
     </div>
-    <div class="panel">
+    <div class="row row-2">
+      <div class="panel">
+        <div class="sa-panel-title">Overall Governance Score</div>
+        ${avgScore !== null ? `
+          ${saDonut2([['Average Score', avgScore, 'var(--green)'], ['Remaining', 100-avgScore, 'var(--bg-hover)']], avgScore + '%')}
+          ${topPerformer ? `<div style="font-size:11.5px;margin-top:8px;"><b>Top Performer:</b> ${escapeHtml(topPerformer.name)} (${topPerformer.governance.score})</div>` : ''}
+          ${lowestPerformer && lowestPerformer !== topPerformer ? `<div style="font-size:11.5px;"><b>Lowest Performer:</b> ${escapeHtml(lowestPerformer.name)} (${lowestPerformer.governance.score})</div>` : ''}
+        ` : `<div class="empty">${naSpan('Not enough data to compute an overall score')}</div>`}
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Board Composition</div>
+        ${ilGovernanceBoardCompositionTable(rows)}
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
       <div class="sa-panel-title">Companies Ranked by Governance Score</div>
       ${sorted.length ? `<table><thead><tr><th>#</th><th>Company</th><th>Sector</th><th>Independence</th><th>Gender Diversity</th><th>Score</th></tr></thead><tbody>
         ${sorted.map((r,i) => `<tr><td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sector || '-')}</td>
@@ -3703,7 +4201,56 @@ function ilGovernanceComplianceTab(){
           <td>${r.governance.gender_pct !== null ? r.governance.gender_pct + '%' : '-'}</td>
           <td><b>${r.governance.score}</b></td></tr>`).join('')}
       </tbody></table>` : `<div class="empty">${naSpan('Not enough board-composition data filed to compute governance scores')}</div>`}
+    </div>
+    <div class="panel">
+      <div class="sa-panel-title">Key Insights & Observations</div>
+      ${ilGovernanceKeyInsights(withIndep, withGender, indepCompliant, genderCompliant, scored.length, rows.length)}
     </div>`;
+}
+function ilGovernanceTrendPanel(kind){
+  if (!ilGCTrendsCache) return `<div class="empty">Loading\u2026</div>`;
+  if (!ilGCTrendsCache.has_data || ilGCTrendsCache.series.length < 2) {
+    return `<div class="empty">${naSpan('At least two fiscal years of survey data are needed to chart a trend')}</div>`;
+  }
+  const years = ilGCTrendsCache.series.map(s => s.fiscal_year);
+  const rates = ilGCTrendsCache.series.map(s => {
+    const bo = s.board_overview || {};
+    if (kind === 'independence') {
+      const totalSeats = (bo.total_independent_neds||0) + (bo.total_non_independent_neds||0);
+      return totalSeats ? Math.round(bo.total_independent_neds / totalSeats * 100) : null;
+    }
+    const totalGender = (bo.total_directors_female||0) + (bo.total_directors_male||0);
+    return totalGender ? Math.round(bo.total_directors_female / totalGender * 100) : null;
+  });
+  if (rates.every(r => r === null)) return `<div class="empty">${naSpan('Not enough data across years to chart this trend')}</div>`;
+  const max = Math.max(33, ...rates.filter(r => r !== null));
+  return `<div class="sa-bar-list">${years.map((y,i) => rates[i] !== null ? saBar(y, rates[i] + '%', max) : '').join('')}</div>
+    <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">Portfolio-wide rate per year (sum of all companies' seats), not an average of each company's own %. CMA target: \u2265 33%.</div>`;
+}
+function ilGovernanceBoardCompositionTable(rows){
+  const withSize = rows.filter(r => r.board_size !== null);
+  if (!withSize.length) return `<div class="empty">${naSpan('Board size not filed for any surveyed company')}</div>`;
+  const sumIndep = rows.reduce((a,r) => a + (r.independent_neds_count || 0), 0);
+  const sumNonIndep = rows.reduce((a,r) => a + (r.non_independent_neds_count || 0), 0);
+  const sumFemale = rows.reduce((a,r) => a + (r.directors_female || 0), 0);
+  const sumMale = rows.reduce((a,r) => a + (r.directors_male || 0), 0);
+  const totalSeats = sumIndep + sumNonIndep;
+  return `<table><tbody>
+    <tr><td>Independent NEDs</td><td style="font-weight:700;">${sumIndep}</td><td style="color:var(--text-faint);">${totalSeats ? Math.round(sumIndep/totalSeats*100) + '%' : '-'}</td></tr>
+    <tr><td>Non-Independent NEDs</td><td style="font-weight:700;">${sumNonIndep}</td><td style="color:var(--text-faint);">${totalSeats ? Math.round(sumNonIndep/totalSeats*100) + '%' : '-'}</td></tr>
+    <tr><td>Female Directors</td><td style="font-weight:700;">${sumFemale}</td><td style="color:var(--text-faint);">${(sumFemale+sumMale) ? Math.round(sumFemale/(sumFemale+sumMale)*100) + '%' : '-'}</td></tr>
+    <tr><td>Male Directors</td><td style="font-weight:700;">${sumMale}</td><td style="color:var(--text-faint);">${(sumFemale+sumMale) ? Math.round(sumMale/(sumFemale+sumMale)*100) + '%' : '-'}</td></tr>
+  </tbody></table>
+  <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">Portfolio totals across all ${withSize.length} companies with board size on file.</div>`;
+}
+function ilGovernanceKeyInsights(withIndep, withGender, indepCompliant, genderCompliant, scoredCount, totalCount){
+  const insights = [];
+  if (withIndep.length) insights.push(`${indepCompliant} of ${withIndep.length} companies with independence data meet the CMA's \u2265 1/3 board independence threshold.`);
+  if (withGender.length) insights.push(`${genderCompliant} of ${withGender.length} companies with gender data meet the CMA's \u2265 1/3 gender diversity threshold.`);
+  if (scoredCount < totalCount) insights.push(`${totalCount - scoredCount} of ${totalCount} surveyed companies lack enough board composition data to compute a governance score.`);
+  return insights.length
+    ? `<ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">${insights.map(i => `<li>${i}</li>`).join('')}</ul>`
+    : `<div class="empty">${naSpan('Not enough data on file to generate portfolio-wide governance insights')}</div>`;
 }
 
 // ---------- Reports (import job audit trail) ----------
@@ -4715,9 +5262,10 @@ function surveyAmountDecimals(unit){
 // SurveyCompanyData.director_figures_unit in models_survey.py). Every
 // tab showing that kind of figure (Directors' Remuneration, Committee
 // Remuneration, CEO/MD Remuneration, Benefits) should call this
-// instead of reading sd.unit directly; scOverviewTab's turnover/net
-// profit/market cap keep reading sd.unit as before, since those are
-// the headline figures director_figures_unit is explicitly NOT for.
+// instead of reading sd.unit directly; the Company Overview tab's
+// turnover/net profit/market cap keep reading sd.unit as before,
+// since those are the headline figures director_figures_unit is
+// explicitly NOT for.
 function surveyDirectorFiguresUnit(sd){
   return sd.director_figures_unit || sd.unit;
 }
@@ -4835,765 +5383,12 @@ async function deleteSurveyCompanyData(companyId, fiscalYear){
   }
 }
 
-// ---------- Survey Companies (per-company drill-down) ----------
-// Separate page from the aggregate Survey report above: shows exactly
-// what ONE company submitted, tab by tab, instead of a cross-company
-// average. Defaults to the most-complete company on file so it never
-// opens on a blank picker (see /api/survey/companies/default).
-
-const SC_TABS = [
-  {id:'overview', label:'Company Overview', icon:'🏢'},
-  {id:'board', label:'Board Composition', icon:'👥'},
-  {id:'directors-register', label:"Directors' Register", icon:'📇'},
-  {id:'directors-pay', label:"Directors' Remuneration", icon:'💼'},
-  {id:'committee-pay', label:'Committee Remuneration', icon:'🗂️'},
-  {id:'ceo-pay', label:'CEO/MD Remuneration', icon:'🧾'},
-  {id:'benefits', label:'Benefits', icon:'🎁'},
-  {id:'evidence', label:'Evidence & Sources', icon:'📁'},
-  {id:'survey-mapping', label:'Survey Mapping', icon:'📝'},
-];
-
-let scCompanyId = null;
-let scFiscalYear = null;
-let scData = null;          // {company, survey_data, directors} for the currently shown company/year
-let scCompanyList = [];     // every company with survey data on file, for the switcher
-let scTab = 'overview';
-let scSelectedDirectorId = null;   // which director's detail panel is open on the Directors' Register tab
-let scDirectorDetailTab = 'profile';   // which sub-tab (Profile / Board Appointments / Committee Memberships) is open inside that detail panel
-let scBenefitsSubTab = 'executive';   // which sub-view (Executive Directors / Non-Executive Directors / Per Director Breakdown) is open on the Benefits tab
-
-async function renderSurveyCompaniesPage(){
-  const app = document.getElementById('app');
-  app.innerHTML = '<div class="empty">Loading...</div>';
-
-  if (!scCompanyList.length) {
-    scCompanyList = await safeJson(await fetch('/api/survey/companies'), []);
-  }
-
-  // First time on this page (or nothing selected yet) - land on the
-  // most-complete company/year rather than a blank picker.
-  if (!scData) {
-    const def = await safeJson(await fetch('/api/survey/companies/default'), null);
-    if (!def) {
-      app.innerHTML = `<div class="panel"><div class="empty">No survey data uploaded yet. Add company filings from the Survey page first.</div></div>`;
-      return;
-    }
-    scData = def;
-    scCompanyId = def.company.id;
-    scFiscalYear = def.survey_data.fiscal_year;
-  }
-
-  renderScShell();
-}
-
-function scCompanySwitcherHtml(){
-  const options = scCompanyList.map(c => c.fiscal_years.map(fy =>
-    `<option value="${c.company_id}|${escapeHtml(fy)}" ${c.company_id===scCompanyId && fy===scFiscalYear ? 'selected' : ''}>${escapeHtml(c.company_name)} — ${escapeHtml(fy)}</option>`
-  ).join('')).join('');
-  return `
-    <div class="fy-select-block">
-      <div class="fy-label">Company / Fiscal Year</div>
-      <select onchange="switchScCompany(this.value)">${options}</select>
-    </div>`;
-}
-
-async function switchScCompany(value){
-  const [companyId, fiscalYear] = value.split('|');
-  await loadScCompany(parseInt(companyId, 10), fiscalYear);
-}
-
-async function loadScCompany(companyId, fiscalYear){
-  const app = document.getElementById('app');
-  app.innerHTML = '<div class="empty">Loading...</div>';
-  const data = await safeJson(await fetch(`/api/survey/companies/${companyId}/${encodeURIComponent(fiscalYear)}`), null);
-  if (!data) {
-    app.innerHTML = `<div class="panel"><div class="empty">Could not load this company's survey data.</div></div>`;
-    return;
-  }
-  scData = data;
-  scCompanyId = companyId;
-  scFiscalYear = fiscalYear;
-  scSelectedDirectorId = null;
-  renderScShell();
-}
-
-function renderScShell(){
-  const app = document.getElementById('app');
-  const sd = scData.survey_data;
-  const c = scData.company;
-
-  const head = `
-    <div class="co-detail-head">
-      <div class="co-detail-logo" style="background:${coAvatarColor(c.name)};">${(c.name||'?').slice(0,2).toUpperCase()}</div>
-      <div class="co-detail-title">
-        <h2>${escapeHtml(c.name)}</h2>
-        <div class="sub">${escapeHtml(c.sector || '')} · ${escapeHtml(sd.fiscal_year)} · ${escapeHtml(sd.currency || 'KES')} (${escapeHtml(sd.unit || 'millions')})</div>
-      </div>
-      <div class="co-detail-right">
-        ${scCompanySwitcherHtml()}
-        <button class="danger" onclick="deleteSurveyCompanyData(${scCompanyId}, '${escapeHtml(scFiscalYear)}')">Remove</button>
-      </div>
-    </div>`;
-
-  const tabBar = `
-    <div class="ir-tabbar">
-      ${SC_TABS.map(t => `<button class="ir-tab-btn ${scTab === t.id ? 'active' : ''}" onclick="switchScTab('${t.id}')">${t.icon} ${t.label}</button>`).join('')}
-    </div>`;
-
-  app.innerHTML = `${head}${tabBar}<div id="sc-tab-body"></div>`;
-  renderScTabBody();
-}
-
-function switchScTab(tabId){
-  scTab = tabId;
-  document.querySelectorAll('.ir-tab-btn').forEach((btn, i) => btn.classList.toggle('active', SC_TABS[i].id === tabId));
-  renderScTabBody();
-}
-
-function renderScTabBody(){
-  const el = document.getElementById('sc-tab-body');
-  const sd = scData.survey_data;
-  if (scTab === 'overview') el.innerHTML = scOverviewTab(sd);
-  else if (scTab === 'board') el.innerHTML = scBoardTab(sd);
-  else if (scTab === 'directors-register') el.innerHTML = scDirectorsRegisterTab(scData.directors || [], sd);
-  else if (scTab === 'directors-pay') el.innerHTML = scDirectorsPayTab(sd);
-  else if (scTab === 'committee-pay') el.innerHTML = scCommitteePayTab(sd);
-  else if (scTab === 'ceo-pay') el.innerHTML = scCeoPayTab(sd);
-  else if (scTab === 'benefits') el.innerHTML = scBenefitsTab(sd, scData.director_benefits || [], scData.benefit_categories || [], scData.directors || []);
-  else if (scTab === 'evidence') el.innerHTML = scEvidenceTab(sd);
-  else if (scTab === 'survey-mapping') el.innerHTML = scSurveyMappingTab(sd);
-  if (scTab === 'directors-register') attachScDirectorsRegisterHandlers();
-}
-
-// A row that shows a confidence badge next to the value ONLY when this
-// field actually has a confidence score on file (PDF-extracted rows
-// only - a hand-typed Survey Data .txt upload has no score at all,
-// per models_survey.py's own documentation, and showing a fake one
-// would misrepresent a person's typed entry as machine-extracted).
-function scRow(sd, field, label, opts){
-  opts = opts || {};
-  const value = sd[field];
-  const conf = (sd.field_confidence || {})[field];
-  const source = (sd.field_sources || {})[field];
-  // Auto-apply the right decimal precision for amount fields based on
-  // this company's own stated Unit, unless the caller already asked
-  // for a specific decimals value - avoids every scRow() call site
-  // needing to know about surveyAmountDecimals() itself.
-  if (opts.isAmount && opts.amountDecimals === undefined) {
-    opts = Object.assign({}, opts, { amountDecimals: surveyAmountDecimals(sd.unit) });
-  }
-  let badge = '';
-  if (typeof conf === 'number') {
-    const pct = Math.round(conf * 100);
-    const band = conf >= 0.75 ? 'high' : conf >= 0.45 ? 'medium' : 'low';
-    const color = band === 'high' ? 'var(--green)' : band === 'medium' ? 'var(--amber)' : 'var(--red)';
-    badge = ` <span style="font-size:10px;color:${color};border:1px solid ${color};border-radius:4px;padding:1px 5px;margin-left:6px;" title="Extraction confidence">${pct}%</span>`;
-  }
-  const row = surveyDetailRow(label, value, opts);
-  if (!badge && !source) return row;
-  return row.replace('</div>', `${badge}${source ? `<span style="display:block;font-size:10.5px;color:var(--text-faint);margin-top:1px;">Source: ${escapeHtml(source)}</span>` : ''}</div>`);
-}
-
-function scOverviewTab(sd){
-  const cur = sd.currency || 'KES';
-  return `
-    <div class="row row-3">
-      <div class="panel">
-        <div class="ir-panel-title">Filing</div>
-        <div class="ir-kv-list">
-          ${surveyDetailRow('Fiscal Year', sd.fiscal_year)}
-          ${surveyDetailRow('Sector (survey bucket)', sd.sector)}
-          ${surveyDetailRow('Source File', sd.source_filename)}
-          ${surveyDetailRow('Uploaded', sd.uploaded_at ? new Date(sd.uploaded_at).toLocaleString() : null)}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Performance (${escapeHtml(cur)}, ${escapeHtml(sd.unit || 'millions')})</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'turnover', 'Turnover', {isAmount: true})}
-          ${scRow(sd, 'net_profit', 'Net Profit', {isAmount: true})}
-          ${scRow(sd, 'market_cap', 'Market Cap', {isAmount: true})}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Review Status</div>
-        <div class="ir-kv-list">
-          ${surveyDetailRow('Fields with a confidence score', (sd.field_confidence ? Object.keys(sd.field_confidence).length : null))}
-          ${surveyDetailRow('Awaiting review', sd.pending_review_fields ? sd.pending_review_fields.length : null)}
-          ${surveyDetailRow('Flagged for review (medium confidence)', sd.requires_review_fields ? sd.requires_review_fields.length : null)}
-        </div>
-        <p style="font-size:11px;color:var(--text-faint);margin:8px 0 0;">
-          ${sd.field_confidence && Object.keys(sd.field_confidence).length ? 'This company\'s data was PDF-extracted; per-field confidence appears next to each value across the other tabs.' : 'This company\'s data was entered directly, so there\'s no separate confidence score per field.'}
-        </p>
-      </div>
-    </div>`;
-}
-
-function scBoardTab(sd){
-  return `
-    <div class="row row-3">
-      <div class="panel">
-        <div class="ir-panel-title">Board Composition</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'board_size', 'Board Size')}
-          ${scRow(sd, 'board_meetings_per_year', 'Board Meetings / Year')}
-          ${scRow(sd, 'committees_per_board', 'Committees / Board')}
-          ${scRow(sd, 'committee_meetings_per_year', 'Committee Meetings / Year')}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Gender & Independence</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'directors_female', 'Female Directors')}
-          ${scRow(sd, 'directors_male', 'Male Directors')}
-          ${scRow(sd, 'executive_directors_count', 'Executive Directors')}
-          ${scRow(sd, 'non_executive_directors_count', 'Non-Executive Directors')}
-          ${scRow(sd, 'independent_neds_count', 'Independent NEDs')}
-          ${scRow(sd, 'non_independent_neds_count', 'Non-Independent NEDs')}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Domicile & Age Profile</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'neds_kenyan_count', 'NEDs — Kenyan')}
-          ${scRow(sd, 'neds_non_kenyan_count', 'NEDs — Non-Kenyan')}
-          ${scRow(sd, 'avg_age_executive_directors', 'Avg. Age — Executive Directors', {suffix: ' yrs', decimals: 1})}
-          ${scRow(sd, 'avg_age_non_executive_directors', 'Avg. Age — Non-Executive Directors', {suffix: ' yrs', decimals: 1})}
-          ${scRow(sd, 'avg_age_independent_neds', 'Avg. Age — Independent NEDs', {suffix: ' yrs', decimals: 1})}
-          ${scRow(sd, 'avg_age_non_independent_neds', 'Avg. Age — Non-Independent NEDs', {suffix: ' yrs', decimals: 1})}
-        </div>
-      </div>
-    </div>`;
-}
-
-function scDirectorsPayTab(sd){
-  const cur = sd.currency || 'KES';
-  const dec = surveyAmountDecimals(surveyDirectorFiguresUnit(sd));
-  return `
-    <div class="row row-2">
-      <div class="panel">
-        <div class="ir-panel-title">Non-Executive Directors (${escapeHtml(cur)}, ${escapeHtml(surveyDirectorFiguresUnit(sd) || '')})</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'chairperson_annual_retainer', 'Chairperson Annual Retainer', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'other_ned_annual_retainer', 'Other NED Annual Retainer', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'chairperson_meeting_allowance', 'Chairperson Meeting Allowance', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'other_ned_meeting_allowance', 'Other NED Meeting Allowance', {isAmount: true, amountDecimals: dec})}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Executive Directors (${escapeHtml(cur)}, ${escapeHtml(surveyDirectorFiguresUnit(sd) || '')})</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'executive_director_annual_retainer', 'Executive Director Annual Retainer', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'executive_director_meeting_allowance', 'Executive Director Meeting Allowance', {isAmount: true, amountDecimals: dec})}
-        </div>
-      </div>
-    </div>`;
-}
-
-function scCommitteePayTab(sd){
-  const cur = sd.currency || 'KES';
-  const dec = surveyAmountDecimals(surveyDirectorFiguresUnit(sd));
-  return `
-    <div class="row row-2">
-      <div class="panel">
-        <div class="ir-panel-title">Committee Chair (${escapeHtml(cur)}, ${escapeHtml(surveyDirectorFiguresUnit(sd) || '')})</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'committee_chair_annual_retainer', 'Annual Retainer', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'committee_chair_meeting_allowance', 'Meeting Allowance', {isAmount: true, amountDecimals: dec})}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Committee Member (${escapeHtml(cur)}, ${escapeHtml(surveyDirectorFiguresUnit(sd) || '')})</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'committee_member_annual_retainer', 'Annual Retainer', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'committee_member_meeting_allowance', 'Meeting Allowance', {isAmount: true, amountDecimals: dec})}
-        </div>
-      </div>
-    </div>`;
-}
-
-function scCeoPayTab(sd){
-  const cur = sd.currency || 'KES';
-  const dec = surveyAmountDecimals(surveyDirectorFiguresUnit(sd));
-  const anyCeoData = ['ceo_monthly_salary','ceo_monthly_allowances','ceo_monthly_incentive_bonus',
-    'ceo_monthly_deferred_incentive','ceo_monthly_non_cash_benefits','ceo_monthly_pension',
-    'ceo_monthly_gratuity','ceo_monthly_share_value','ceo_monthly_cost_of_employment']
-    .some(f => sd[f] !== null && sd[f] !== undefined);
-
-  if (!anyCeoData) {
-    return `<div class="panel"><div class="empty">This company's filing didn't disclose CEO/MD pay at a company-level monthly basis, or it hasn't been entered yet.</div></div>`;
-  }
-
-  return `
-    <div class="row row-2">
-      <div class="panel">
-        <div class="ir-panel-title">Monthly CEO/MD Compensation (${escapeHtml(cur)}, ${escapeHtml(surveyDirectorFiguresUnit(sd) || '')})</div>
-        <div class="ir-kv-list">
-          ${scRow(sd, 'ceo_monthly_salary', 'Salary', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_allowances', 'Allowances', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_incentive_bonus', 'Incentive / Bonus', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_deferred_incentive', 'Deferred Incentive', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_non_cash_benefits', 'Non-Cash Benefits', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_pension', 'Pension', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_gratuity', 'Gratuity', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_share_value', 'Share Value', {isAmount: true, amountDecimals: dec})}
-          ${scRow(sd, 'ceo_monthly_cost_of_employment', 'Total Cost of Employment', {isAmount: true, amountDecimals: dec})}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Derivation (if converted from the filing's own figures)</div>
-        <div class="ir-kv-list">
-          ${surveyDetailRow('Annual Salary as Stated', sd.ceo_annual_salary_as_stated, {isAmount: true, prefix: cur + ' ', amountDecimals: dec})}
-          ${surveyDetailRow('Conversion Basis', sd.ceo_monthly_conversion_basis)}
-        </div>
-        <p style="font-size:11px;color:var(--text-faint);margin:8px 0 0;">
-          Shown only when the monthly figures above were derived from an annual, named-individual figure in the filing rather than transcribed directly.
-        </p>
-      </div>
-    </div>`;
-}
-
-function scBenefitsTab(sd, directorBenefits, benefitCategories, directors){
-  const cur = sd.currency || 'KES';
-  const unit = surveyDirectorFiguresUnit(sd);
-  const dec = surveyAmountDecimals(unit);
-  const qualitative = sd.ned_benefits || {};
-  const qualKeys = Object.keys(qualitative);
-
-  // ---- Section 1: qualitative provided/not-provided (existing, unchanged) ----
-  const qualSection = qualKeys.length ? `
-    <div class="panel">
-      <div class="ir-panel-title">Benefit Types Addressed (Provided / Not Provided)</div>
-      <div class="ir-kv-list">
-        ${qualKeys.map(k => {
-          const b = qualitative[k] || {};
-          const status = b.provided === true ? `<span style="color:var(--green);font-weight:700;">Provided</span>`
-            : b.provided === false ? `<span style="color:var(--text-faint);">Not Provided</span>`
-            : naSpan('Not addressed in the filing');
-          return `<div class="ir-kv-row"><span class="k">${escapeHtml(k)}</span><span>${status}${b.detail ? ` <span style="color:var(--text-faint);font-size:11px;">— ${escapeHtml(b.detail)}</span>` : ''}</span></div>`;
-        }).join('')}
-      </div>
-    </div>` : '';
-
-  if (!qualSection && !directorBenefits.length) {
-    return `${qualSection || `<div class="panel"><div class="empty">No director benefits were addressed in this company's submitted data.</div></div>`}${scBenefitsCategorySection(sd, benefitCategories, unit, dec, cur)}`;
-  }
-
-  // ---- Stat cards (new - matches the mockup's 4-card summary) ----
-  const amounts = directorBenefits.map(b => b.total_amount || 0);
-  const totalBenefits = amounts.reduce((a, b) => a + b, 0);
-  const avgPerDirector = directorBenefits.length ? totalBenefits / directorBenefits.length : 0;
-  const nonZero = directorBenefits.filter(b => (b.total_amount || 0) > 0);
-  const highest = nonZero.length ? Math.max(...nonZero.map(b => b.total_amount)) : null;
-  const lowest = nonZero.length ? Math.min(...nonZero.map(b => b.total_amount)) : null;
-
-  const statCards = directorBenefits.length ? `
-    <div class="row row-4" style="margin-bottom:16px;">
-      <div class="panel" style="text-align:center;"><div style="font-size:20px;font-weight:800;">${fmtSurveyAmount(totalBenefits, dec)}</div><div style="font-size:11.5px;color:var(--text-faint);">Total Benefits (${escapeHtml(unit || '')})</div></div>
-      <div class="panel" style="text-align:center;"><div style="font-size:20px;font-weight:800;">${fmtSurveyAmount(avgPerDirector, dec)}</div><div style="font-size:11.5px;color:var(--text-faint);">Avg. per Director</div></div>
-      <div class="panel" style="text-align:center;"><div style="font-size:20px;font-weight:800;">${highest !== null ? fmtSurveyAmount(highest, dec) : naSpan('—')}</div><div style="font-size:11.5px;color:var(--text-faint);">Highest (non-zero)</div></div>
-      <div class="panel" style="text-align:center;"><div style="font-size:20px;font-weight:800;">${directorBenefits.length}</div><div style="font-size:11.5px;color:var(--text-faint);">Directors Covered</div></div>
-    </div>` : '';
-
-  // ---- Sub-tabs: Executive / Non-Executive / Per Director Breakdown ----
-  // Cross-references directorBenefits (has the amount) against
-  // `directors` from the Directors' Register (has the role) BY NAME -
-  // the two come from different extraction passes over different
-  // parts of a filing (see SurveyDirectorBenefit's own docstring), so
-  // a benefit row genuinely may have no matching directors-register
-  // entry (that extractor may have failed, or not run) - those are
-  // shown in their own honest "Role Not Known" bucket rather than
-  // silently dropped or guessed into Executive/Non-Executive.
-  const roleByName = {};
-  for (const d of directors) roleByName[(d.director_name || '').trim().toLowerCase()] = d.role;
-  const withRole = directorBenefits.map(b => ({
-    ...b,
-    _role: roleByName[(b.director_name || '').trim().toLowerCase()] || null,
-  }));
-  const execBenefits = withRole.filter(b => b._role === 'executive');
-  const nonExecBenefits = withRole.filter(b => b._role === 'non_executive');
-  const unknownRoleBenefits = withRole.filter(b => !b._role);
-
-  const subTabBar = directorBenefits.length ? `
-    <div style="display:flex;gap:4px;margin:16px 0 12px;border-bottom:1px solid var(--border);">
-      <button onclick="switchScBenefitsSubTab('executive')" style="background:none;border:none;padding:8px 12px;font-size:12.5px;cursor:pointer;font-weight:${scBenefitsSubTab==='executive'?'700':'500'};color:${scBenefitsSubTab==='executive'?'var(--text)':'var(--text-faint)'};border-bottom:2px solid ${scBenefitsSubTab==='executive'?'var(--accent,#2563eb)':'transparent'};">Executive Directors (${execBenefits.length})</button>
-      <button onclick="switchScBenefitsSubTab('non_executive')" style="background:none;border:none;padding:8px 12px;font-size:12.5px;cursor:pointer;font-weight:${scBenefitsSubTab==='non_executive'?'700':'500'};color:${scBenefitsSubTab==='non_executive'?'var(--text)':'var(--text-faint)'};border-bottom:2px solid ${scBenefitsSubTab==='non_executive'?'var(--accent,#2563eb)':'transparent'};">Non-Executive Directors (${nonExecBenefits.length})</button>
-      <button onclick="switchScBenefitsSubTab('per_director')" style="background:none;border:none;padding:8px 12px;font-size:12.5px;cursor:pointer;font-weight:${scBenefitsSubTab==='per_director'?'700':'500'};color:${scBenefitsSubTab==='per_director'?'var(--text)':'var(--text-faint)'};border-bottom:2px solid ${scBenefitsSubTab==='per_director'?'var(--accent,#2563eb)':'transparent'};">Per Director Breakdown</button>
-    </div>` : '';
-
-  const scopedList = scBenefitsSubTab === 'executive' ? execBenefits
-    : scBenefitsSubTab === 'non_executive' ? nonExecBenefits
-    : withRole;   // "per_director" view shows everyone, with role shown per row
-
-  let totalSection = '';
-  if (directorBenefits.length) {
-    const scopedSum = scopedList.reduce((s, b) => s + (b.total_amount || 0), 0);
-    const rows = scopedList.map(b => `
-      <tr>
-        <td>${escapeHtml(b.director_name)}</td>
-        ${scBenefitsSubTab === 'per_director' ? `<td>${b._role === 'executive' ? 'Executive' : b._role === 'non_executive' ? 'Non-Executive' : naSpan('Role not known')}</td>` : ''}
-        <td style="text-align:right;font-weight:600;">${fmtSurveyAmount(b.total_amount, dec)}</td>
-        <td style="color:var(--text-faint);font-size:11.5px;">${b.page ? `p.${b.page}` : '-'}</td>
-      </tr>`).join('');
-    const emptyForSubTab = !scopedList.length
-      ? `<div class="empty">${scBenefitsSubTab === 'executive' ? 'No benefit rows matched to an executive director by name.' : scBenefitsSubTab === 'non_executive' ? 'No benefit rows matched to a non-executive director by name.' : 'No director benefit data available.'}${unknownRoleBenefits.length && scBenefitsSubTab !== 'per_director' ? ` (${unknownRoleBenefits.length} director(s) have a benefit amount but no matching entry in the Directors' Register to determine role - see "Per Director Breakdown".)` : ''}</div>`
-      : '';
-    totalSection = `
-      <div class="panel">
-        <div class="ir-panel-title">Non-Cash Benefits by Director (${escapeHtml(cur)}, ${escapeHtml(unit || '')})</div>
-        <p style="font-size:11px;color:var(--text-faint);margin:0 0 10px;">
-          From the filing's own director remuneration table - a single total per director, not broken into categories.
-          ${nonZero.length === 0 ? 'Every director shows a nil (0) value here - the filing addresses this column but states no non-cash benefits were paid.' : ''}
-        </p>
-        ${scopedList.length ? `
-        <table>
-          <thead><tr><th>Director</th>${scBenefitsSubTab === 'per_director' ? '<th>Role</th>' : ''}<th style="text-align:right;">Total</th><th>Source</th></tr></thead>
-          <tbody>${rows}</tbody>
-          <tfoot><tr style="font-weight:700;"><td>Total</td>${scBenefitsSubTab === 'per_director' ? '<td></td>' : ''}<td style="text-align:right;">${fmtSurveyAmount(scopedSum, dec)}</td><td></td></tr></tfoot>
-        </table>` : emptyForSubTab}
-      </div>`;
-  }
-
-  // ---- Benefits Trends chart (new - honest single-point/empty state; no historical data model exists yet) ----
-  const trendSection = `
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Benefits Trends</div>
-      <div class="empty">Only this filing's fiscal year (${escapeHtml(sd.fiscal_year || '')}) is on file for this company - a multi-year trend needs benefit data from prior years' filings uploaded too, which hasn't been done yet.</div>
-    </div>`;
-
-  // ---- Key Insights (new - computed from real numbers only, never invented commentary) ----
-  const insights = [];
-  if (directorBenefits.length) {
-    if (nonZero.length === 0) {
-      insights.push(`Every director shows a nil non-cash benefit value in this filing.`);
-    } else {
-      insights.push(`Non-cash benefits total ${fmtSurveyAmount(totalBenefits, dec)} ${escapeHtml(unit || '')} across ${directorBenefits.length} director(s), averaging ${fmtSurveyAmount(avgPerDirector, dec)} per director.`);
-      if (highest !== null) {
-        const topDirector = nonZero.find(b => b.total_amount === highest);
-        insights.push(`${escapeHtml(topDirector.director_name)} has the highest recorded non-cash benefit at ${fmtSurveyAmount(highest, dec)}.`);
-      }
-    }
-    if (unknownRoleBenefits.length) {
-      insights.push(`${unknownRoleBenefits.length} director(s) with a benefit amount couldn't be matched to a role - see the Directors' Register tab.`);
-    }
-  }
-  const insightsSection = insights.length ? `
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Key Insights</div>
-      <ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">
-        ${insights.map(i => `<li>${i}</li>`).join('')}
-      </ul>
-    </div>` : '';
-
-  return `
-    ${qualSection}
-    ${statCards}
-    ${subTabBar}
-    ${totalSection}
-    ${trendSection}
-    ${scBenefitsCategorySection(sd, benefitCategories, unit, dec, cur)}
-    ${insightsSection}
-    ${scBenefitsSourceDocumentsSection(sd)}`;
-}
-
-function switchScBenefitsSubTab(tabId){
-  scBenefitsSubTab = tabId;
-  renderScTabBody();
-}
-
-function scBenefitsCategorySection(sd, benefitCategories, unit, dec, cur){
-  if (!benefitCategories.length) {
-    return `
-      <div class="panel" style="margin-top:16px;">
-        <div class="ir-panel-title">Benefits by Category</div>
-        <div class="empty">No itemized category breakdown (Housing, Vehicle, Medical, etc.) has been entered for this company. Most filings only disclose a single non-cash-benefits total per director, shown above - a category-level breakdown usually requires reading the notes to the financial statements by hand.</div>
-      </div>`;
-  }
-  const byCategory = {};
-  for (const c of benefitCategories) {
-    byCategory[c.category] = (byCategory[c.category] || 0) + (c.amount || 0);
-  }
-  const catTotal = Object.values(byCategory).reduce((a, b) => a + b, 0);
-  const catRows = Object.entries(byCategory).map(([cat, amt]) => `
-    <tr>
-      <td>${escapeHtml(cat)}</td>
-      <td style="text-align:right;font-weight:600;">${fmtSurveyAmount(amt, dec)}</td>
-      <td style="text-align:right;color:var(--text-faint);">${catTotal ? Math.round(amt / catTotal * 100) : 0}%</td>
-    </tr>`).join('');
-
-  const perDirector = benefitCategories.filter(c => c.director_name);
-  let perDirectorTable = '';
-  if (perDirector.length) {
-    const dirNames = [...new Set(perDirector.map(c => c.director_name))];
-    const cats = [...new Set(perDirector.map(c => c.category))];
-    const grid = {};
-    for (const c of perDirector) grid[`${c.director_name}||${c.category}`] = c.amount;
-    perDirectorTable = `
-      <div class="panel" style="margin-top:16px;">
-        <div class="ir-panel-title">Benefits by Director</div>
-        <table>
-          <thead><tr><th>Director</th>${cats.map(c => `<th style="text-align:right;">${escapeHtml(c)}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${dirNames.map(name => `
-              <tr>
-                <td>${escapeHtml(name)}</td>
-                ${cats.map(c => `<td style="text-align:right;">${grid[`${name}||${c}`] != null ? fmtSurveyAmount(grid[`${name}||${c}`], dec) : '-'}</td>`).join('')}
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>`;
-  }
-
-  return `
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Benefits by Category (${escapeHtml(cur)}, ${escapeHtml(unit || '')})</div>
-      <table>
-        <thead><tr><th>Category</th><th style="text-align:right;">Amount</th><th style="text-align:right;">% of Total</th></tr></thead>
-        <tbody>${catRows}</tbody>
-        <tfoot><tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">${fmtSurveyAmount(catTotal, dec)}</td><td></td></tr></tfoot>
-      </table>
-    </div>
-    ${perDirectorTable}`;
-}
-
-function scBenefitsSourceDocumentsSection(sd){
-  // Real source references, pulled from field_sources - NOT a
-  // fabricated document list. The mockup's "Supporting Documents"
-  // table shows document name/type/page-range/verified-status; this
-  // app doesn't have a per-document page-range or verification
-  // workflow for the survey side, so this shows what IS real: the
-  // filing's own source filename plus whichever field_sources entries
-  // mention a page for a benefits-related field.
-  const sources = sd.field_sources || {};
-  const benefitKeys = Object.keys(sources).filter(k => /benefit|ned_benefits/i.test(k));
-  if (!sd.source_filename && !benefitKeys.length) return '';
-  return `
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Source</div>
-      <div class="ir-kv-list">
-        ${sd.source_filename ? surveyDetailRow('Source File', sd.source_filename) : ''}
-        ${benefitKeys.map(k => `<div class="ir-kv-row"><span class="k">${escapeHtml(k)}</span><span style="font-size:11.5px;">${escapeHtml(sources[k])}</span></div>`).join('')}
-      </div>
-    </div>`;
-}
-
-// ---------- Directors' Register tab ----------
-// Built only from SurveyDirector rows (see models_survey.py) - real,
-// PDF-extracted or hand-entered per-director facts, never invented.
-// The extractor behind this (extract_survey_directors, pdf_parse.py)
-// currently only supports the clean "Name / Designation" list layout
-// some filers use (confirmed against Eaagads Limited's FY2025 filing);
-// it does NOT yet populate gender, nationality, appointed_date,
-// end_of_term, or committees - those columns exist on the model for
-// when a future extractor pass (or manual entry) fills them in, but
-// today they are genuinely absent for every row, not just unlucky
-// ones. Every place below that would show them renders an honest
-// "Not captured" instead of blank space or a fabricated value.
-
-function scDirectorsCount(directors, pred){
-  return directors.filter(pred).length;
-}
-
-function scDirectorsRegisterTab(directors, sd){
-  if (!directors.length) {
-    return `<div class="panel"><div class="empty">No named director register was extracted or entered for this company's filing. This is currently only supported for filings with a clean "Name / Designation" board list - a photo-caption grid or narrative bio layout isn't parsed into named rows yet.</div></div>`;
-  }
-
-  const total = directors.length;
-  const execCount = scDirectorsCount(directors, d => d.role === 'executive');
-  const nonExecCount = scDirectorsCount(directors, d => d.role === 'non_executive');
-  const independentCount = scDirectorsCount(directors, d => d.independent === true);
-  const femaleCount = scDirectorsCount(directors, d => (d.gender || '').toLowerCase() === 'female');
-  const genderKnownCount = directors.filter(d => d.gender).length;
-
-  // A 5th stat card (Female Directors) only when gender is known for
-  // at least one director - showing "0 (0%)" when the extractor never
-  // even looked for gender would misrepresent "not captured" as
-  // "captured and zero", the same distinction this app keeps
-  // everywhere else (see SurveyDirector.gender's own docstring).
-  const femaleCard = genderKnownCount > 0
-    ? `<div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${femaleCount} <span style="font-size:13px;font-weight:600;color:var(--text-faint);">(${Math.round(femaleCount/genderKnownCount*100)}%)</span></div><div style="font-size:11.5px;color:var(--text-faint);">Female Directors</div></div>`
-    : `<div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;color:var(--text-faint);">—</div><div style="font-size:11.5px;color:var(--text-faint);">Female Directors (not captured)</div></div>`;
-
-  const statCards = `
-    <div class="row row-4" style="margin-bottom:12px;">
-      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${total}</div><div style="font-size:11.5px;color:var(--text-faint);">Total Directors</div></div>
-      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${execCount}</div><div style="font-size:11.5px;color:var(--text-faint);">Executive Directors</div></div>
-      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${nonExecCount}</div><div style="font-size:11.5px;color:var(--text-faint);">Non-Executive Directors</div></div>
-      <div class="panel" style="text-align:center;"><div style="font-size:22px;font-weight:800;">${independentCount}</div><div style="font-size:11.5px;color:var(--text-faint);">Stated Independent</div></div>
-    </div>
-    <div class="row row-4" style="margin-bottom:16px;">
-      ${femaleCard}
-    </div>`;
-
-  const rows = directors.map(d => {
-    const roleLabel = d.role === 'executive' ? 'Executive' : d.role === 'non_executive' ? 'Non-Executive' : naSpan('Not stated');
-    const indepLabel = d.independent === true ? `<span style="color:var(--green);font-weight:600;">Independent</span>`
-      : d.independent === false ? `<span style="color:var(--text-faint);">Not Independent</span>`
-      : naSpan('Not stated');
-    const confBadge = typeof d.confidence === 'number'
-      ? ` <span style="font-size:10px;color:var(--text-faint);border:1px solid var(--border);border-radius:4px;padding:1px 5px;">${Math.round(d.confidence * 100)}%</span>`
-      : '';
-    const committeeCount = d.committees && d.committees.length ? d.committees.length : null;
-    return `
-      <tr onclick="scSelectDirector(${d.id})" style="cursor:pointer;${scSelectedDirectorId===d.id ? 'background:var(--row-active,#eef4ff);' : ''}">
-        <td>${escapeHtml(d.director_name)}</td>
-        <td>${escapeHtml(d.position || '-')}</td>
-        <td>${d.gender ? escapeHtml(d.gender) : naSpan('—')}</td>
-        <td>${d.nationality ? escapeHtml(d.nationality) : naSpan('—')}</td>
-        <td>${indepLabel}</td>
-        <td>${d.appointed_date ? escapeHtml(d.appointed_date) : naSpan('—')}</td>
-        <td style="text-align:center;">${committeeCount !== null ? committeeCount : naSpan('—')}</td>
-        <td>${d.page ? `p.${d.page}` : '-'}${confBadge}</td>
-      </tr>`;
-  }).join('');
-
-  const table = `
-    <div class="panel">
-      <div class="ir-panel-title">Directors (${total})</div>
-      <table>
-        <thead><tr><th>Name</th><th>Position (as filed)</th><th>Gender</th><th>Nationality</th><th>Independence</th><th>Appointed</th><th>Committees</th><th>Source</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
-
-  const selected = scSelectedDirectorId ? directors.find(d => d.id === scSelectedDirectorId) : null;
-  const detail = selected ? scDirectorDetailPanel(selected, sd) : `
-    <div class="panel">
-      <div class="empty">Select a director from the table to see their full record.</div>
-    </div>`;
-
-  return `
-    ${statCards}
-    <div class="row row-2">
-      <div>${table}</div>
-      <div>${detail}</div>
-    </div>`;
-}
-
-const SC_DIRECTOR_DETAIL_TABS = [
-  {id: 'profile', label: 'Profile'},
-  {id: 'appointments', label: 'Board Appointments'},
-  {id: 'committees', label: 'Committee Memberships'},
-];
-
-function scDirectorDetailPanel(d, sd){
-  const roleLabel = d.role === 'executive' ? 'Executive' : d.role === 'non_executive' ? 'Non-Executive' : null;
-
-  const tabBar = `
-    <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px;">
-      ${SC_DIRECTOR_DETAIL_TABS.map(t => `
-        <button onclick="switchScDirectorDetailTab('${t.id}')"
-          style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${scDirectorDetailTab===t.id?'700':'500'};color:${scDirectorDetailTab===t.id?'var(--text)':'var(--text-faint)'};border-bottom:2px solid ${scDirectorDetailTab===t.id?'var(--accent,#2563eb)':'transparent'};">
-          ${t.label}
-        </button>`).join('')}
-    </div>`;
-
-  let body = '';
-  if (scDirectorDetailTab === 'profile') {
-    body = scDirectorProfileTabBody(d);
-  } else if (scDirectorDetailTab === 'appointments') {
-    body = scDirectorAppointmentsTabBody(d, sd);
-  } else if (scDirectorDetailTab === 'committees') {
-    body = scDirectorCommitteesTabBody(d);
-  }
-
-  return `
-    <div class="panel">
-      <div class="ir-panel-title">${escapeHtml(d.director_name)}${roleLabel ? ` <span style="font-size:11px;font-weight:500;color:var(--text-faint);">(${roleLabel})</span>` : ''}</div>
-      ${tabBar}
-      ${body}
-    </div>`;
-}
-
-function switchScDirectorDetailTab(tabId){
-  scDirectorDetailTab = tabId;
-  renderScTabBody();
-}
-
-function scDirectorProfileTabBody(d){
-  return `
-    <div class="ir-kv-list">
-      ${surveyDetailRow('Position (as filed)', d.position)}
-      ${surveyDetailRow('Independence', d.independent === true ? 'Independent' : d.independent === false ? 'Not Independent' : null)}
-      ${surveyDetailRow('Gender', d.gender)}
-      ${surveyDetailRow('Nationality', d.nationality)}
-      ${surveyDetailRow('Appointed', d.appointed_date)}
-      ${surveyDetailRow('End of Term', d.end_of_term)}
-      ${surveyDetailRow('Source Page', d.page ? `p.${d.page}` : null)}
-      ${d.confidence !== null && d.confidence !== undefined
-        ? surveyDetailRow('Extraction Confidence', Math.round(d.confidence * 100), {suffix: '%'})
-        : `<div class="ir-kv-row"><span class="k">Extraction Confidence</span><span style="color:var(--text-faint);font-size:11.5px;">Not scored (hand-entered or pattern-matched, not a graded extraction)</span></div>`}
-    </div>
-    <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;">
-      Gender, nationality, and appointment/end-of-term dates are only shown when this filing's extraction found them directly - never guessed.
-    </p>`;
-}
-
-function scDirectorAppointmentsTabBody(d, sd){
-  // Board Appointments (which OTHER companies this person also sits
-  // on) and Board Attendance (meetings attended / meetings held) are
-  // both real, common annual-report disclosures the Directors' Register
-  // mockup shows - but neither is captured by any extractor yet:
-  // extract_survey_directors() only reads ONE company's own board
-  // list, and no attendance-per-director extractor exists at all
-  // (only a company-WIDE board_meetings_per_year count, on
-  // SurveyCompanyData, with no per-director attendance breakdown).
-  // Shown as an honest empty state rather than fabricating attendance
-  // percentages or a cross-company appointment list.
-  const meetingsHeld = sd.board_meetings_per_year;
-  return `
-    <div class="empty">
-      Board appointments at other companies and per-director meeting attendance aren't captured by any extractor yet - only a company-wide meeting count is available${meetingsHeld ? ` (${meetingsHeld} board meetings held company-wide this fiscal year, not broken down by director)` : ''}.
-    </div>`;
-}
-
-function scDirectorCommitteesTabBody(d){
-  if (!d.committees || !d.committees.length) {
-    return `<div class="empty">No committee memberships were captured for this director - the filing's board/committee pages didn't state them directly, or this extraction pass didn't reach that section.</div>`;
-  }
-  return `
-    <div style="display:flex;flex-wrap:wrap;gap:6px;">
-      ${d.committees.map(c => `<span style="display:inline-block;background:var(--panel-alt,#f1f5f9);border:1px solid var(--border);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;">${escapeHtml(c)}</span>`).join('')}
-    </div>`;
-}
-
-function scSelectDirector(directorId){
-  scSelectedDirectorId = directorId;
-  scDirectorDetailTab = 'profile';
-  renderScTabBody();
-}
-
-function attachScDirectorsRegisterHandlers(){
-  // Row clicks are wired via inline onclick in the row markup above;
-  // nothing additional to attach today, but kept as its own hook
-  // (matching the naming convention other sc*Tab renders could adopt)
-  // in case row actions grow beyond a single click-to-select later.
-}
-
-function scEvidenceTab(sd){
-  const sources = sd.field_sources || {};
-  const sourceKeys = Object.keys(sources);
-  return `
-    <div class="row row-2">
-      <div class="panel">
-        <div class="ir-panel-title">Per-Field Sources</div>
-        ${sourceKeys.length ? `<div class="ir-kv-list">${sourceKeys.map(k =>
-          `<div class="ir-kv-row"><span class="k">${escapeHtml(k)}</span><span style="font-size:11.5px;">${escapeHtml(sources[k])}</span></div>`
-        ).join('')}</div>` : `<div class="empty">No per-field source references were recorded for this company.</div>`}
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Source Notes</div>
-        ${sd.source_notes ? `<pre style="white-space:pre-wrap;font-family:inherit;font-size:11.5px;color:var(--text-dim);margin:0;">${escapeHtml(sd.source_notes)}</pre>` : `<div class="empty">No free-text methodology notes on file.</div>`}
-      </div>
-    </div>`;
-}
-
 function exportSurveyPdf(){
   window.open('/api/survey/export/report.pdf' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : ''), '_blank');
 }
 
-// ---------- Survey Mapping tab ----------
+// ---------- Survey Mapping tab (shared by Company Survey Data's
+// Survey Mapping and Data Quality tabs, via renderMappingTab below) ----------
 // A meta-view of the EXTRACTION itself, not company data: for each
 // field this app tracks on SurveyCompanyData, shows what value (if
 // any) is on file, which source document/page it came from, how
@@ -5612,7 +5407,7 @@ function exportSurveyPdf(){
 // in app.py (kept in sync by hand; there's no single shared source of
 // truth between Python and this template), so Survey Mapping's totals
 // always match what _survey_row_completeness() there already counts.
-const SC_MAPPING_FIELDS = [
+const MAPPING_FIELDS = [
   {field: 'turnover', label: 'Turnover', section: 'Company Overview'},
   {field: 'net_profit', label: 'Net Profit', section: 'Company Overview'},
   {field: 'market_cap', label: 'Market Cap', section: 'Company Overview'},
@@ -5653,29 +5448,33 @@ const SC_MAPPING_FIELDS = [
   {field: 'ceo_monthly_cost_of_employment', label: 'CEO Total Cost of Employment', section: 'CEO/MD Remuneration'},
 ];
 
-let scMappingStatusFilter = 'all';   // 'all' | 'mapped' | 'unmapped' | 'partial'
-let scMappingSectionFilter = 'all';
-let scMappingSearch = '';
+const MAPPING_HIGH_CONFIDENCE_THRESHOLD = 0.75;
 
-const SC_HIGH_CONFIDENCE_THRESHOLD = 0.75;
-
-function scFieldMappingStatus(sd, field){
+function mappingFieldStatus(sd, field){
   const value = sd[field];
   const conf = (sd.field_confidence || {})[field];
   const reviewStatus = (sd.field_review_status || {})[field];
   if (value === null || value === undefined) return 'unmapped';
   if (reviewStatus === 'approved') return 'mapped';   // explicitly reviewed and approved/corrected - trust it regardless of the original confidence band
-  if (typeof conf === 'number' && conf < SC_HIGH_CONFIDENCE_THRESHOLD) return 'partial';
+  if (typeof conf === 'number' && conf < MAPPING_HIGH_CONFIDENCE_THRESHOLD) return 'partial';
   return 'mapped';   // has a value, and either no confidence score at all (hand-typed - typing WAS the review) or high confidence
 }
 
-function scSurveyMappingTab(sd){
-  const rows = SC_MAPPING_FIELDS.map(m => ({
+// Shared mapping-tab renderer, used by Company Survey Data's Survey
+// Mapping tab (srSurveyMappingTab). Was originally duplicated between
+// two pages (Survey Companies and Company Survey Data) with the
+// Company Survey Data version much thinner; factored into one shared
+// implementation (2026-09-14), and the Survey Companies page itself
+// was later removed as a full duplicate of Company Survey Data
+// (2026-09-14) - this function's the one surviving piece of it.
+function renderMappingTab(sd, opts){
+  const {statusFilter, sectionFilter, search, onSetStatusFilter, onSetSectionFilter, onSetSearch, onApprove, onCorrect} = opts;
+  const rows = MAPPING_FIELDS.map(m => ({
     ...m,
     value: sd[m.field],
     confidence: (sd.field_confidence || {})[m.field],
     source: (sd.field_sources || {})[m.field],
-    status: scFieldMappingStatus(sd, m.field),
+    status: mappingFieldStatus(sd, m.field),
   }));
 
   const mappedCount = rows.filter(r => r.status === 'mapped').length;
@@ -5683,19 +5482,19 @@ function scSurveyMappingTab(sd){
   const unmappedCount = rows.filter(r => r.status === 'unmapped').length;
   const total = rows.length;
 
-  const highConf = rows.filter(r => typeof r.confidence === 'number' && r.confidence >= SC_HIGH_CONFIDENCE_THRESHOLD).length;
-  const medConf = rows.filter(r => typeof r.confidence === 'number' && r.confidence >= 0.45 && r.confidence < SC_HIGH_CONFIDENCE_THRESHOLD).length;
+  const highConf = rows.filter(r => typeof r.confidence === 'number' && r.confidence >= MAPPING_HIGH_CONFIDENCE_THRESHOLD).length;
+  const medConf = rows.filter(r => typeof r.confidence === 'number' && r.confidence >= 0.45 && r.confidence < MAPPING_HIGH_CONFIDENCE_THRESHOLD).length;
   const lowConf = rows.filter(r => typeof r.confidence === 'number' && r.confidence < 0.45).length;
   const scoredCount = highConf + medConf + lowConf;
   const avgConf = scoredCount ? rows.filter(r => typeof r.confidence === 'number').reduce((s, r) => s + r.confidence, 0) / scoredCount : null;
 
-  const sections = [...new Set(SC_MAPPING_FIELDS.map(m => m.section))];
+  const sections = [...new Set(MAPPING_FIELDS.map(m => m.section))];
 
   let filtered = rows;
-  if (scMappingStatusFilter !== 'all') filtered = filtered.filter(r => r.status === scMappingStatusFilter);
-  if (scMappingSectionFilter !== 'all') filtered = filtered.filter(r => r.section === scMappingSectionFilter);
-  if (scMappingSearch.trim()) {
-    const q = scMappingSearch.trim().toLowerCase();
+  if (statusFilter !== 'all') filtered = filtered.filter(r => r.status === statusFilter);
+  if (sectionFilter !== 'all') filtered = filtered.filter(r => r.section === sectionFilter);
+  if (search.trim()) {
+    const q = search.trim().toLowerCase();
     filtered = filtered.filter(r => r.label.toLowerCase().includes(q) || (r.source || '').toLowerCase().includes(q) || String(r.value ?? '').toLowerCase().includes(q));
   }
 
@@ -5717,8 +5516,8 @@ function scSurveyMappingTab(sd){
         <td>${confBadge}</td>
         <td>${statusBadge(r.status)}</td>
         <td>
-          ${hasConfidence && r.status !== 'mapped' ? `<button onclick="scReviewField('${r.field}','approve')" style="font-size:11px;padding:3px 8px;margin-right:4px;">Approve</button>` : ''}
-          ${hasConfidence ? `<button onclick="scPromptCorrectField('${r.field}', ${JSON.stringify(String(r.value ?? '')).replace(/"/g, '&quot;')})" style="font-size:11px;padding:3px 8px;">Edit</button>` : ''}
+          ${hasConfidence && r.status !== 'mapped' ? `<button onclick="${onApprove}('${r.field}')" style="font-size:11px;padding:3px 8px;margin-right:4px;">Approve</button>` : ''}
+          ${hasConfidence ? `<button onclick="${onCorrect}('${r.field}', ${JSON.stringify(String(r.value ?? '')).replace(/"/g, '&quot;')})" style="font-size:11px;padding:3px 8px;">Edit</button>` : ''}
         </td>
       </tr>`;
   }).join('');
@@ -5728,17 +5527,17 @@ function scSurveyMappingTab(sd){
       <div>
         <div class="panel" style="margin-bottom:16px;">
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
-            <input type="text" placeholder="Search fields, values, or source..." value="${escapeHtml(scMappingSearch)}"
-              oninput="scMappingSearch=this.value;renderScTabBody();" style="flex:1;min-width:200px;padding:6px 10px;font-size:12.5px;">
-            <select onchange="scMappingSectionFilter=this.value;renderScTabBody();">
+            <input type="text" placeholder="Search fields, values, or source..." value="${escapeHtml(search)}"
+              oninput="${onSetSearch}(this.value)" style="flex:1;min-width:200px;padding:6px 10px;font-size:12.5px;">
+            <select onchange="${onSetSectionFilter}(this.value)">
               <option value="all">All Sections</option>
-              ${sections.map(s => `<option value="${escapeHtml(s)}" ${scMappingSectionFilter===s?'selected':''}>${escapeHtml(s)}</option>`).join('')}
+              ${sections.map(s => `<option value="${escapeHtml(s)}" ${sectionFilter===s?'selected':''}>${escapeHtml(s)}</option>`).join('')}
             </select>
           </div>
           <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px;">
-            <button onclick="scMappingStatusFilter='all';renderScTabBody();" style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${scMappingStatusFilter==='all'?'700':'500'};border-bottom:2px solid ${scMappingStatusFilter==='all'?'var(--accent,#2563eb)':'transparent'};">Mapped Fields (${mappedCount})</button>
-            <button onclick="scMappingStatusFilter='unmapped';renderScTabBody();" style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${scMappingStatusFilter==='unmapped'?'700':'500'};border-bottom:2px solid ${scMappingStatusFilter==='unmapped'?'var(--accent,#2563eb)':'transparent'};">Unmapped Fields (${unmappedCount})</button>
-            <button onclick="scMappingStatusFilter='partial';renderScTabBody();" style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${scMappingStatusFilter==='partial'?'700':'500'};border-bottom:2px solid ${scMappingStatusFilter==='partial'?'var(--accent,#2563eb)':'transparent'};">Partially Mapped (${partialCount})</button>
+            <button onclick="${onSetStatusFilter}('all')" style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${statusFilter==='all'?'700':'500'};border-bottom:2px solid ${statusFilter==='all'?'var(--accent,#2563eb)':'transparent'};">Mapped Fields (${mappedCount})</button>
+            <button onclick="${onSetStatusFilter}('unmapped')" style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${statusFilter==='unmapped'?'700':'500'};border-bottom:2px solid ${statusFilter==='unmapped'?'var(--accent,#2563eb)':'transparent'};">Unmapped Fields (${unmappedCount})</button>
+            <button onclick="${onSetStatusFilter}('partial')" style="background:none;border:none;padding:8px 10px;font-size:12px;cursor:pointer;font-weight:${statusFilter==='partial'?'700':'500'};border-bottom:2px solid ${statusFilter==='partial'?'var(--accent,#2563eb)':'transparent'};">Partially Mapped (${partialCount})</button>
           </div>
           <table>
             <thead><tr><th>Survey Field</th><th>Section</th><th>Value</th><th>Source</th><th>Confidence</th><th>Status</th><th>Actions</th></tr></thead>
@@ -5779,28 +5578,6 @@ function scSurveyMappingTab(sd){
         </div>
       </div>
     </div>`;
-}
-
-async function scReviewField(field, action, correctedValue){
-  const body = {field, action};
-  if (action === 'correct') body.corrected_value = correctedValue;
-  // Matches /api/survey-data/<company_id>/<fiscal_year>/review's real signature (app.py) - company_id/fiscal_year in the URL, not the SurveyCompanyData row's own id.
-  const result = await safeJson(await fetch(`/api/survey-data/${scCompanyId}/${encodeURIComponent(scFiscalYear)}/review`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-  }), null);
-  if (result && result.ok) {
-    scData.survey_data = result.survey_data;
-    renderScTabBody();
-  }
-}
-
-function scPromptCorrectField(field, currentValue){
-  const next = prompt('Corrected value:', currentValue);
-  if (next === null || next.trim() === '') return;
-  const numeric = Number(next);
-  scReviewField(field, 'correct', Number.isNaN(numeric) ? next : numeric);
 }
 
 // ---------- Settings ----------
@@ -7319,22 +7096,6 @@ function timeAgo(isoString){
   if (hrs < 24) return `${hrs} hour${hrs===1?'':'s'} ago`;
   const days = Math.floor(hrs / 24);
   return `${days} day${days===1?'':'s'} ago`;
-}
-function trendBadge(value, {suffix = '%', prefix = '', decimals = 1, invert = false} = {}){
-  if (value === null || value === undefined) return `<div class="stat-trend neutral">No prior data</div>`;
-  const num = Number(value);
-  const isUp = invert ? num < 0 : num > 0;
-  const isFlat = num === 0;
-  const dir = isFlat ? 'neutral' : (isUp ? 'up' : 'down');
-  const arrow = isFlat ? '→' : (isUp ? '↑' : '↓');
-  const shown = Math.abs(num).toFixed(decimals);
-  return `<div class="stat-trend ${dir}">${arrow} ${prefix}${shown}${suffix}</div>`;
-}
-function trendCount(value, label){
-  if (value === null || value === undefined) return `<div class="stat-trend neutral">${escapeHtml(label)}</div>`;
-  const dir = value > 0 ? 'up' : (value < 0 ? 'down' : 'neutral');
-  const arrow = value > 0 ? '↑' : (value < 0 ? '↓' : '→');
-  return `<div class="stat-trend ${dir}">${arrow} ${Math.abs(value)} ${escapeHtml(label)}</div>`;
 }
 const AVATAR_COLORS = ['#5b9bff','#3ddc84','#ffb020','#ff6161','#b79bfc','#26c6da','#f472b6','#94a3b8'];
 function coAvatarColor(name){

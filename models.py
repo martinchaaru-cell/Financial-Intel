@@ -443,35 +443,43 @@ class DirectorRemunerationRow(db.Model):
         }
 
 
+# ---------- BOARD COMMITTEES ----------
+
 class Committee(db.Model):
     """One board committee (Audit, Risk, Remuneration, Nomination,
-    Governance, etc.) for one company/period, as printed in a filing's
-    Corporate Governance or Committees section. Added 2026-09-13 to back
-    the Survey Report's Committees tab - a company can have zero rows
-    here even with rich DirectorRemunerationRow data, since committee
-    structure and director pay are extracted from different sections of
-    a filing (or not extracted at all yet)."""
+    Governance, etc.) for one financial period, as filed in a
+    company's governance/annual report - same period_id-scoped,
+    provenance-tracked pattern as DirectorRemunerationRow above, so
+    the two are queried and replaced together the same way (see
+    app.py's company_survey_report/save_committees). Not linked to a
+    DirectorRemunerationRow by name at the database level - a
+    committee's chairperson_name and a CommitteeMember's
+    director_name are free text as printed in the filing, matched to
+    other named-director tables (if at all) only at display time,
+    the same convention SurveyDirectorBenefit uses (see that model's
+    own docstring in models_survey.py)."""
     __tablename__ = 'committees'
     id = db.Column(db.Integer, primary_key=True)
     period_id = db.Column(db.Integer, db.ForeignKey('financial_periods.id'), nullable=False)
     source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
 
-    name = db.Column(db.String(120), nullable=False)          # as printed, e.g. "Audit Committee"
-    chairperson_name = db.Column(db.String(150))               # free text - matched to a DirectorRemunerationRow.director_name by name only, never assumed to be the same row
-    member_count = db.Column(db.Integer)                        # filing's own stated count, if given (may exceed len(members) if some members weren't individually named)
+    name = db.Column(db.String(100), nullable=False)          # "Audit Committee", "Risk Committee", etc., as printed
+    chairperson_name = db.Column(db.String(150))
+    member_count = db.Column(db.Integer)                       # the filing's own stated count - may differ from len(members) if only some members were individually named
     meetings_held = db.Column(db.Integer)
-    attendance_rate = db.Column(db.Float)                        # 0-100, filing's own stated %, never computed from meetings-attended/meetings-held unless the filing gives both
+    attendance_rate = db.Column(db.Float)                       # 0-100, as stated (or computed from a filed attendance table) - never inferred when absent
     order_index = db.Column(db.Integer, default=0)
 
     page = db.Column(db.Integer)
     confidence = db.Column(db.Float)
 
-    members = db.relationship('CommitteeMember', backref='committee', cascade='all, delete-orphan',
-                               order_by='CommitteeMember.order_index')
+    members = db.relationship('CommitteeMember', backref='committee', lazy=True,
+                               cascade='all, delete-orphan', order_by='CommitteeMember.order_index')
 
     def to_dict(self):
         return {
-            'id': self.id, 'name': self.name, 'chairperson_name': self.chairperson_name,
+            'id': self.id, 'period_id': self.period_id,
+            'name': self.name, 'chairperson_name': self.chairperson_name,
             'member_count': self.member_count, 'meetings_held': self.meetings_held,
             'attendance_rate': self.attendance_rate, 'order_index': self.order_index,
             'page': self.page, 'confidence': self.confidence,
@@ -480,20 +488,23 @@ class Committee(db.Model):
 
 
 class CommitteeMember(db.Model):
-    """One named member of one Committee row. director_name is matched
-    to DirectorRemunerationRow.director_name by text only (both are
-    free-typed/extracted from possibly-different filing sections) - no
-    foreign key between them, since a name mismatch (e.g. "J. Mwangi"
-    vs "James Mwangi") would otherwise silently drop a real member
-    rather than surface the mismatch."""
+    """One named director's membership on one Committee - a separate row
+    per person so a director on three committees appears three times,
+    once per committee, rather than as a list column (keeps this table
+    queryable the same way DirectorRemunerationRow's per-person rows
+    are: one clean row per fact, not a row per director with nested
+    arrays)."""
     __tablename__ = 'committee_members'
     id = db.Column(db.Integer, primary_key=True)
     committee_id = db.Column(db.Integer, db.ForeignKey('committees.id'), nullable=False)
 
     director_name = db.Column(db.String(150), nullable=False)
-    role_on_committee = db.Column(db.String(30))     # 'chair' | 'member' - independently stated, not inferred from Committee.chairperson_name
+    role_on_committee = db.Column(db.String(30))    # 'chair' | 'member' | None if not stated
     order_index = db.Column(db.Integer, default=0)
 
     def to_dict(self):
-        return {'director_name': self.director_name, 'role_on_committee': self.role_on_committee,
-                'order_index': self.order_index}
+        return {
+            'director_name': self.director_name,
+            'role_on_committee': self.role_on_committee,
+            'order_index': self.order_index,
+        }

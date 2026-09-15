@@ -18,7 +18,7 @@ from models import (
     MarketDataSnapshot, PrincipalRisk, ManagementGuidance, DirectorRemunerationRow,
     Committee, CommitteeMember,
 )
-from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict
+from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory
 from survey_data_parse import is_survey_data_format, parse_survey_data
 from intelligence_extractor import extract_survey_schema, extract_policy_disclosures
 from survey_aggregate import build_survey_overview, build_company_rows, build_historical_trends, build_portfolio_data_quality
@@ -31,6 +31,8 @@ from pdf_parse import (
     extract_director_remuneration,
     extract_market_data, extract_management_guidance, extract_principal_risks,
     extract_director_remuneration_detail,
+    extract_survey_directors,
+    extract_survey_director_benefits,
     is_condensed_format, parse_condensed_filing,
 )
 from report_context import build_report_context
@@ -1980,6 +1982,10 @@ def import_survey_data_from_pdf():
     try:
         parsed = extract_survey_schema(tmp_path, start_page=start_page, end_page=end_page,
                                         company_country=company_country)
+        with open(tmp_path, 'rb') as f:
+            pdf_bytes = f.read()
+        directors_result = extract_survey_directors(pdf_bytes)
+        director_benefits = extract_survey_director_benefits(pdf_bytes, fiscal_year=fiscal_year)
     except Exception as e:
         return jsonify({'error': f'Could not process PDF: {e}'}), 400
     finally:
@@ -2000,7 +2006,40 @@ def import_survey_data_from_pdf():
             setattr(row, key, value)
     row.source_filename = file.filename
 
+    # Directors' Register: replace this company/year's existing rows
+    # entirely rather than appending, so re-uploading a corrected PDF
+    # (or uploading a same-year restated filing) doesn't leave stale
+    # duplicate director rows behind - same "re-upload replaces" model
+    # the SurveyCompanyData row above already follows column-by-column.
+    directors_extracted = directors_result.get('directors', [])
+    if directors_extracted:
+        SurveyDirector.query.filter_by(company_id=company.id, fiscal_year=fiscal_year).delete()
+        for d in directors_extracted:
+            db.session.add(SurveyDirector(
+                company_id=company.id, fiscal_year=fiscal_year,
+                director_name=d['director_name'], position=d.get('position'),
+                role=d.get('role'), independent=d.get('independent'),
+                order_index=d.get('order_index', 0), page=d.get('page'),
+                confidence=None,   # this extractor's pattern-match either finds a clean row or skips it entirely - it doesn't produce a graded confidence score the way the ontology-ranked SurveyCompanyData fields do, so this is left NULL rather than a fabricated fixed number
+            ))
+
     db.session.commit()
+
+    # Per-director benefit totals: same "re-upload replaces" model as
+    # the Directors' Register above, and kept as its own delete/insert
+    # pass (not folded into the directors loop) since these come from a
+    # different source page/table and a company can have one without
+    # the other.
+    if director_benefits:
+        SurveyDirectorBenefit.query.filter_by(company_id=company.id, fiscal_year=fiscal_year).delete()
+        for b in director_benefits:
+            db.session.add(SurveyDirectorBenefit(
+                company_id=company.id, fiscal_year=fiscal_year,
+                director_name=b['director_name'], position=b.get('position'),
+                total_amount=b.get('total_amount'), detail=b.get('detail'),
+                page=b.get('page'), confidence=None,
+            ))
+        db.session.commit()
 
     return jsonify({
         'ok': True,
@@ -2009,6 +2048,9 @@ def import_survey_data_from_pdf():
         'survey_data': row.to_dict(),
         'fields_extracted': len([k for k in parsed if k not in ('field_sources', 'field_confidence')]),
         'field_confidence': parsed.get('field_confidence', {}),
+        'directors_extracted': len(directors_extracted),
+        'directors_layout_supported': not directors_result.get('unsupported_layout', False),
+        'director_benefits_extracted': len(director_benefits),
     }), 201
 
 
@@ -2171,15 +2213,30 @@ def get_survey_company_data(company_id, fiscal_year):
     which never shows a single company's own figures on their own."""
     row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first_or_404()
     company = Company.query.get_or_404(company_id)
+    directors = SurveyDirector.query.filter_by(
+        company_id=company_id, fiscal_year=fiscal_year
+    ).order_by(SurveyDirector.order_index).all()
+    director_benefits = SurveyDirectorBenefit.query.filter_by(
+        company_id=company_id, fiscal_year=fiscal_year
+    ).all()
+    benefit_categories = SurveyBenefitCategory.query.filter_by(
+        company_id=company_id, fiscal_year=fiscal_year
+    ).all()
     return jsonify({
         'company': {'id': company.id, 'name': company.name, 'sector': company.sector},
         'survey_data': row.to_dict(),
+        'directors': [d.to_dict() for d in directors],
+        'director_benefits': [b.to_dict() for b in director_benefits],
+        'benefit_categories': [c.to_dict() for c in benefit_categories],
     })
 
 
 @app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['DELETE'])
 def delete_survey_company_data(company_id, fiscal_year):
     row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first_or_404()
+    SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).delete()
+    SurveyDirectorBenefit.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).delete()
+    SurveyBenefitCategory.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).delete()
     db.session.delete(row)
     db.session.commit()
     return jsonify({'deleted': True}), 200
@@ -2195,6 +2252,223 @@ def survey_overview():
     never compute a figure two different ways)."""
     overview = build_survey_overview(request.args.get('fiscal_year'))
     return jsonify(overview)
+
+
+# ---------------------------------------------------------------------
+# Company Survey Data page (frontend's "Survey Report" nav item, 9
+# tabs: Company Overview / Board Composition / Directors' Register /
+# Remuneration / Committees / Benefits & Allowances / Evidence &
+# Sources / Survey Mapping / Data Quality) - a per-company drill-down
+# distinct from /api/survey/companies/<id>/<fy> above (that route is
+# a flatter, single-purpose view; this one assembles everything all 9
+# tabs need in one call, from four independently-populated sources:
+# SurveyCompanyData, DirectorRemunerationRow (models.py, financial-
+# statement side), SurveyDirector + SurveyDirectorBenefit
+# (models_survey.py, survey side), and Committee/CommitteeMember
+# (models.py). None of these are merged/reconciled with each other -
+# see each model's own docstring for why matching them by name at
+# write time would be unsafe.
+# ---------------------------------------------------------------------
+
+def _survey_report_completeness(company):
+    """A rough 0-100 completeness score used only to pick the DEFAULT
+    company the Survey Report page opens to (whichever company has the
+    richest data to actually show), never displayed to the user as a
+    'quality score' - that's a different, real concept (see the Data
+    Quality tab, which scores field_confidence instead). Counts: any
+    SurveyCompanyData row, any DirectorRemunerationRow, any Committee
+    row."""
+    score = 0
+    if SurveyCompanyData.query.filter_by(company_id=company.id).first():
+        score += 40
+    period_ids = [p.id for p in FinancialPeriod.query.filter_by(company_id=company.id).all()]
+    if period_ids:
+        if DirectorRemunerationRow.query.filter(DirectorRemunerationRow.period_id.in_(period_ids)).first():
+            score += 40
+        if Committee.query.filter(Committee.period_id.in_(period_ids)).first():
+            score += 20
+    return score
+
+
+@app.route('/api/survey-report/default-company')
+def survey_report_default_company():
+    """Which company the Survey Report page should open to by default -
+    whichever has the most complete data across SurveyCompanyData/
+    DirectorRemunerationRow/Committee (see _survey_report_completeness),
+    not just alphabetically first. Ties broken by company id (stable,
+    arbitrary) rather than name, so the default doesn't reshuffle every
+    time two companies are renamed to sort differently."""
+    companies = Company.query.all()
+    if not companies:
+        return jsonify({'company_id': None})
+    scored = sorted(companies, key=lambda c: (-_survey_report_completeness(c), c.id))
+    return jsonify({'company_id': scored[0].id, 'completeness': _survey_report_completeness(scored[0])})
+
+
+@app.route('/api/companies/<int:company_id>/survey-report')
+def company_survey_report(company_id):
+    """Everything the Survey Report page's 9 tabs need for ONE company,
+    in one call. Pulls from FOUR separate, independently-populated
+    sources - a company can have any subset of these:
+      - SurveyCompanyData (models_survey.py): company-level board/pay
+        totals, field_confidence/field_sources/field_review_status for
+        Evidence & Sources / Survey Mapping / Data Quality tabs.
+      - DirectorRemunerationRow (models.py, via FinancialPeriod): named
+        directors with filed pay figures - the SAME data the
+        Intelligence Report's Remuneration tab uses.
+      - SurveyDirector (models_survey.py): named-director PROFILE facts
+        (gender/nationality/independence/appointed date/committees),
+        keyed to company_id+fiscal_year (the survey side), not
+        period_id - a separate query from DirectorRemunerationRow
+        above, since these come from different pages of a filing and
+        aren't guaranteed to agree on who's listed.
+      - SurveyDirectorBenefit (models_survey.py): named-director
+        non-cash-benefit TOTALS - see that model's own docstring for
+        why it's matched to a director by name, not a foreign key.
+      - Committee/CommitteeMember (models.py): committee structure and
+        membership.
+    Never merges/reconciles these across sources - if a name only
+    appears in one, it appears in only that tab's table; this endpoint
+    doesn't try to match a Committee member to a DirectorRemunerationRow
+    row by name (see Committee model docstring)."""
+    c = Company.query.get_or_404(company_id)
+    fiscal_year = request.args.get('fiscal_year')
+
+    survey_q = SurveyCompanyData.query.filter_by(company_id=company_id)
+    if fiscal_year:
+        survey_q = survey_q.filter_by(fiscal_year=fiscal_year)
+    survey_row = survey_q.order_by(SurveyCompanyData.fiscal_year.desc()).first()
+    available_survey_years = [r.fiscal_year for r in SurveyCompanyData.query.filter_by(company_id=company_id)
+                               .order_by(SurveyCompanyData.fiscal_year.desc()).all()]
+
+    # Every year's own field_confidence, for the Data Quality tab's
+    # multi-year Quality Trend chart - a genuine per-year score
+    # computed client-side from each year's real confidence map, not a
+    # single interpolated/fabricated series. Small (field_confidence is
+    # the only column pulled beyond the join key), so fetched in this
+    # same call rather than one request per year from the frontend.
+    all_year_rows = SurveyCompanyData.query.filter_by(company_id=company_id).order_by(SurveyCompanyData.fiscal_year).all()
+    quality_by_year = [{'fiscal_year': r.fiscal_year, 'field_confidence': r.field_confidence or {},
+                         'field_count': len([col for col in SurveyCompanyData.__table__.columns
+                                              if col.name not in ('id', 'company_id', 'fiscal_year', 'sector', 'source_filename',
+                                                                   'uploaded_at', 'currency', 'unit', 'ned_benefits', 'source_notes',
+                                                                   'field_sources', 'field_confidence', 'field_review_status',
+                                                                   'field_review_corrections')
+                                              and getattr(r, col.name) is not None])}
+                        for r in all_year_rows]
+
+    periods = _ordered_periods(company_id)
+    period = periods[0] if periods else None
+
+    director_rows = []
+    committees = []
+    if period:
+        director_rows = [r.to_dict() for r in DirectorRemunerationRow.query.filter_by(
+            period_id=period.id).order_by(DirectorRemunerationRow.order_index).all()]
+        committees = [comm.to_dict() for comm in Committee.query.filter_by(
+            period_id=period.id).order_by(Committee.order_index).all()]
+
+    survey_director_rows = []
+    survey_director_benefits = []
+    if survey_row:
+        survey_director_rows = [d.to_dict() for d in SurveyDirector.query.filter_by(
+            company_id=company_id, fiscal_year=survey_row.fiscal_year).order_by(SurveyDirector.order_index).all()]
+        survey_director_benefits = [b.to_dict() for b in SurveyDirectorBenefit.query.filter_by(
+            company_id=company_id, fiscal_year=survey_row.fiscal_year).all()]
+
+    survey_dict = None
+    if survey_row:
+        survey_dict = {col.name: getattr(survey_row, col.name) for col in SurveyCompanyData.__table__.columns
+                        if col.name not in ('field_sources', 'field_confidence', 'field_review_status', 'field_review_corrections')}
+        survey_dict['field_sources'] = survey_row.field_sources or {}
+        survey_dict['field_confidence'] = survey_row.field_confidence or {}
+        survey_dict['field_review_status'] = survey_row.field_review_status or {}
+        survey_dict['field_review_corrections'] = survey_row.field_review_corrections or {}
+        survey_dict['uploaded_at'] = survey_row.uploaded_at.isoformat() if survey_row.uploaded_at else None
+
+    # EvidenceConflict rows: a genuinely unresolved case where two
+    # different chunks of the same filing gave two different candidate
+    # values for one field - the closest real concept this app has to
+    # a "validation error" for the Data Quality tab.
+    evidence_conflicts = []
+    if survey_row:
+        evidence_conflicts = [ec.to_dict() for ec in EvidenceConflict.query.filter_by(
+            company_id=company_id, fiscal_year=survey_row.fiscal_year).order_by(EvidenceConflict.created_at).all()]
+
+    return jsonify({
+        'company': c.to_dict(),
+        'has_survey_data': survey_row is not None,
+        'has_director_data': len(director_rows) > 0,
+        'has_committee_data': len(committees) > 0,
+        'available_survey_years': available_survey_years,
+        'period_label': period.period_label if period else None,
+        'survey': survey_dict,
+        'director_rows': director_rows,
+        'has_survey_director_data': len(survey_director_rows) > 0,
+        'survey_director_rows': survey_director_rows,
+        'survey_director_benefits': [b for b in survey_director_benefits],
+        'committees': committees,
+        'source_documents': [d.to_dict() for d in SourceDocument.query.filter_by(company_id=company_id).all()],
+        'evidence_conflicts': evidence_conflicts,
+        'quality_by_year': quality_by_year,
+    })
+
+
+@app.route('/api/companies/<int:company_id>/committees', methods=['POST'])
+def save_committees(company_id):
+    """Replace ALL committees (and their members) for this company's
+    latest period with the posted list - same full-replace pattern as
+    DirectorRemunerationRow's own save path, so a re-save never leaves
+    stale rows from a previous edit mixed in with new ones. Body:
+    {"committees": [{"name", "chairperson_name", "member_count",
+    "meetings_held", "attendance_rate", "members": [{"director_name",
+    "role_on_committee"}]}]}"""
+    Company.query.get_or_404(company_id)
+    periods = _ordered_periods(company_id)
+    if not periods:
+        return jsonify({'error': 'This company has no financial period yet - add one before adding committees.'}), 400
+    period = periods[0]
+    data = request.get_json(force=True) or {}
+    committees_in = data.get('committees', [])
+
+    Committee.query.filter_by(period_id=period.id).delete()
+    db.session.flush()
+    for idx, comm_in in enumerate(committees_in):
+        comm = Committee(
+            period_id=period.id,
+            name=comm_in.get('name', '').strip(),
+            chairperson_name=comm_in.get('chairperson_name') or None,
+            member_count=comm_in.get('member_count'),
+            meetings_held=comm_in.get('meetings_held'),
+            attendance_rate=comm_in.get('attendance_rate'),
+            order_index=idx,
+        )
+        if not comm.name:
+            continue
+        for midx, m_in in enumerate(comm_in.get('members', [])):
+            name = (m_in.get('director_name') or '').strip()
+            if not name:
+                continue
+            comm.members.append(CommitteeMember(
+                director_name=name, role_on_committee=m_in.get('role_on_committee'), order_index=midx,
+            ))
+        db.session.add(comm)
+    db.session.commit()
+    return jsonify({'committees': [comm.to_dict() for comm in Committee.query.filter_by(
+        period_id=period.id).order_by(Committee.order_index).all()]})
+
+
+@app.route('/api/survey/export/report.pdf', methods=['GET'])
+def export_survey_pdf():
+    """Renders the same fiscal-year overview as /api/survey/overview,
+    as a downloadable PDF (survey_report_pdf.py). ?fiscal_year=FY2025."""
+    overview = build_survey_overview(request.args.get('fiscal_year'))
+    if not overview.get('has_data'):
+        return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
+
+    buf = build_survey_pdf(overview)
+    filename = f"Board_Remuneration_Survey_{_safe_filename(overview['fiscal_year'])}.pdf"
+    return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
 
 @app.route('/api/intelligence-layer/companies', methods=['GET'])
@@ -2222,19 +2496,6 @@ def survey_data_quality():
     Data Quality Overview panel. See build_portfolio_data_quality()'s
     docstring for exactly how each field is classified."""
     return jsonify(build_portfolio_data_quality())
-
-
-@app.route('/api/survey/export/report.pdf', methods=['GET'])
-def export_survey_pdf():
-    """Renders the same fiscal-year overview as /api/survey/overview,
-    as a downloadable PDF (survey_report_pdf.py). ?fiscal_year=FY2025."""
-    overview = build_survey_overview(request.args.get('fiscal_year'))
-    if not overview.get('has_data'):
-        return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
-
-    buf = build_survey_pdf(overview)
-    filename = f"Board_Remuneration_Survey_{_safe_filename(overview['fiscal_year'])}.pdf"
-    return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
 
 @app.route('/api/companies/<int:company_id>/periods')
@@ -2985,144 +3246,6 @@ def company_remuneration(company_id):
         'own_remuneration': own_remuneration,
         'director_rows_by_period': director_rows_by_period,
     })
-
-def _survey_report_completeness(company):
-    """A rough 0-100 completeness score used only to pick the DEFAULT
-    company the Survey Report page opens to (whichever company has the
-    richest data to actually show), never displayed to the user as a
-    'quality score' - that's a different, not-yet-real concept (see the
-    Data Quality tab). Counts: any SurveyCompanyData row, any
-    DirectorRemunerationRow, any Committee row."""
-    score = 0
-    if SurveyCompanyData.query.filter_by(company_id=company.id).first():
-        score += 40
-    period_ids = [p.id for p in FinancialPeriod.query.filter_by(company_id=company.id).all()]
-    if period_ids:
-        if DirectorRemunerationRow.query.filter(DirectorRemunerationRow.period_id.in_(period_ids)).first():
-            score += 40
-        if Committee.query.filter(Committee.period_id.in_(period_ids)).first():
-            score += 20
-    return score
-
-@app.route('/api/survey-report/default-company')
-def survey_report_default_company():
-    """Which company the Survey Report page should open to by default -
-    whichever has the most complete data across SurveyCompanyData/
-    DirectorRemunerationRow/Committee (see _survey_report_completeness),
-    not just alphabetically first. Ties broken by company id (stable,
-    arbitrary) rather than name, so the default doesn't reshuffle every
-    time two companies are renamed to sort differently."""
-    companies = Company.query.all()
-    if not companies:
-        return jsonify({'company_id': None})
-    scored = sorted(companies, key=lambda c: (-_survey_report_completeness(c), c.id))
-    return jsonify({'company_id': scored[0].id, 'completeness': _survey_report_completeness(scored[0])})
-
-@app.route('/api/companies/<int:company_id>/survey-report')
-def company_survey_report(company_id):
-    """Everything the Survey Report page's 9 tabs need for ONE company,
-    in one call. Pulls from THREE separate, independently-populated
-    sources - a company can have any subset of these:
-      - SurveyCompanyData (models_survey.py): company-level board/pay
-        totals, field_confidence/field_sources/field_review_status for
-        Evidence & Sources / Survey Mapping / Data Quality tabs.
-      - DirectorRemunerationRow (models.py, via FinancialPeriod): named
-        directors with filed pay figures - the SAME data the
-        Intelligence Report's Remuneration tab uses, added here 2026-09-13
-        so the Directors' Register tab can show real names instead of a
-        mock table.
-      - Committee/CommitteeMember (models.py): committee structure and
-        membership, added 2026-09-13 - genuinely new, will be empty for
-        every company until someone starts filling it in.
-    Never merges/reconciles these three - if a name only appears in one
-    source, it appears in only that tab's table; this endpoint doesn't
-    try to match a Committee member to a DirectorRemunerationRow row by
-    name (see Committee model docstring)."""
-    c = Company.query.get_or_404(company_id)
-    fiscal_year = request.args.get('fiscal_year')
-
-    survey_q = SurveyCompanyData.query.filter_by(company_id=company_id)
-    if fiscal_year:
-        survey_q = survey_q.filter_by(fiscal_year=fiscal_year)
-    survey_row = survey_q.order_by(SurveyCompanyData.fiscal_year.desc()).first()
-    available_survey_years = [r.fiscal_year for r in SurveyCompanyData.query.filter_by(company_id=company_id)
-                               .order_by(SurveyCompanyData.fiscal_year.desc()).all()]
-
-    periods = _ordered_periods(company_id)
-    period = periods[0] if periods else None
-
-    director_rows = []
-    committees = []
-    if period:
-        director_rows = [r.to_dict() for r in DirectorRemunerationRow.query.filter_by(
-            period_id=period.id).order_by(DirectorRemunerationRow.order_index).all()]
-        committees = [comm.to_dict() for comm in Committee.query.filter_by(
-            period_id=period.id).order_by(Committee.order_index).all()]
-
-    survey_dict = None
-    if survey_row:
-        survey_dict = {col.name: getattr(survey_row, col.name) for col in SurveyCompanyData.__table__.columns
-                        if col.name not in ('field_sources', 'field_confidence', 'field_review_status', 'field_review_corrections')}
-        survey_dict['field_sources'] = survey_row.field_sources or {}
-        survey_dict['field_confidence'] = survey_row.field_confidence or {}
-        survey_dict['field_review_status'] = survey_row.field_review_status or {}
-        survey_dict['uploaded_at'] = survey_row.uploaded_at.isoformat() if survey_row.uploaded_at else None
-
-    return jsonify({
-        'company': c.to_dict(),
-        'has_survey_data': survey_row is not None,
-        'has_director_data': len(director_rows) > 0,
-        'has_committee_data': len(committees) > 0,
-        'available_survey_years': available_survey_years,
-        'period_label': period.period_label if period else None,
-        'survey': survey_dict,
-        'director_rows': director_rows,
-        'committees': committees,
-        'source_documents': [d.to_dict() for d in SourceDocument.query.filter_by(company_id=company_id).all()],
-    })
-
-@app.route('/api/companies/<int:company_id>/committees', methods=['POST'])
-def save_committees(company_id):
-    """Replace ALL committees (and their members) for this company's
-    latest period with the posted list - same full-replace pattern as
-    DirectorRemunerationRow's own save path, so a re-save never leaves
-    stale rows from a previous edit mixed in with new ones. Body:
-    {"committees": [{"name", "chairperson_name", "member_count",
-    "meetings_held", "attendance_rate", "members": [{"director_name",
-    "role_on_committee"}]}]}"""
-    c = Company.query.get_or_404(company_id)
-    periods = _ordered_periods(company_id)
-    if not periods:
-        return jsonify({'error': 'This company has no financial period yet - add one before adding committees.'}), 400
-    period = periods[0]
-    data = request.get_json(force=True) or {}
-    committees_in = data.get('committees', [])
-
-    Committee.query.filter_by(period_id=period.id).delete()
-    db.session.flush()
-    for idx, comm_in in enumerate(committees_in):
-        comm = Committee(
-            period_id=period.id,
-            name=comm_in.get('name', '').strip(),
-            chairperson_name=comm_in.get('chairperson_name') or None,
-            member_count=comm_in.get('member_count'),
-            meetings_held=comm_in.get('meetings_held'),
-            attendance_rate=comm_in.get('attendance_rate'),
-            order_index=idx,
-        )
-        if not comm.name:
-            continue
-        for midx, m_in in enumerate(comm_in.get('members', [])):
-            name = (m_in.get('director_name') or '').strip()
-            if not name:
-                continue
-            comm.members.append(CommitteeMember(
-                director_name=name, role_on_committee=m_in.get('role_on_committee'), order_index=midx,
-            ))
-        db.session.add(comm)
-    db.session.commit()
-    return jsonify({'committees': [comm.to_dict() for comm in Committee.query.filter_by(
-        period_id=period.id).order_by(Committee.order_index).all()]})
 
 @app.route('/api/companies/<int:company_id>/trends')
 def company_trends(company_id):

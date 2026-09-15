@@ -122,6 +122,80 @@ def detect_document_currency(chunks, company_country: str = None):
     return None, 0.0, None
 
 
+# Real filings can genuinely state DIFFERENT scales in different
+# sections of the same document (confirmed: KCB Group Plc's FY2025
+# report states headline turnover/profit "in Ksh billion" but its
+# director remuneration tables use "Ksh '000'" / thousands headers) -
+# so unit detection is intentionally scope-aware: it can be asked to
+# only look at chunks whose heading or text plausibly relates to
+# director/remuneration content, rather than always scanning the whole
+# document and picking whichever scale marker is simply most frequent
+# (which would wrongly let a document-wide "billion" mention win over
+# a table-local "'000'" header, or vice versa).
+_UNIT_MARKERS = {
+    'thousands': [r"[’']000[’']?", r'\bin\s+thousands\b', r"shs\s*['’]000", r"\(\s*(?:kshs?|kes|ksh)?\s*['’]?000['’]?\s*\)"],
+    'millions': [r'\bin\s+millions?\b', r"\(\s*(?:kshs?|kes|ksh)?\s*m(?:illion)?s?\s*\)", r"amounts?\s+(?:are\s+)?(?:stated|expressed|shown)\s+in\s+millions?"],
+    'billions': [r'\bin\s+billions?\b', r"\(\s*(?:kshs?|kes|ksh)?\s*(?:bn|billions?)\s*\)", r"amounts?\s+(?:are\s+)?(?:stated|expressed|shown)\s+in\s+billions?"],
+}
+# Deliberately NOT matching a bare "\bmillion\b"/"\bbillion\b" anywhere
+# in free text - confirmed on a real filing (KCB Group Plc's 2025
+# Integrated Report) that "million" alone appears hundreds of times in
+# ordinary prose unrelated to a unit declaration (customer counts,
+# various one-off figures), completely swamping the real scale signal;
+# only a genuine unit-DECLARATION phrase ("in millions", "(Ksh
+# billion)", "amounts are stated in...") counts as a marker.
+_REMUNERATION_SCOPE_RE = re.compile(
+    r'remuneration|director.?s?\s+fees|director.?s?\s+emolu|non-executive\s+director',
+    re.IGNORECASE,
+)
+
+
+def detect_document_unit(chunks, scope: str = 'document'):
+    """Returns (unit, confidence, source_note) the same shape as
+    detect_document_currency(). scope='document' scans every chunk
+    (for the company's headline `unit` - turnover/net_profit/
+    market_cap, which are usually stated once near the front of a
+    filing); scope='remuneration' restricts the scan to chunks whose
+    heading or own text plausibly relates to director/remuneration
+    content (for `director_figures_unit`), so a document-wide
+    "billion" headline doesn't outvote a table-local "'000'" header
+    that applies specifically to the director-pay figures, or vice
+    versa - see the real KCB Group Plc case in the module note above.
+    Returns (None, 0.0, None) when nothing in the scanned scope has a
+    clear unit marker - the caller should then leave the field NULL
+    (falling back to the company's headline `unit`) rather than guess.
+    """
+    marker_counts = {u: 0 for u in _UNIT_MARKERS}
+    scanned_any = False
+    for chunk in chunks:
+        if scope == 'remuneration':
+            heading = chunk.heading or ''
+            if not (_REMUNERATION_SCOPE_RE.search(heading) or _REMUNERATION_SCOPE_RE.search(chunk.text[:200])):
+                continue
+        scanned_any = True
+        text_lower = (chunk.text or '').lower()
+        for unit, patterns in _UNIT_MARKERS.items():
+            for pat in patterns:
+                marker_counts[unit] += len(re.findall(pat, text_lower, re.IGNORECASE))
+
+    if not scanned_any:
+        return None, 0.0, None
+
+    found = {u: n for u, n in marker_counts.items() if n > 0}
+    if not found:
+        return None, 0.0, None
+
+    best_unit = max(found, key=found.get)
+    total = sum(found.values())
+    dominance = found[best_unit] / total
+    confidence = min(0.95, 0.55 + 0.35 * dominance)
+    scope_label = 'the director/remuneration section' if scope == 'remuneration' else 'the document'
+    return best_unit, round(confidence, 2), (
+        f"{scope_label} states figures in {best_unit} "
+        f"({found[best_unit]} marker mention(s) found)"
+    )
+
+
 # Same INT_FIELDS/FLOAT_FIELDS split as survey_data_parse.py, so a
 # value extracted here is coerced the same way a hand-typed file's
 # value would be before it ever reaches SurveyCompanyData.
@@ -431,6 +505,46 @@ def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currenc
     )
     matches = list(marked_amount_re.finditer(text))
     if len(matches) == 1:
+        # Even the SOLE marked amount in a chunk can genuinely be
+        # about something else entirely if the chunk is long enough to
+        # contain more than one topic (confirmed on a real filing:
+        # KCB Group Plc's "Related party transactions" note correctly
+        # scored highly for ceo_monthly_salary's ontology entry
+        # because it legitimately contains a "key management
+        # personnel compensation" table - but that same chunk/note ALSO
+        # mentions an unrelated "Ksh 3.9Bn" related-party BORROWING
+        # figure a few sentences away, which was the chunk's only
+        # currency-marked amount and got taken as the salary value).
+        #
+        # Fix: require that at least one of this field's own ontology
+        # synonym/section-hint terms appears within a short window of
+        # characters around the amount - UNLESS the chunk's own HEADING
+        # already matches one of this field's section_hints, in which
+        # case the whole chunk is trusted (a heading match is the
+        # strongest signal this code has - see score_chunk's own 0.8
+        # weight for a heading hit vs 0.15-0.5 for a body-text one -
+        # and an amount can legitimately sit in a section-headed chunk
+        # without repeating the section's own title words right next
+        # to it). This still catches the real bug case: KCB's actual
+        # winning chunk's heading was "39. Related party transactions
+        # (continued)" - a generic note title that is NOT itself one of
+        # ceo_monthly_salary's section_hints (which are "directors'
+        # emoluments" / "key management compensation") - so the
+        # heading-trust exemption correctly does NOT apply there, and
+        # the body-text proximity check (correctly) rejects the loan
+        # figure.
+        entry_for_proximity = ONTOLOGY.get(canonical_field, {})
+        section_hints = entry_for_proximity.get('section_hints', [])
+        heading_lower = (chunk.heading or '').lower()
+        heading_is_trusted = any(hint in heading_lower for hint in section_hints)
+        if not heading_is_trusted:
+            proximity_terms = entry_for_proximity.get('synonyms', []) + section_hints
+            if proximity_terms:
+                window_start = max(0, matches[0].start() - 200)
+                window_end = min(len(text), matches[0].end() + 200)
+                window_lower = text_lower[window_start:window_end]
+                if not any(term in window_lower for term in proximity_terms):
+                    return None, None   # neither the heading nor nearby body text ties this amount to the field - likely a different figure that happens to share the chunk
         return _finish_amount_match(text, matches[0])
     if len(matches) > 1:
         return None, None   # multiple marked amounts in one chunk - ambiguous, don't guess
@@ -569,6 +683,8 @@ def extract_survey_schema(pdf_path: str, start_page: int = 1, end_page=None,
     chunks = chunk_pdf(pdf_path, start_page=start_page, end_page=end_page)
 
     currency_code, currency_confidence, currency_note = detect_document_currency(chunks, company_country)
+    doc_unit, doc_unit_confidence, doc_unit_note = detect_document_unit(chunks, scope='document')
+    rem_unit, rem_unit_confidence, rem_unit_note = detect_document_unit(chunks, scope='remuneration')
 
     result = {}
     field_sources = {}
@@ -578,6 +694,22 @@ def extract_survey_schema(pdf_path: str, start_page: int = 1, end_page=None,
         result['currency'] = currency_code
         field_sources['currency'] = currency_note
         field_confidence['currency'] = currency_confidence
+
+    if doc_unit:
+        result['unit'] = doc_unit
+        field_sources['unit'] = doc_unit_note
+        field_confidence['unit'] = doc_unit_confidence
+    # director_figures_unit is only SET when it's genuinely DIFFERENT
+    # from the document's own headline unit - see models_survey.py's
+    # SurveyCompanyData.director_figures_unit docstring. Leaving it
+    # NULL for the (much more common) single-scale filing means a
+    # caller's fallback-to-`unit` logic is exercised, rather than this
+    # extractor redundantly writing the same value into both columns
+    # every time.
+    if rem_unit and rem_unit != doc_unit:
+        result['director_figures_unit'] = rem_unit
+        field_sources['director_figures_unit'] = rem_unit_note
+        field_confidence['director_figures_unit'] = rem_unit_confidence
 
     # Board-roster scan: a numbered photo-caption listing ("1. Jane Doe
     # ... Independent Non-Executive Director") states composition

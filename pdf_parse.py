@@ -2102,6 +2102,39 @@ def _parse_remuneration_table(cell_lines: list, start_idx: int = 0) -> tuple:
             if _REM_STOP_LINE_RE.match(text):
                 break
             if _cell_kind(text) == 'text':
+                # A lone text line here is ambiguous between two real,
+                # opposite wrap directions seen on real filings:
+                # (a) the row-label wraps BEFORE its data ("Dr. Joseph
+                #     Kinyua" alone, then its figures next line) - the
+                #     existing pending_label mechanism below already
+                #     handles this correctly.
+                # (b) the row-label wraps AFTER its data - the name's
+                #     first line prints WITH its full row of figures,
+                #     and only a trailing surname/middle-name wraps
+                #     onto its own line afterward (confirmed on a real
+                #     filing: "Dr. Joseph | - | 600 | ... | 600" then
+                #     "Kimemia" alone; "Amb. Harry | ..." then "Mutuma"
+                #     then "Kathurima", two wrapped lines in a row).
+                # Case (b) is distinguished from a genuine annotation
+                # line ("(Committee chairperson)", "Notes:") by: it
+                # immediately follows an already-completed row, it has
+                # no parenthesis/colon, and it's short - a real second
+                # name/surname fragment, not a sentence. When it
+                # matches, append it to the PREVIOUS row's label
+                # in-place (not pending_label, which is for the
+                # opposite/forward case) and keep scanning, since a
+                # name can wrap across more than one trailing line
+                # (Mutuma, then Kathurima).
+                looks_like_name_continuation = (
+                    rows and pending_label is None
+                    and '(' not in text and ':' not in text
+                    and len(text) <= 30
+                    and not _REM_STOP_LINE_RE.match(text)
+                )
+                if looks_like_name_continuation:
+                    rows[-1]['label'] = re.sub(r'\s+', ' ', f"{rows[-1]['label']} {text}").strip()
+                    j += 1
+                    continue
                 pending_label = text
                 j += 1
                 continue
@@ -2221,7 +2254,29 @@ def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: 
                                       if len(cells) <= 2
                                       and _REM_SECTION_HEADING_RE.search(' '.join(t for t, _x0, _x1 in cells))]
                 if not heading_positions:
-                    continue
+                    # No distinct heading line matched at all - some
+                    # filers print no separate sub-table heading, just
+                    # a combined table whose own first row doubles as
+                    # both the "For the year ended <date>" label and
+                    # the column headers in one fused row (confirmed
+                    # on a real filing: Eaagads Limited's FY2025
+                    # combined Executive+Non-Executive table has no
+                    # heading line at all above the Salary/Fees/
+                    # Bonuses row). Only fall back to treating the
+                    # whole word_group as one unclassified ('unknown')
+                    # table when it genuinely contains a data-shaped
+                    # row (a name followed by mostly numeric/dash
+                    # cells) - the same signal _parse_remuneration_table
+                    # itself looks for - so this fallback never fires
+                    # on an ordinary prose page that simply lacks a
+                    # recognized heading.
+                    has_data_row = any(
+                        len(cells) >= 2 and _row_numeric_ratio(cells) >= 0.5
+                        for cells in cell_lines
+                    )
+                    if not has_data_row:
+                        continue
+                    heading_positions = [0]
                 for h_idx, h_pos in enumerate(heading_positions):
                     heading_text = ' '.join(t for t, _x0, _x1 in cell_lines[h_pos])
                     kind = _classify_remuneration_kind(heading_text)
@@ -2696,3 +2751,94 @@ def extract_survey_directors(pdf_bytes: bytes) -> dict:
             break
 
     return {'directors': [], 'unsupported_layout': True}
+
+
+# ---------- Survey director benefits extraction ----------
+# Feeds SurveyDirectorBenefit (models_survey.py). Deliberately reuses
+# extract_director_remuneration_detail() rather than re-parsing the PDF
+# a second time - that function already finds the real remuneration
+# table (whatever filer-specific column layout it has) and returns
+# each director's row as {director_name, components: {label: value},
+# page, ...}; this just scans those already-extracted components for
+# whichever column looks like a non-cash-benefits column, by keyword,
+# since the exact label text varies by filer and can itself be messy
+# (confirmed on a real filing - Eaagads' true "non-cash benefits"
+# column ended up labelled "Loss of office/ Estimated value for
+# non-cash benefits**" due to a PDF layout quirk covered elsewhere in
+# this module; matching by keyword rather than an exact label handles
+# that without needing the label text itself to be clean).
+
+_BENEFIT_COLUMN_KEYWORDS_RE = re.compile(
+    r'non[\s-]*cash|benefit|housing|medical|vehicle|club|allowance(?!s?\s*$)',
+    re.IGNORECASE,
+)
+# "allowance" alone is deliberately excluded when it's the WHOLE label
+# ("Expense allowances", "Other allowances") via the negative lookahead
+# above - those are cash allowances, a different, more common column
+# most filings have that would otherwise swamp genuine benefit columns
+# if matched this broadly. A compound label containing "benefit" or
+# naming a specific in-kind category (housing/medical/vehicle/club)
+# alongside "allowance" still matches normally.
+
+
+def extract_survey_director_benefits(pdf_bytes: bytes, fiscal_year: str | None = None) -> list:
+    """Returns a list of {director_name, position, total_amount,
+    detail, page} - one dict per director who has an identifiable
+    non-cash-benefit column value in the filing's remuneration table,
+    INCLUDING a director whose value is explicitly nil/dash (that's a
+    real, meaningful "addressed but zero" fact, not the same as "not
+    found" - the caller distinguishes these by total_amount being 0.0
+    vs the director simply being absent from this list at all, mirrory
+    the same None-vs-absent discipline used throughout this app).
+    Directors with NO identifiable benefits-shaped column at all in
+    their row (the filing's table doesn't have one) are left out of
+    the returned list entirely, not defaulted to 0 - 0 means "the
+    filing states a nil value", not "unknown".
+
+    fiscal_year (e.g. "FY2025"), when given, is passed straight
+    through to extract_director_remuneration_detail's own
+    target_period_label filter - several real filers (confirmed on
+    KCB Group Plc) print BOTH the current and prior year's figures
+    side by side in the same remuneration table, and without this
+    filter every director appears twice with two different amounts,
+    silently mixing years. Rows the underlying extractor couldn't
+    attribute to a specific year (table_kind='unknown', no 'total')
+    are also skipped here even when fiscal_year isn't given, since
+    those are usually unrelated notes/schedules the year-agnostic
+    table scan picked up, not real remuneration rows (confirmed: a
+    board-retirement-date note on a separate page of the same filing)."""
+    rows = extract_director_remuneration_detail(pdf_bytes, target_period_label=fiscal_year)
+    out = []
+    for r in rows:
+        if r.get('is_total_row') or r.get('is_grand_total'):
+            continue   # a table's own TOTAL row is not a director
+        components = r.get('components') or {}
+        if not components and r.get('total') is None and r.get('table_kind') == 'unknown':
+            # No total AND no component values at all, on a row this
+            # extractor couldn't even classify as executive/non-
+            # executive - likely an unrelated note/schedule the year-
+            # agnostic table scan picked up (confirmed on a real
+            # filing: a board-retirement-date note with no
+            # remuneration figures at all), not a real remuneration
+            # row. A row that DOES have components but happens to lack
+            # a clean 'total' (confirmed on another real filing, where
+            # a messy merged column label meant the TOTAL column
+            # itself wasn't cleanly identified) still has real
+            # component data worth using and is NOT skipped here.
+            continue
+        benefit_label = None
+        for label in components:
+            if _BENEFIT_COLUMN_KEYWORDS_RE.search(label):
+                benefit_label = label
+                break
+        if benefit_label is None:
+            continue
+        value = components[benefit_label]
+        out.append({
+            'director_name': r.get('director_name'),
+            'position': None,   # extract_director_remuneration_detail's rows don't carry a position/title field distinct from name - left for a future join against SurveyDirector by name if needed
+            'total_amount': value if value is not None else 0.0,
+            'detail': None,     # this function only recovers an AMOUNT, never a description of what the benefit comprises - a filing's remuneration table doesn't usually say that inline
+            'page': r.get('page'),
+        })
+    return out
