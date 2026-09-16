@@ -650,6 +650,7 @@ button{background:var(--blue);color:#fff;border:none;padding:9px 16px;
   border-radius:var(--radius-sm);font-weight:600;cursor:pointer;font-size:13px;margin-top:10px;}
 button:hover{opacity:.9;}
 button.secondary{background:var(--bg-hover);color:var(--text);border:1px solid var(--border);}
+button.secondary.active{background:var(--blue);color:#fff;border-color:var(--blue);}
 .error{color:var(--red);font-size:12px;margin-top:6px;}
 .back-link{color:var(--blue);cursor:pointer;font-size:13px;display:inline-block;margin-bottom:14px;}
 
@@ -1006,6 +1007,13 @@ function goToIntelligenceReport(companyId){
   renderNav();
   render();
   closeSidebar();
+}
+
+function goToCompanySurveyData(companyId){
+  currentPage = 'survey-report';
+  renderNav();
+  closeSidebar();
+  srSwitchCompany(companyId);
 }
 
 async function renderIntelligenceReportEntry(){
@@ -3940,11 +3948,18 @@ function ilSurveyInsightsTab(){
       const body = document.getElementById('ilTabBody');
       if (body && ilTab === 'survey-insights') body.innerHTML = ilSurveyInsightsBody(ov);
     });
+  if (!ilTrendsCache) {
+    fetch('/api/intelligence-layer/historical-trends').then(r => r.json()).then(t => {
+      ilTrendsCache = t;
+      const body = document.getElementById('ilTabBody');
+      if (body && ilTab === 'survey-insights' && ilInsightsOverviewCache) body.innerHTML = ilSurveyInsightsBody(ilInsightsOverviewCache);
+    }).catch(() => { ilTrendsCache = {has_data: false}; });
+  }
   return `<div class="empty">Loading\u2026</div>`;
 }
 function ilSurveyInsightsBody(ov){
   if (!ov.has_data) return `<div class="panel"><div class="empty">${naSpan('No survey data on file for this fiscal year')}</div></div>`;
-  const es = ov.executive_summary, bo = ov.board_overview;
+  const es = ov.executive_summary, bo = ov.board_overview, cr = ov.committee_remuneration;
   const femPct = (bo.total_directors_female !== null && bo.total_directors_male !== null && (bo.total_directors_female+bo.total_directors_male) > 0)
     ? Math.round(bo.total_directors_female/(bo.total_directors_female+bo.total_directors_male)*100) : null;
   return `
@@ -3952,7 +3967,8 @@ function ilSurveyInsightsBody(ov){
       ${saStatCard('💰', saMetricAvg(es.avg_turnover) !== null ? fmtAmount(es.avg_turnover.average) : naSpan('Not enough data'), 'Avg. Turnover')}
       ${saStatCard('👤', saMetricAvg(ov.directors_remuneration.executive_director_annual_retainer) !== null ? fmtAmount(ov.directors_remuneration.executive_director_annual_retainer.average) : naSpan('Not enough data'), 'Avg. Executive Director Pay')}
       ${saStatCard('👥', saMetricAvg(ov.directors_remuneration.other_ned_annual_retainer) !== null ? fmtAmount(ov.directors_remuneration.other_ned_annual_retainer.average) : naSpan('Not enough data'), 'Avg. NED Pay')}
-      ${saStatCard('👥', femPct !== null ? femPct + '%' : naSpan('Not enough data'), 'Female Board Representation')}
+      ${saStatCard('📋', cr && saMetricAvg(cr.committee_member_annual_retainer) !== null ? fmtAmount(cr.committee_member_annual_retainer.average) : naSpan('Not enough data'), 'Avg. Committee Member Retainer')}
+      ${saStatCard('🏛️', bo.avg_board_size && bo.avg_board_size.average !== null ? Math.round(bo.avg_board_size.average * 10) / 10 : naSpan('Not enough data'), 'Avg. Board Size')}
     </div>
     <div class="row row-2">
       <div class="panel">
@@ -3969,10 +3985,80 @@ function ilSurveyInsightsBody(ov){
         ${ilTopCompaniesTable(ilCompaniesCache.rows, 'total_director_remuneration', 5)}
       </div>
     </div>
+    <div class="row row-2">
+      <div class="panel">
+        <div class="sa-panel-title">Total Board Remuneration by Sector</div>
+        ${saSectorBarList(ov.sector_comparison, 'avg_other_ned_annual_retainer')}
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Gender Diversity</div>
+        ${ilGenderDiversityDonuts(bo)}
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Pay Trends</div>
+      ${ilPayTrendsChart(ov)}
+    </div>
     <div class="panel">
-      <div class="sa-panel-title">Total Board Remuneration by Sector</div>
-      ${saSectorBarList(ov.sector_comparison, 'avg_other_ned_annual_retainer')}
+      <div class="sa-panel-title">What the Data Tells Us</div>
+      ${ilWhatTheDataTellsUs(ov, femPct)}
     </div>`;
+}
+function ilGenderDiversityDonuts(bo){
+  const total = (bo.total_directors_female || 0) + (bo.total_directors_male || 0);
+  if (!total) return `<div class="empty">${naSpan('Not enough data')}</div>`;
+  const femPct = Math.round(bo.total_directors_female / total * 100);
+  return saDonut2([['Female', femPct, 'var(--purple)'], ['Male', 100 - femPct, 'var(--blue)']], femPct + '%');
+}
+// Uses the SAME multi-year series as the Historical Trends tab
+// (ilTrendsCache, from /api/intelligence-layer/historical-trends) -
+// a real portfolio-wide average per year, not interpolated.
+function ilPayTrendsChart(ov){
+  if (!ilTrendsCache) return `<div class="empty">Loading\u2026</div>`;
+  if (!ilTrendsCache.has_data || ilTrendsCache.series.length < 2) {
+    return `<div class="empty">${naSpan('At least two fiscal years of survey data are needed to chart a trend')}</div>`;
+  }
+  const years = ilTrendsCache.series.map(s => s.fiscal_year);
+  const execSeries = ilTrendsCache.series.map(s => {
+    const m = s.directors_remuneration && s.directors_remuneration.executive_director_annual_retainer;
+    return m && m.average !== null ? m.average : null;
+  });
+  const nedSeries = ilTrendsCache.series.map(s => {
+    const m = s.directors_remuneration && s.directors_remuneration.other_ned_annual_retainer;
+    return m && m.average !== null ? m.average : null;
+  });
+  if (execSeries.every(v => v === null) && nedSeries.every(v => v === null)) {
+    return `<div class="empty">${naSpan('Not enough data across years to chart pay trends')}</div>`;
+  }
+  const max = Math.max(1, ...execSeries.filter(v => v !== null), ...nedSeries.filter(v => v !== null));
+  return `
+    <div class="sa-bar-list">
+      ${years.map((y,i) => execSeries[i] !== null ? saBar(y + ' \u2014 Executive', fmtAmount(execSeries[i]), max) : '').join('')}
+    </div>
+    <div class="sa-bar-list" style="margin-top:8px;">
+      ${years.map((y,i) => nedSeries[i] !== null ? saBar(y + ' \u2014 NED', fmtAmount(nedSeries[i]), max, 'var(--green)') : '').join('')}
+    </div>`;
+}
+function ilWhatTheDataTellsUs(ov, femPct){
+  const items = [];
+  if (saMetricAvg(ov.directors_remuneration.executive_director_annual_retainer) !== null) {
+    items.push(['📈', 'Remuneration', `Executive director pay averages ${escapeHtml(ov.currency)} ${fmtAmount(ov.directors_remuneration.executive_director_annual_retainer.average)} across surveyed companies.`]);
+  }
+  if (femPct !== null) {
+    items.push(['♀️', 'Gender Balance', `Female board representation stands at ${femPct}% across the surveyed portfolio.`]);
+  }
+  if (ov.sector_comparison && ov.sector_comparison.length) {
+    items.push(['🏢', 'Sector Concentration', `Data spans ${ov.sector_comparison.length} sector${ov.sector_comparison.length === 1 ? '' : 's'}.`]);
+  }
+  if (ov.board_overview.avg_board_meetings_per_year && ov.board_overview.avg_board_meetings_per_year.average !== null) {
+    items.push(['📅', 'Board Activity', `Boards meet an average of ${Math.round(ov.board_overview.avg_board_meetings_per_year.average * 10) / 10} times per year.`]);
+  }
+  if (!items.length) return `<div class="empty">${naSpan('Not enough data on file yet to generate portfolio-wide observations')}</div>`;
+  return `<div class="row row-2">${items.map(([icon, title, text]) => `
+    <div style="display:flex;gap:10px;">
+      <div style="font-size:20px;">${icon}</div>
+      <div><div style="font-weight:700;font-size:12.5px;">${escapeHtml(title)}</div><div style="font-size:11.5px;color:var(--text-dim);">${text}</div></div>
+    </div>`).join('')}</div>`;
 }
 
 // ---- Tab 3: Historical Trends ----
@@ -3986,8 +4072,17 @@ async function ilHistoricalTrendsTab(){
   const nedSeries = t.series.map(s => saMetricAvg(s.directors_remuneration.other_ned_annual_retainer, {raw:true}));
   const execSeries = t.series.map(s => saMetricAvg(s.directors_remuneration.executive_director_annual_retainer, {raw:true}));
   const chairSeries = t.series.map(s => saMetricAvg(s.directors_remuneration.chairperson_annual_retainer, {raw:true}));
+  const latest = t.series[t.series.length - 1];
+  const first = t.series[0];
+
   return `
-    <div class="panel">
+    <div class="sa-stat-grid" style="margin-bottom:14px;">
+      ${saStatCard('💰', saMetricAvg(latest.directors_remuneration.executive_director_annual_retainer) !== null ? fmtAmount(latest.directors_remuneration.executive_director_annual_retainer.average) : naSpan('Not enough data'), `Avg. Executive Director Pay (${escapeHtml(latest.fiscal_year)})`)}
+      ${saStatCard('👥', saMetricAvg(latest.directors_remuneration.other_ned_annual_retainer) !== null ? fmtAmount(latest.directors_remuneration.other_ned_annual_retainer.average) : naSpan('Not enough data'), `Avg. NED Pay (${escapeHtml(latest.fiscal_year)})`)}
+      ${saStatCard('📋', latest.committee_remuneration && saMetricAvg(latest.committee_remuneration.committee_member_annual_retainer) !== null ? fmtAmount(latest.committee_remuneration.committee_member_annual_retainer.average) : naSpan('Not enough data'), `Avg. Committee Member Retainer (${escapeHtml(latest.fiscal_year)})`)}
+      ${saStatCard('♀️', ilFemalePctForYear(latest) !== null ? ilFemalePctForYear(latest) + '%' : naSpan('Not enough data'), `Female Representation (${escapeHtml(latest.fiscal_year)})`)}
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
       <div class="sa-panel-title">Director Remuneration Trends (${escapeHtml(t.series[0].currency)})</div>
       <table><thead><tr><th>Fiscal Year</th><th>Avg. NED Retainer</th><th>Avg. Executive Director Retainer</th><th>Avg. Chairperson Retainer</th></tr></thead><tbody>
         ${years.map((y,i) => `<tr><td>${escapeHtml(y)}</td>
@@ -4005,7 +4100,53 @@ async function ilHistoricalTrendsTab(){
         <div class="sa-panel-title">Companies Surveyed per Year</div>
         ${ilTrendBarList(t.series, s => s.companies_surveyed)}
       </div>
+    </div>
+    <div class="row row-2" style="margin-top:14px;">
+      <div class="panel">
+        <div class="sa-panel-title">Committee Fee Trends</div>
+        ${t.series.every(s => !s.committee_remuneration)
+          ? `<div class="empty">${naSpan('No committee remuneration data across the years on file')}</div>`
+          : `<div class="sa-bar-list">${ilTrendBarList(t.series, s => s.committee_remuneration ? saMetricAvg(s.committee_remuneration.committee_chair_annual_retainer, {raw:true}) : null)}</div>
+             <div style="font-size:10px;color:var(--text-faint);margin-top:6px;">Average committee chair annual retainer per year.</div>`}
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Gender Diversity Trend</div>
+        ${ilTrendBarList(t.series, s => ilFemalePctForYear(s))}
+        <div style="font-size:10px;color:var(--text-faint);margin-top:6px;">Portfolio-wide female representation (%) per year.</div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px;">
+      <div class="sa-panel-title">Key Insights</div>
+      ${ilHistoricalTrendsInsights(first, latest, years)}
     </div>`;
+}
+function ilFemalePctForYear(s){
+  const bo = s.board_overview;
+  const total = (bo.total_directors_female || 0) + (bo.total_directors_male || 0);
+  return total ? Math.round(bo.total_directors_female / total * 100) : null;
+}
+// Deliberately does NOT attempt a CEO/CFO-specific pay-trend split or
+// a Pay Growth by Sector percentage panel - no per-role (CEO vs CFO
+// vs other EDs) breakdown exists anywhere in the aggregate data this
+// app computes (ceo_monthly_* fields are company-level only, never
+// portfolio-averaged), and a real year-over-year growth % per sector
+// would need each sector's own prior-year average, which
+// sector_comparison gives per-year but this app doesn't diff across
+// years anywhere - so neither is shown rather than approximated.
+function ilHistoricalTrendsInsights(first, latest, years){
+  const insights = [];
+  const firstExec = saMetricAvg(first.directors_remuneration.executive_director_annual_retainer, {raw:true});
+  const latestExec = saMetricAvg(latest.directors_remuneration.executive_director_annual_retainer, {raw:true});
+  if (firstExec !== null && latestExec !== null && firstExec > 0) {
+    const pctChange = Math.round((latestExec - firstExec) / firstExec * 100);
+    insights.push(`Average executive director pay ${pctChange >= 0 ? 'grew' : 'fell'} ${Math.abs(pctChange)}% from ${escapeHtml(first.fiscal_year)} to ${escapeHtml(latest.fiscal_year)}.`);
+  }
+  const firstFem = ilFemalePctForYear(first), latestFem = ilFemalePctForYear(latest);
+  if (firstFem !== null && latestFem !== null) {
+    insights.push(`Female board representation moved from ${firstFem}% (${escapeHtml(first.fiscal_year)}) to ${latestFem}% (${escapeHtml(latest.fiscal_year)}).`);
+  }
+  insights.push(`Data spans ${years.length} fiscal years: ${escapeHtml(first.fiscal_year)} to ${escapeHtml(latest.fiscal_year)}.`);
+  return `<ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">${insights.map(i => `<li>${i}</li>`).join('')}</ul>`;
 }
 function ilTrendBarList(series, getVal){
   const rows = series.map(s => ({name: s.fiscal_year, val: getVal(s)})).filter(r => r.val !== null && r.val !== undefined);
@@ -4035,7 +4176,10 @@ function ilCompanyProfilesTab(){
           <tr><td>Board Meetings / Year</td><td>${company.board_meetings_per_year !== null ? company.board_meetings_per_year : naSpan('Not filed')}</td></tr>
           <tr><td>Total Director Remuneration</td><td>${company.total_director_remuneration !== null ? fmtAmount(company.total_director_remuneration) : naSpan('Not filed')}</td></tr>
         </tbody></table>
-        <button class="secondary" style="margin-top:10px;" onclick="goToIntelligenceReport(${company.company_id})">View full Intelligence Report &rarr;</button>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+          <button class="secondary" onclick="goToIntelligenceReport(${company.company_id})">View Intelligence Report (financials) &rarr;</button>
+          <button class="secondary" onclick="goToCompanySurveyData(${company.company_id})">View Survey Data (board, committees, evidence) &rarr;</button>
+        </div>
       </div>
       <div class="panel">
         <div class="sa-panel-title">Board Composition</div>
@@ -4047,6 +4191,9 @@ function ilCompanyProfilesTab(){
     <div class="panel">
       <div class="sa-panel-title">Illustrative Governance Score</div>
       ${ilGovScoreBlock(gov)}
+    </div>
+    <div class="panel" style="margin-top:14px;font-size:11px;color:var(--text-faint);">
+      This tab compares companies on survey data only (board composition, remuneration totals, governance score). For financial statements (market cap, revenue, profit, shareholders) and document-level detail (committees, benefits, source evidence), use the links above \u2014 this data doesn't carry those fields.
     </div>`;
 }
 function ilGovScoreBlock(gov){
@@ -4070,35 +4217,101 @@ const IL_RANKING_SUBTABS = [
   {id:'governance', label:'Governance'},
   {id:'sector-rankings', label:'Sector Rankings'},
 ];
+let ilRankingsSectorFilter = 'all';
 function ilCompanyRankingsTab(){
+  const allRows = ilCompaniesCache.rows;
+  const rows = ilRankingsSectorFilter === 'all' ? allRows : allRows.filter(r => r.sector === ilRankingsSectorFilter);
   const subtabBar = `<div class="il-subtab-row">${IL_RANKING_SUBTABS.map(t =>
     `<button class="il-subtab-btn ${ilRankingsSubtab === t.id ? 'active' : ''}" onclick="ilRankingsSubtab='${t.id}';renderILTabBody();">${escapeHtml(t.label)}</button>`).join('')}</div>`;
+
+  const withPay = rows.filter(r => r.total_director_remuneration !== null);
+  const highest = withPay.length ? withPay.reduce((a,b) => a.total_director_remuneration > b.total_director_remuneration ? a : b) : null;
+  const avgPay = withPay.length ? withPay.reduce((s,r) => s + r.total_director_remuneration, 0) / withPay.length : null;
+
+  const header = `
+    <div class="sa-stat-grid" style="margin-bottom:14px;">
+      ${saStatCard('🏆', highest ? fmtAmount(highest.total_director_remuneration) : naSpan('Not enough data'), 'Highest Board Remuneration', highest ? escapeHtml(highest.name) : '')}
+      ${saStatCard('📊', avgPay !== null ? fmtAmount(avgPay) : naSpan('Not enough data'), 'Average Board Remuneration', `${withPay.length} compan${withPay.length === 1 ? 'y' : 'ies'}`)}
+      ${saStatCard('🏢', rows.length, 'Companies Ranked', ilRankingsSectorFilter === 'all' ? 'All sectors' : escapeHtml(ilRankingsSectorFilter))}
+    </div>`;
+
   let content;
-  if (ilRankingsSubtab === 'top-pay') content = ilRankingsTopPay();
-  else if (ilRankingsSubtab === 'board-composition') content = ilRankingsBoardComposition();
-  else if (ilRankingsSubtab === 'governance') content = ilRankingsGovernance();
+  if (ilRankingsSubtab === 'top-pay') content = ilRankingsTopPay(rows);
+  else if (ilRankingsSubtab === 'board-composition') content = ilRankingsBoardComposition(rows);
+  else if (ilRankingsSubtab === 'governance') content = ilRankingsGovernance(rows);
   else content = ilRankingsSectorRankings();
-  return subtabBar + content;
+
+  return `
+    <div class="row row-2" style="grid-template-columns:1.7fr 1fr;">
+      <div>${subtabBar}${header}${content}</div>
+      <div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="sa-panel-title">Filters</div>
+          <label style="font-size:11.5px;color:var(--text-faint);">Sector</label>
+          <select onchange="ilRankingsSectorFilter=this.value;renderILTabBody();" style="width:100%;margin-top:4px;">
+            <option value="all" ${ilRankingsSectorFilter === 'all' ? 'selected' : ''}>All Sectors</option>
+            ${ilSectorList().map(s => `<option value="${escapeHtml(s)}" ${ilRankingsSectorFilter === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+          </select>
+          ${ilRankingsSectorFilter !== 'all' ? `<button class="secondary" style="margin-top:8px;width:100%;" onclick="ilRankingsSectorFilter='all';renderILTabBody();">Reset</button>` : ''}
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="sa-panel-title">Board Diversity</div>
+          ${ilRankingsBoardDiversityDonuts(rows)}
+        </div>
+        <div class="panel">
+          <div class="sa-panel-title">Key Takeaways</div>
+          ${ilRankingsKeyTakeaways(rows, highest, avgPay)}
+        </div>
+      </div>
+    </div>`;
 }
-function ilRankingsTopPay(){
-  const rows = ilCompaniesCache.rows;
+function ilRankingsBoardDiversityDonuts(rows){
+  const withGender = rows.filter(r => r.governance.gender_pct !== null);
+  const genderCompliant = withGender.filter(r => r.governance.gender_compliant).length;
+  if (!withGender.length) return `<div class="empty">${naSpan('Not enough data')}</div>`;
+  const avgGenderPct = Math.round(withGender.reduce((s,r) => s + r.governance.gender_pct, 0) / withGender.length);
+  return `
+    ${saDonut2([['Female Directors (avg)', avgGenderPct, 'var(--purple)'], ['Male Directors (avg)', 100 - avgGenderPct, 'var(--blue)']], avgGenderPct + '%')}
+    <div style="font-size:11px;color:var(--text-faint);margin-top:6px;">${genderCompliant} of ${withGender.length} companies meet the CMA's \u2265 33% threshold.</div>`;
+}
+function ilRankingsKeyTakeaways(rows, highest, avgPay){
+  const items = [];
+  const withIndep = rows.filter(r => r.governance.independence_pct !== null);
+  if (withIndep.length) {
+    const bySector = {};
+    withIndep.forEach(r => { bySector[r.sector || 'Unclassified'] = (bySector[r.sector || 'Unclassified'] || 0) + 1; });
+    const topSector = Object.entries(bySector).sort((a,b) => b[1]-a[1])[0];
+    if (topSector) items.push(`${escapeHtml(topSector[0])} has the most companies (${topSector[1]}) with board independence data on file.`);
+  }
+  if (highest && avgPay !== null) {
+    const multiple = (highest.total_director_remuneration / avgPay).toFixed(1);
+    items.push(`${escapeHtml(highest.name)}'s board remuneration is ${multiple}x the ranked average.`);
+  }
+  const scored = rows.filter(r => r.governance.score !== null);
+  if (scored.length && scored.length < rows.length) {
+    items.push(`${rows.length - scored.length} of ${rows.length} companies lack enough data to compute a governance score.`);
+  }
+  if (!items.length) return `<div class="empty">${naSpan('Not enough data on file yet for takeaways')}</div>`;
+  return `<ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">${items.map(i => `<li>${i}</li>`).join('')}</ul>`;
+}
+function ilRankingsTopPay(rows){
   return `<div class="panel"><div class="sa-panel-title">Top Companies by Total Director Remuneration</div>${ilTopCompaniesTable(rows, 'total_director_remuneration', 20)}</div>`;
 }
-function ilRankingsBoardComposition(){
-  const rows = [...ilCompaniesCache.rows].filter(r => r.board_size !== null).sort((a,b) => b.board_size - a.board_size);
-  if (!rows.length) return `<div class="panel"><div class="empty">${naSpan('Not enough data')}</div></div>`;
+function ilRankingsBoardComposition(rows){
+  const sorted = [...rows].filter(r => r.board_size !== null).sort((a,b) => b.board_size - a.board_size);
+  if (!sorted.length) return `<div class="panel"><div class="empty">${naSpan('Not enough data')}</div></div>`;
   return `<div class="panel"><div class="sa-panel-title">Ranked by Board Size</div>
     <table><thead><tr><th>#</th><th>Company</th><th>Sector</th><th>Board Size</th><th>Independent NEDs</th></tr></thead><tbody>
-    ${rows.map((r,i) => `<tr><td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sector || '-')}</td><td>${r.board_size}</td><td>${r.independent_neds_count !== null ? r.independent_neds_count : naSpan('Not filed')}</td></tr>`).join('')}
+    ${sorted.map((r,i) => `<tr><td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sector || '-')}</td><td>${r.board_size}</td><td>${r.independent_neds_count !== null ? r.independent_neds_count : naSpan('Not filed')}</td></tr>`).join('')}
     </tbody></table></div>`;
 }
-function ilRankingsGovernance(){
-  const rows = [...ilCompaniesCache.rows].filter(r => r.governance.score !== null).sort((a,b) => b.governance.score - a.governance.score);
-  if (!rows.length) return `<div class="panel"><div class="empty">${naSpan('Not enough board-composition data filed to compute governance scores')}</div></div>`;
+function ilRankingsGovernance(rows){
+  const sorted = [...rows].filter(r => r.governance.score !== null).sort((a,b) => b.governance.score - a.governance.score);
+  if (!sorted.length) return `<div class="panel"><div class="empty">${naSpan('Not enough board-composition data filed to compute governance scores')}</div></div>`;
   return `<div class="panel">
     <div class="sa-panel-title">Ranked by Illustrative Governance Score</div>
     <table><thead><tr><th>#</th><th>Company</th><th>Sector</th><th>Score</th></tr></thead><tbody>
-      ${rows.map((r,i) => `<tr><td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sector || '-')}</td>
+      ${sorted.map((r,i) => `<tr><td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sector || '-')}</td>
         <td><div class="il-gov-bar-wrap"><span>${r.governance.score}</span><div class="il-gov-bar-track" style="width:80px;"><div class="il-gov-bar-fill" style="width:${r.governance.score}%;background:${r.governance.score >= 75 ? 'var(--green)' : r.governance.score >= 50 ? 'var(--amber)' : 'var(--red)'};"></div></div></div></td></tr>`).join('')}
     </tbody></table>
     <div class="il-methodology-note">${escapeHtml(ilCompaniesCache.governance_methodology)}</div>
@@ -4118,7 +4331,6 @@ function ilRankingsSectorRankings(){
     </tbody></table></div>`;
 }
 
-// ---- Tab 6: Governance & Compliance ----
 // ---- Tab 6: Governance & Compliance ----
 // Only 2 stat cards/panels correspond to real, computable backend
 // concepts: Board Independence and Gender Diversity (both driven by
@@ -4313,6 +4525,7 @@ const SA_TABS = [
 let saTab = 'overview';
 let saFiscalYear = null;
 let saOverviewCache = null;
+let saDirRemSectorMetric = 'ned'; // 'ned' | 'chair' - which sector bar list the Directors' Remuneration tab shows
 
 async function renderSurveyAnalyticsPage(){
   const app = document.getElementById('app');
@@ -4391,7 +4604,13 @@ function saMetricAvg(metric, opts){
   return opts.raw ? metric.average : Number(metric.average).toFixed(decimals);
 }
 function saBar(label, value, max, colorVar){
-  const pct = max > 0 ? Math.max(2, Math.round(value / max * 100)) : 0;
+  // value is usually a display string (fmtAmount output, or "N%") -
+  // parse the leading numeric portion back out for the width calc
+  // rather than assuming callers pass a raw number. Fixes a real bug:
+  // passing a formatted string here silently produced width:NaN% (a
+  // zero-width bar) at several existing call sites before this fix.
+  const numeric = typeof value === 'number' ? value : parseFloat(String(value).replace(/,/g, ''));
+  const pct = (max > 0 && !isNaN(numeric)) ? Math.max(2, Math.round(numeric / max * 100)) : 0;
   return `
     <div class="sa-bar-row">
       <div class="lbl">${escapeHtml(label)}</div>
@@ -4438,8 +4657,8 @@ function saOverviewTab(ov){
         <div>
           <div class="sa-panel-title">Sources of Data</div>
           <div style="max-height:220px;overflow-y:auto;">
-            <table style="font-size:11.5px;"><tbody>
-              ${ov.companies.map(c => `<tr><td>${escapeHtml(c.name)}</td><td style="color:var(--text-faint);">${escapeHtml(c.sector || '-')}</td></tr>`).join('')}
+            <table style="font-size:11.5px;"><thead><tr><th>No.</th><th>Organisation</th></tr></thead><tbody>
+              ${ov.companies.map((c,i) => `<tr><td>${i+1}</td><td>${escapeHtml(c.name)} <span style="color:var(--text-faint);">${c.sector ? '· ' + escapeHtml(c.sector) : ''}</span></td></tr>`).join('')}
             </tbody></table>
           </div>
         </div>
@@ -4453,8 +4672,45 @@ function saOverviewTab(ov){
           <div class="ir-kv-row"><span class="k">Avg. Net Profit</span><span style="font-weight:700;">${saMetricAvg(es.avg_net_profit) !== null ? escapeHtml(ov.currency) + ' ' + fmtAmount(es.avg_net_profit.average) + 'M (' + es.avg_net_profit.company_count + ' companies)' : naSpan('Fewer than 2 companies reported net profit')}</span></div>
           <div class="ir-kv-row"><span class="k">Avg. Profit Margin</span><span style="font-weight:700;">${saMetricAvg(es.avg_profit_margin) !== null ? fmt(es.avg_profit_margin.average) + '%' : naSpan('Not enough data')}</span></div>
         </div>
-        <div class="empty">${naSpan('A year-over-year profit-margin trend chart needs at least two fiscal years on file')}</div>
+        <div id="saPerformanceTrendSlot">${saPerformanceTrendPanel()}</div>
       </div>
+    </div>`;
+}
+// A real prior-year comparison, using the SAME multi-year series the
+// Historical Trends tab (Intelligence Layer) is built from - fetched
+// lazily since Overview/Executive Summary don't otherwise need it.
+// Shared by both tabs (each wraps it in a div id="saPerformanceTrendSlot"
+// - safe since only one SA tab is ever in the DOM at a time). Falls
+// back to an honest "needs a second year" message rather than a
+// fabricated comparison when fewer than 2 fiscal years are on file.
+function saPerformanceTrendPanel(){
+  if (!ilTrendsCache) {
+    fetch('/api/intelligence-layer/historical-trends').then(r => r.json()).then(t => {
+      ilTrendsCache = t;
+      const slot = document.getElementById('saPerformanceTrendSlot');
+      if (slot) slot.innerHTML = saPerformanceTrendPanel();
+    }).catch(() => { ilTrendsCache = {has_data: false}; });
+    return `<div class="empty">Loading\u2026</div>`;
+  }
+  if (!ilTrendsCache.has_data || ilTrendsCache.series.length < 2) {
+    return `<div class="empty">${naSpan('A year-over-year performance comparison needs at least two fiscal years on file')}</div>`;
+  }
+  const series = ilTrendsCache.series;
+  const prior = series[series.length - 2], latest = series[series.length - 1];
+  const priorTurnover = saMetricAvg(prior.executive_summary && prior.executive_summary.avg_turnover, {raw:true});
+  const latestTurnover = saMetricAvg(latest.executive_summary && latest.executive_summary.avg_turnover, {raw:true});
+  const priorProfit = saMetricAvg(prior.executive_summary && prior.executive_summary.avg_net_profit, {raw:true});
+  const latestProfit = saMetricAvg(latest.executive_summary && latest.executive_summary.avg_net_profit, {raw:true});
+  if (priorTurnover === null && priorProfit === null) {
+    return `<div class="empty">${naSpan('Prior fiscal year has no executive summary data to compare against')}</div>`;
+  }
+  const max = Math.max(priorTurnover||0, latestTurnover||0, priorProfit||0, latestProfit||0, 1);
+  return `
+    <div class="sa-bar-list">
+      ${priorTurnover !== null ? saBar(prior.fiscal_year + ' \u2014 Avg. Turnover', fmtAmount(priorTurnover), max) : ''}
+      ${latestTurnover !== null ? saBar(latest.fiscal_year + ' \u2014 Avg. Turnover', fmtAmount(latestTurnover), max) : ''}
+      ${priorProfit !== null ? saBar(prior.fiscal_year + ' \u2014 Avg. Net Profit', fmtAmount(priorProfit), max, 'var(--green)') : ''}
+      ${latestProfit !== null ? saBar(latest.fiscal_year + ' \u2014 Avg. Net Profit', fmtAmount(latestProfit), max, 'var(--green)') : ''}
     </div>`;
 }
 
@@ -4472,7 +4728,7 @@ function saExecutiveSummaryTab(ov){
     </div>
     <div class="row row-3">
       <div class="panel"><div class="empty">${naSpan('NSE-wide market capitalisation history is not tracked by this app')}</div></div>
-      <div class="panel"><div class="empty">${naSpan('A prior-year turnover/net-profit comparison needs a second fiscal year on file')}</div></div>
+      <div class="panel" id="saPerformanceTrendSlot">${saPerformanceTrendPanel()}</div>
       <div class="panel">
         <div class="sa-panel-title">Board Composition</div>
         <div class="row row-2">
@@ -4506,7 +4762,44 @@ function saExecutiveSummaryTab(ov){
         <div class="sa-panel-title">Sector Highlights — Avg. NED Annual Retainer</div>
         ${saSectorBarList(ov.sector_comparison, 'avg_other_ned_annual_retainer')}
       </div>
+    </div>
+    <div class="panel">
+      <div class="sa-panel-title">Key Takeaways</div>
+      ${saExecutiveSummaryTakeaways(ov, es, bo)}
     </div>`;
+}
+// Deterministic, non-fabricated observations - only fires a line when
+// the underlying figures are actually on file. Deliberately doesn't
+// attempt the mockup's "Outlook"-style forward-looking narrative
+// (e.g. "the survey highlights resilience... opportunities for
+// improved governance") since that's editorial judgement, not
+// something derivable from the data.
+function saExecutiveSummaryTakeaways(ov, es, bo){
+  const items = [];
+  if (ilTrendsCache && ilTrendsCache.has_data && ilTrendsCache.series.length >= 2) {
+    const series = ilTrendsCache.series;
+    const prior = series[series.length - 2], latest = series[series.length - 1];
+    const priorProfit = saMetricAvg(prior.executive_summary && prior.executive_summary.avg_net_profit, {raw:true});
+    const latestProfit = saMetricAvg(latest.executive_summary && latest.executive_summary.avg_net_profit, {raw:true});
+    if (priorProfit !== null && latestProfit !== null && priorProfit > 0) {
+      const pctChange = Math.round((latestProfit - priorProfit) / priorProfit * 100);
+      items.push(['📉', 'Performance', `Average net profit ${pctChange >= 0 ? 'grew' : 'declined'} ${Math.abs(pctChange)}% compared to ${escapeHtml(prior.fiscal_year)}.`]);
+    }
+  }
+  const female = bo.total_directors_female, male = bo.total_directors_male;
+  if (female !== null && male !== null && (female + male) > 0) {
+    const pct = Math.round(female / (female + male) * 100);
+    items.push(['♀️', 'Board Diversity', `Female representation stands at ${pct}%, with a mix of Kenyan and non-Kenyan directors.`]);
+  }
+  if (saMetricAvg(ov.directors_remuneration.other_ned_annual_retainer) !== null) {
+    items.push(['💰', 'Remuneration', `Average NED annual retainer is ${escapeHtml(ov.currency)} ${fmtAmount(ov.directors_remuneration.other_ned_annual_retainer.average)}.`]);
+  }
+  if (!items.length) return `<div class="empty">${naSpan('Not enough data on file yet for key takeaways')}</div>`;
+  return `<div class="row row-3">${items.map(([icon, title, text]) => `
+    <div style="display:flex;gap:10px;">
+      <div style="font-size:20px;">${icon}</div>
+      <div><div style="font-weight:700;font-size:12.5px;">${escapeHtml(title)}</div><div style="font-size:11.5px;color:var(--text-dim);">${text}</div></div>
+    </div>`).join('')}</div>`;
 }
 function saMiniStat(value, label){
   return `<div class="sa-mini-stat"><div class="n">${value !== null && value !== undefined ? value : naSpan('Not enough data')}</div><div class="l">${escapeHtml(label)}</div></div>`;
@@ -4544,9 +4837,17 @@ function saBoardOverviewTab(ov){
       </div>
       <div class="panel">
         <div class="sa-panel-title">Board Composition</div>
-        ${execPct !== null ? saDonut2([['Executive', execPct, 'var(--blue)'], ['Non-Executive', 100-execPct, '#8ab4ff']], `${exec+nonExec}`)
-          : `<div class="empty">${naSpan('Not enough companies reported executive/non-executive counts')}</div>`}
-        ${indep !== null && nonIndep !== null ? `<div style="margin-top:10px;font-size:11.5px;color:var(--text-dim);">Independent NEDs: <b>${indep}</b> · Non-Independent NEDs: <b>${nonIndep}</b></div>` : ''}
+        ${execPct !== null ? `
+        <div class="row row-2">
+          <div>${saDonut2([['Executive', execPct, 'var(--blue)'], ['Non-Executive', 100-execPct, '#8ab4ff']], `${exec+nonExec}`)}</div>
+          <div class="ir-kv-list" style="font-size:11.5px;align-self:center;">
+            <div class="ir-kv-row"><span class="k">● Executive Directors</span><span style="font-weight:700;">${exec} (${execPct}%)</span></div>
+            <div class="ir-kv-row"><span class="k">● Non-Executive Directors</span><span style="font-weight:700;">${nonExec} (${100-execPct}%)</span></div>
+            ${indep !== null && nonIndep !== null ? `
+            <div class="ir-kv-row"><span class="k">● Independent NEDs</span><span style="font-weight:700;">${indep} (${Math.round(indep/(indep+nonIndep)*100)}%)</span></div>
+            <div class="ir-kv-row"><span class="k">● Non-Independent NEDs</span><span style="font-weight:700;">${nonIndep} (${Math.round(nonIndep/(indep+nonIndep)*100)}%)</span></div>` : ''}
+          </div>
+        </div>` : `<div class="empty">${naSpan('Not enough companies reported executive/non-executive counts')}</div>`}
       </div>
       <div class="panel">
         <div class="sa-panel-title">Director Age Comparison</div>
@@ -4577,9 +4878,12 @@ function saBoardOverviewTab(ov){
       </div>
       <div class="panel">
         <div class="sa-panel-title">Regulatory Alignment</div>
-        <p style="font-size:11.5px;color:var(--text-dim);line-height:1.5;">The CMA Code of Corporate Governance recommends at least a third of board members be independent, and gender diversity of at least a third.</p>
+        <p style="font-size:11.5px;color:var(--text-dim);line-height:1.5;">The survey compares board composition against the CMA Code of Corporate Governance, which recommends at least a third of board members be independent, and gender diversity of at least a third.</p>
         ${indep !== null && (indep+ (nonIndep||0)) > 0
-          ? `<div class="ov-status-pill ${(indep/(indep+nonIndep)) >= 0.33 ? 'completed' : 'pending'}">${(indep/(indep+nonIndep)*100).toFixed(0)}% independent NEDs</div>`
+          ? `<div style="background:var(--green-soft,rgba(34,197,94,.12));border-radius:10px;padding:12px;margin-top:8px;">
+              <div style="font-size:11.5px;font-weight:700;color:var(--green);">${(indep/(indep+nonIndep)) >= 0.33 ? '✔️ Meets the \u2265 33% independence threshold' : '\u26a0\ufe0f Below the \u2265 33% independence threshold'}</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">At least 33% of board members should be independent \u2014 this portfolio averages ${(indep/(indep+nonIndep)*100).toFixed(0)}%.</div>
+            </div>`
           : `<div>${naSpan('Not enough companies reported independence status')}</div>`}
       </div>
     </div>`;
@@ -4605,13 +4909,14 @@ function saDonut2(segments, centerLabel){
 // ---- Tab 4: Directors' Remuneration ----
 function saDirectorsRemunerationTab(ov){
   const dr = ov.directors_remuneration;
+  const cr = ov.committee_remuneration;
   return `
     ${saHeader("Directors' Remuneration", `Fees, retainers and allowances for directors across ${ov.companies_surveyed} NSE-listed companies`)}
     <div class="sa-stat-grid">
       ${saStatCard('👤', saMetricAvg(dr.chairperson_annual_retainer, {raw:true}) !== null ? fmtAmount(dr.chairperson_annual_retainer.average) : naSpan('Not enough data'), 'Average Chairperson Annual Retainer', ov.fiscal_year)}
       ${saStatCard('👥', saMetricAvg(dr.other_ned_annual_retainer, {raw:true}) !== null ? fmtAmount(dr.other_ned_annual_retainer.average) : naSpan('Not enough data'), 'Average NED Annual Retainer', ov.fiscal_year)}
       ${saStatCard('📅', saMetricAvg(dr.chairperson_meeting_allowance, {raw:true}) !== null ? fmtAmount(dr.chairperson_meeting_allowance.average) : naSpan('Not enough data'), 'Average Board Meeting Allowance', 'per meeting')}
-      ${saStatCard('👥', saMetricAvg(dr.other_ned_meeting_allowance, {raw:true}) !== null ? fmtAmount(dr.other_ned_meeting_allowance.average) : naSpan('Not enough data'), 'Average Committee Meeting Allowance', 'per meeting')}
+      ${saStatCard('👥', cr && saMetricAvg(cr.committee_chair_meeting_allowance, {raw:true}) !== null ? fmtAmount(cr.committee_chair_meeting_allowance.average) : naSpan('Not enough data'), 'Average Committee Meeting Allowance', 'per meeting')}
     </div>
     <div class="row row-2">
       <div class="panel">
@@ -4631,18 +4936,64 @@ function saDirectorsRemunerationTab(ov){
         ${saPercentileChart(dr.chairperson_meeting_allowance, dr.other_ned_meeting_allowance, 'Chairperson', 'Other NEDs')}
       </div>
       <div class="panel">
-        <div class="sa-panel-title">Average NED Annual Retainer by Sector</div>
-        ${saSectorBarList(ov.sector_comparison, 'avg_other_ned_annual_retainer')}
+        <div class="sa-panel-title">Committee Meeting Allowances — Chair vs Member</div>
+        ${cr ? saPercentileChart(cr.committee_chair_meeting_allowance, cr.committee_member_meeting_allowance, 'Committee Chair', 'Committee Member')
+          : `<div class="empty">${naSpan('No committee remuneration data on file')}</div>`}
       </div>
     </div>
-    <div class="panel">
-      <div class="sa-panel-title">Key Takeaways</div>
-      <div class="row row-3">
-        ${saTakeaway('👤', 'Chairperson Retainer', saMetricAvg(dr.chairperson_annual_retainer, {raw:true}) !== null ? `Average annual retainer of ${escapeHtml(ov.currency)} ${fmtAmount(dr.chairperson_annual_retainer.average)}.` : 'Not enough data yet.')}
-        ${saTakeaway('👥', 'NED Retainer', saMetricAvg(dr.other_ned_annual_retainer, {raw:true}) !== null ? `Average annual retainer of ${escapeHtml(ov.currency)} ${fmtAmount(dr.other_ned_annual_retainer.average)} for other non-executive directors.` : 'Not enough data yet.')}
-        ${saTakeaway('📅', 'Meeting Fees', saMetricAvg(dr.chairperson_meeting_allowance, {raw:true}) !== null ? `Board attendance allowance averages ${escapeHtml(ov.currency)} ${fmtAmount(dr.chairperson_meeting_allowance.average)} for chairs.` : 'Not enough data yet.')}
+    <div class="row row-2">
+      <div class="panel">
+        <div class="sa-panel-title">Committee Premium</div>
+        ${saCommitteePremiumCallout(cr)}
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Average NED Annual Retainer by Sector</div>
+        <div style="display:flex;gap:4px;margin-bottom:10px;">
+          <button class="secondary ${saDirRemSectorMetric === 'ned' ? 'active' : ''}" onclick="saDirRemSectorMetric='ned';renderSATabBody();">NED Retainers</button>
+          <button class="secondary ${saDirRemSectorMetric === 'chair' ? 'active' : ''}" onclick="saDirRemSectorMetric='chair';renderSATabBody();">Chairperson Retainers</button>
+        </div>
+        ${saSectorBarList(ov.sector_comparison, saDirRemSectorMetric === 'ned' ? 'avg_other_ned_annual_retainer' : 'avg_chairperson_annual_retainer')}
+      </div>
+    </div>
+    <div class="row row-2">
+      <div class="panel">
+        <div class="sa-panel-title">Typical NED Compensation Mix</div>
+        ${saCompensationMixDonut(dr, cr)}
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Key Takeaways</div>
+        <div class="row row-2">
+          ${saTakeaway('👤', 'Chairperson Retainer', saMetricAvg(dr.chairperson_annual_retainer, {raw:true}) !== null ? `Average annual retainer of ${escapeHtml(ov.currency)} ${fmtAmount(dr.chairperson_annual_retainer.average)}.` : 'Not enough data yet.')}
+          ${saTakeaway('👥', 'NED Retainer', saMetricAvg(dr.other_ned_annual_retainer, {raw:true}) !== null ? `Average annual retainer of ${escapeHtml(ov.currency)} ${fmtAmount(dr.other_ned_annual_retainer.average)} for other non-executive directors.` : 'Not enough data yet.')}
+          ${saTakeaway('📅', 'Meeting Fees', saMetricAvg(dr.chairperson_meeting_allowance, {raw:true}) !== null ? `Board attendance allowance averages ${escapeHtml(ov.currency)} ${fmtAmount(dr.chairperson_meeting_allowance.average)} for chairs.` : 'Not enough data yet.')}
+          ${cr && saMetricAvg(cr.committee_chair_meeting_allowance, {raw:true}) !== null ? saTakeaway('👥', 'Committee Fees', `Committee chairpersons average ${escapeHtml(ov.currency)} ${fmtAmount(cr.committee_chair_meeting_allowance.average)} per meeting.`) : ''}
+        </div>
       </div>
     </div>`;
+}
+// Uses the real chair_vs_member_annual_retainer_ratio field - the
+// SAME field and computation the dedicated Committee Remuneration tab
+// uses for its own "Key Insight" panel (see that tab's own code) -
+// rather than recomputing a ratio from raw averages here.
+function saCommitteePremiumCallout(cr){
+  if (!cr || cr.chair_vs_member_annual_retainer_ratio === null || cr.chair_vs_member_annual_retainer_ratio === undefined) {
+    return `<div class="empty">${naSpan('Not enough companies reported both committee chair and member retainers')}</div>`;
+  }
+  const pct = Math.round((cr.chair_vs_member_annual_retainer_ratio - 1) * 100);
+  return `<div style="text-align:center;padding:20px 0;"><div style="font-size:36px;font-weight:700;color:var(--green);">${pct}%</div><div style="font-size:11.5px;color:var(--text-dim);margin-top:6px;">Committee chairpersons receive approximately ${pct}% higher annual retainer than committee members.</div></div>`;
+}
+function saCompensationMixDonut(dr, cr){
+  const retainer = saMetricAvg(dr.other_ned_annual_retainer, {raw:true});
+  const meetingFees = saMetricAvg(dr.chairperson_meeting_allowance, {raw:true});
+  const committeeFees = cr ? saMetricAvg(cr.committee_chair_meeting_allowance, {raw:true}) : null;
+  const parts = [retainer, meetingFees, committeeFees].filter(v => v !== null);
+  if (parts.length < 2) return `<div class="empty">${naSpan('Not enough components on file to compute a compensation mix')}</div>`;
+  const total = (retainer||0) + (meetingFees||0) + (committeeFees||0);
+  if (total === 0) return `<div class="empty">${naSpan('Not enough data')}</div>`;
+  const retainerPct = Math.round((retainer||0)/total*100);
+  const meetingPct = Math.round((meetingFees||0)/total*100);
+  const committeePct = 100 - retainerPct - meetingPct;
+  return saDonut2([['Annual Retainer', retainerPct, 'var(--blue)'], ['Board Meeting Fees', meetingPct, 'var(--green)'], ['Committee Fees', committeePct, 'var(--purple)']], '100%');
 }
 function saPercentileChart(metricA, metricB, labelA, labelB){
   if ((!metricA || metricA.average === null) && (!metricB || metricB.average === null)) {
@@ -4670,10 +5021,13 @@ function saTakeaway(icon, title, body){
 function saExecutiveDirectorsTab(ov){
   const dr = ov.directors_remuneration;
   const bo = ov.board_overview;
+  const execAvg = saMetricAvg(dr.executive_director_annual_retainer, {raw:true});
+  const nedAvg = saMetricAvg(dr.other_ned_annual_retainer, {raw:true});
+  const ratio = (execAvg !== null && nedAvg !== null && nedAvg > 0) ? (execAvg / nedAvg) : null;
   return `
     ${saHeader('Executive Directors', `Key insights and remuneration trends for Executive Directors across ${ov.companies_surveyed} surveyed companies`)}
     <div class="sa-stat-grid">
-      ${saStatCard('👤', saMetricAvg(dr.executive_director_annual_retainer, {raw:true}) !== null ? fmtAmount(dr.executive_director_annual_retainer.average) : naSpan('Not enough data'), 'Average Executive Director Annual Retainer', 'per year')}
+      ${saStatCard('👤', execAvg !== null ? fmtAmount(execAvg) : naSpan('Not enough data'), 'Average Executive Director Annual Retainer', 'per year')}
       ${saStatCard('📅', saMetricAvg(dr.executive_director_meeting_allowance, {raw:true}) !== null ? fmtAmount(dr.executive_director_meeting_allowance.average) : naSpan('Not enough data'), 'Average Board Meeting Allowance', 'per meeting')}
       ${saStatCard('👤', saMetricAvg(bo.avg_age_executive_directors) !== null ? saMetricAvg(bo.avg_age_executive_directors) : naSpan('Not enough data'), 'Average Age of Executive Directors', 'years')}
       ${saStatCard('👥', bo.total_executive_directors !== null ? bo.total_executive_directors : naSpan('Not enough data'), 'Total Executive Directors', 'across survey')}
@@ -4684,24 +5038,40 @@ function saExecutiveDirectorsTab(ov){
         ${saPercentileChart(dr.executive_director_annual_retainer, dr.other_ned_annual_retainer, 'Executive Director', 'Other Directors')}
       </div>
       <div class="panel">
-        <div class="sa-panel-title">Executive Director Compensation by Sector</div>
-        ${saSectorBarList(ov.sector_comparison, 'avg_executive_director_annual_retainer')}
+        <div class="sa-panel-title">Key Insight</div>
+        ${ratio !== null
+          ? `<div style="text-align:center;padding:20px 0;"><div style="font-size:36px;font-weight:700;color:var(--blue);">${ratio.toFixed(1)}x</div><div style="font-size:11.5px;color:var(--text-dim);margin-top:6px;">Executive directors earn approximately ${ratio.toFixed(1)}x the annual retainer paid to other directors.</div></div>`
+          : `<div class="empty">${naSpan('Not enough companies reported both figures')}</div>`}
       </div>
     </div>
     <div class="row row-2">
+      <div class="panel">
+        <div class="sa-panel-title">Executive Director Compensation by Sector</div>
+        ${saSectorBarList(ov.sector_comparison, 'avg_executive_director_annual_retainer')}
+      </div>
       <div class="panel">
         <div class="sa-panel-title">Executive Director Composition</div>
         ${bo.total_executive_directors !== null && bo.total_non_executive_directors !== null
           ? saDonut2([['Executive', Math.round(bo.total_executive_directors/(bo.total_executive_directors+bo.total_non_executive_directors)*100), 'var(--green)'], ['Non-Executive', Math.round(bo.total_non_executive_directors/(bo.total_executive_directors+bo.total_non_executive_directors)*100), 'var(--blue)']], `${bo.total_executive_directors+bo.total_non_executive_directors}`)
           : `<div class="empty">${naSpan('Not enough data')}</div>`}
       </div>
+    </div>
+    <div class="row row-2">
       <div class="panel">
-        <div class="sa-panel-title">Key Takeaways</div>
-        <div class="ir-kv-list">
-          ${saTakeaway('💰', 'Executive Retainers', saMetricAvg(dr.executive_director_annual_retainer, {raw:true}) !== null ? `Average annual retainer of ${escapeHtml(ov.currency)} ${fmtAmount(dr.executive_director_annual_retainer.average)}.` : 'Not enough data yet.')}
-          ${saTakeaway('📅', 'Meeting Fees', saMetricAvg(dr.executive_director_meeting_allowance, {raw:true}) !== null ? `Board attendance allowance averages ${escapeHtml(ov.currency)} ${fmtAmount(dr.executive_director_meeting_allowance.average)} per meeting.` : 'Not enough data yet.')}
-          ${saTakeaway('👤', 'Age Profile', saMetricAvg(bo.avg_age_executive_directors) !== null ? `Average age of executive directors is ${saMetricAvg(bo.avg_age_executive_directors)} years.` : 'Not enough data yet.')}
-        </div>
+        <div class="sa-panel-title">Age Profile of Executive Directors</div>
+        <div class="empty">${naSpan('Only a portfolio-wide average age is tracked \u2014 youngest/oldest/median needs individual director ages, which this survey does not aggregate across companies')}</div>
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Director Gender Representation</div>
+        <div class="empty">${naSpan('Gender is tracked board-wide (all director types combined), not broken out separately for executive directors only')}</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="sa-panel-title">Key Takeaways</div>
+      <div class="row row-3">
+        ${saTakeaway('💰', 'Executive Retainers', execAvg !== null ? `Average annual retainer of ${escapeHtml(ov.currency)} ${fmtAmount(execAvg)}.` : 'Not enough data yet.')}
+        ${saTakeaway('📅', 'Meeting Fees', saMetricAvg(dr.executive_director_meeting_allowance, {raw:true}) !== null ? `Board attendance allowance averages ${escapeHtml(ov.currency)} ${fmtAmount(dr.executive_director_meeting_allowance.average)} per meeting.` : 'Not enough data yet.')}
+        ${saTakeaway('👤', 'Age Profile', saMetricAvg(bo.avg_age_executive_directors) !== null ? `Average age of executive directors is ${saMetricAvg(bo.avg_age_executive_directors)} years.` : 'Not enough data yet.')}
       </div>
     </div>`;
 }
@@ -4716,7 +5086,7 @@ function saNonExecutiveDirectorsTab(ov){
     <div class="sa-stat-grid">
       ${saStatCard('👤', saMetricAvg(dr.other_ned_annual_retainer, {raw:true}) !== null ? fmtAmount(dr.other_ned_annual_retainer.average) : naSpan('Not enough data'), 'Average NED Annual Retainer', 'per year')}
       ${saStatCard('📅', saMetricAvg(dr.other_ned_meeting_allowance, {raw:true}) !== null ? fmtAmount(dr.other_ned_meeting_allowance.average) : naSpan('Not enough data'), 'Average Board Meeting Allowance', 'per meeting')}
-      ${saStatCard('👥', saMetricAvg(dr.chairperson_meeting_allowance, {raw:true}) !== null ? fmtAmount(dr.chairperson_meeting_allowance.average) : naSpan('Not enough data'), 'Average Chairperson Meeting Allowance', 'per meeting')}
+      ${saStatCard('👥', ov.committee_remuneration && saMetricAvg(ov.committee_remuneration.committee_member_meeting_allowance, {raw:true}) !== null ? fmtAmount(ov.committee_remuneration.committee_member_meeting_allowance.average) : naSpan('Not enough data'), 'Average Committee Meeting Allowance', 'per meeting')}
       ${saStatCard('%', dr.chairperson_vs_other_ned_annual_retainer_ratio !== null ? dr.chairperson_vs_other_ned_annual_retainer_ratio + 'x' : naSpan('Not enough data'), 'Chairperson Premium', 'vs other NEDs')}
     </div>
     <div class="row row-2">
@@ -4725,17 +5095,25 @@ function saNonExecutiveDirectorsTab(ov){
         ${saPercentileChart(dr.other_ned_annual_retainer, dr.chairperson_annual_retainer, 'NEDs', 'Chairpersons')}
       </div>
       <div class="panel">
+        <div class="sa-panel-title">Key Insight</div>
+        ${dr.chairperson_vs_other_ned_annual_retainer_ratio !== null
+          ? `<div style="text-align:center;padding:20px 0;"><div style="font-size:36px;font-weight:700;color:var(--blue);">${dr.chairperson_vs_other_ned_annual_retainer_ratio}x</div><div style="font-size:11.5px;color:var(--text-dim);margin-top:6px;">The average board chair earns approximately ${dr.chairperson_vs_other_ned_annual_retainer_ratio}x the annual retainer paid to other NEDs.</div></div>`
+          : `<div class="empty">${naSpan('Not enough companies reported both figures')}</div>`}
+      </div>
+    </div>
+    <div class="row row-2">
+      <div class="panel">
         <div class="sa-panel-title">NED Meeting Allowances</div>
         ${saPercentileChart(dr.other_ned_meeting_allowance, dr.chairperson_meeting_allowance, 'NEDs', 'Chairpersons')}
       </div>
-    </div>
-    <div class="row row-3">
       <div class="panel">
         <div class="sa-panel-title">NED Composition</div>
         ${indep !== null && nonIndep !== null && (indep+nonIndep) > 0
           ? saDonut2([['Independent NEDs', Math.round(indep/(indep+nonIndep)*100), 'var(--blue)'], ['Non-Independent NEDs', Math.round(nonIndep/(indep+nonIndep)*100), 'var(--green)']], `${indep+nonIndep}`)
           : `<div class="empty">${naSpan('Not enough data')}</div>`}
       </div>
+    </div>
+    <div class="row row-3">
       <div class="panel">
         <div class="sa-panel-title">Average Age of NEDs</div>
         <div class="sa-bar-list">
@@ -4743,6 +5121,11 @@ function saNonExecutiveDirectorsTab(ov){
           ${saMetricAvg(bo.avg_age_non_independent_neds) !== null ? saBar('Non-Independent NEDs', saMetricAvg(bo.avg_age_non_independent_neds), 80) : ''}
           ${[bo.avg_age_independent_neds, bo.avg_age_non_independent_neds].every(m => saMetricAvg(m) === null) ? `<div class="empty">${naSpan('Not enough data')}</div>` : ''}
         </div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">${naSpan('Age broken down by gender is not tracked \u2014 only independent/non-independent')}</div>
+      </div>
+      <div class="panel">
+        <div class="sa-panel-title">Gender Representation</div>
+        <div class="empty">${naSpan('Gender is tracked board-wide (all director types combined), not broken out separately for NEDs only')}</div>
       </div>
       <div class="panel">
         <div class="sa-panel-title">Average NED Annual Retainer by Sector</div>
@@ -4793,11 +5176,16 @@ function saCommitteeRemunerationTab(ov){
         ${saMetricAvg(bo.avg_committees_per_board) !== null
           ? `<div class="ov-donut-wrap"><div class="ov-donut" style="background:var(--bg-panel-2);"><div class="ov-donut-hole"><div class="n">${saMetricAvg(bo.avg_committees_per_board)}</div><div class="l">avg. committees</div></div></div></div>`
           : `<div class="empty">${naSpan('Not enough data')}</div>`}
+        <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">${naSpan('A breakdown by committee type (Audit/Risk/Nomination, etc.) is not aggregated across the portfolio \u2014 only a per-board average count is tracked at this level')}</div>
       </div>
       <div class="panel">
         <div class="sa-panel-title">Average Committee Meeting Allowance by Sector (Chair)</div>
         ${saSectorBarList(ov.sector_comparison, 'avg_committee_chair_meeting_allowance')}
       </div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Average Meetings per Committee</div>
+      <div class="empty">${naSpan('Meetings-per-committee-type is not aggregated across the portfolio \u2014 only a per-board average meeting count is tracked at this level (see Committee Composition above)')}</div>
     </div>
     <div class="panel">
       <div class="sa-panel-title">Key Takeaways</div>
@@ -4805,6 +5193,7 @@ function saCommitteeRemunerationTab(ov){
         ${saTakeaway('💰', 'Chair Retainer', saMetricAvg(cr.committee_chair_annual_retainer, {raw:true}) !== null ? `Average ${escapeHtml(ov.currency)} ${fmtAmount(cr.committee_chair_annual_retainer.average)} annually.` : 'Not enough data yet.')}
         ${saTakeaway('👥', 'Member Retainer', saMetricAvg(cr.committee_member_annual_retainer, {raw:true}) !== null ? `Average ${escapeHtml(ov.currency)} ${fmtAmount(cr.committee_member_annual_retainer.average)} annually.` : 'Not enough data yet.')}
         ${saTakeaway('📅', 'Meeting Allowances', saMetricAvg(cr.committee_chair_meeting_allowance, {raw:true}) !== null ? `Chair: ${escapeHtml(ov.currency)} ${fmtAmount(cr.committee_chair_meeting_allowance.average)} · Member: ${saMetricAvg(cr.committee_member_meeting_allowance, {raw:true}) !== null ? fmtAmount(cr.committee_member_meeting_allowance.average) : '-'} (per meeting).` : 'Not enough data yet.')}
+        ${saMetricAvg(bo.avg_committees_per_board) !== null ? saTakeaway('🗂️', 'Committee Composition', `Boards have ${saMetricAvg(bo.avg_committees_per_board)} committees on average.`) : ''}
       </div>
     </div>`;
 }
@@ -4812,6 +5201,7 @@ function saCommitteeRemunerationTab(ov){
 // ---- Tab 8: Comparative Analysis ----
 function saComparativeAnalysisTab(ov){
   const dr = ov.directors_remuneration;
+  const cr = ov.committee_remuneration;
   const sectorRows = (ov.sector_comparison || []);
   const nedRows = sectorRows.filter(s => s.avg_other_ned_annual_retainer !== null);
   const highest = nedRows.length ? nedRows.reduce((a,b) => a.avg_other_ned_annual_retainer > b.avg_other_ned_annual_retainer ? a : b) : null;
@@ -4826,8 +5216,8 @@ function saComparativeAnalysisTab(ov){
     </div>
     <div class="row row-2">
       <div class="panel">
-        <div class="sa-panel-title">Director Remuneration by Sector — Avg. NED Annual Retainer</div>
-        ${saSectorBarList(ov.sector_comparison, 'avg_other_ned_annual_retainer')}
+        <div class="sa-panel-title">Director Remuneration by Sector — NED vs Chairperson Retainer</div>
+        ${saTwoMetricSectorBarChart(sectorRows, 'avg_other_ned_annual_retainer', 'avg_chairperson_annual_retainer', 'NED Retainer', 'Chair Retainer')}
       </div>
       <div class="panel">
         <div class="sa-panel-title">Remuneration by Company Size</div>
@@ -4837,7 +5227,7 @@ function saComparativeAnalysisTab(ov){
     <div class="row row-2">
       <div class="panel">
         <div class="sa-panel-title">Remuneration Structure Comparison</div>
-        <div class="empty">${naSpan('A component-mix breakdown by director type needs richer per-director data than the survey stores')}</div>
+        <div class="empty">${naSpan('A NED-vs-Executive-Director component mix needs a way to attribute committee fees to one director type or the other \u2014 committee chair/member fees are tracked by committee role only, with no link back to whether that person is also an executive or non-executive director, so this app cannot honestly build that split')}</div>
       </div>
       <div class="panel">
         <div class="sa-panel-title">Key Insight</div>
@@ -4845,6 +5235,14 @@ function saComparativeAnalysisTab(ov){
           ? `<p style="font-size:12px;color:var(--text-dim);line-height:1.5;">The <b>${escapeHtml(highest.sector)}</b> sector pays the highest average NED retainer at <b>${escapeHtml(ov.currency)} ${fmtAmount(highest.avg_other_ned_annual_retainer)}</b>, while <b>${escapeHtml(lowest.sector)}</b> pays the lowest at <b>${escapeHtml(ov.currency)} ${fmtAmount(lowest.avg_other_ned_annual_retainer)}</b>.</p>`
           : `<div class="empty">${naSpan('Not enough sector data yet')}</div>`}
       </div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Chair vs Member/NED Premiums — Average Percentage Difference</div>
+      ${saChairPremiumDonuts(dr, cr)}
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">Key Takeaways</div>
+      ${saComparativeAnalysisTakeaways(ov, dr, cr, highest, lowest)}
     </div>
     <div class="panel">
       <div class="sa-panel-title">Sector Comparison — Average NED Annual Retainer (${escapeHtml(ov.currency)})</div>
@@ -4864,6 +5262,63 @@ function saComparativeAnalysisTab(ov){
       </table>
       </div>
     </div>`;
+}
+// Two grouped-bar-friendly series over the same sector list - a
+// lightweight variant of saSectorBarList for when two metrics need to
+// be compared side-by-side per sector rather than one bar per sector.
+function saTwoMetricSectorBarChart(sectorRows, fieldA, fieldB, labelA, labelB){
+  const rows = sectorRows.filter(s => s[fieldA] !== null || s[fieldB] !== null);
+  if (!rows.length) return `<div class="empty">${naSpan('Not enough data')}</div>`;
+  const max = Math.max(...rows.map(s => Math.max(s[fieldA]||0, s[fieldB]||0)));
+  return `<div class="sa-bar-list">${rows.map(s => `
+    <div style="margin-bottom:10px;">
+      <div style="font-size:11px;color:var(--text-faint);margin-bottom:2px;">${escapeHtml(s.sector)}</div>
+      ${s[fieldA] !== null ? saBar(labelA, fmtAmount(s[fieldA]), max) : ''}
+      ${s[fieldB] !== null ? saBar(labelB, fmtAmount(s[fieldB]), max, 'var(--green)') : ''}
+    </div>`).join('')}</div>`;
+}
+// Four premium comparisons - two use the real backend-computed ratio
+// fields (chairperson_vs_other_ned_annual_retainer_ratio,
+// chair_vs_member_annual_retainer_ratio - same fields their own tabs
+// use); the other two (board meeting allowance premium, total
+// remuneration premium) are computed live from real averages/sums,
+// the same legitimate-arithmetic approach used for the Chairperson/
+// Committee Premium callouts elsewhere on this page.
+function saChairPremiumDonuts(dr, cr){
+  const items = [];
+  const boardChair = saMetricAvg(dr.chairperson_meeting_allowance, {raw:true});
+  const boardNed = saMetricAvg(dr.other_ned_meeting_allowance, {raw:true});
+  if (boardChair !== null && boardNed !== null && boardNed > 0) {
+    items.push(['Board Meeting Allowances', Math.round((boardChair/boardNed - 1)*100), '(Chair vs NED)']);
+  }
+  if (cr && cr.chair_vs_member_annual_retainer_ratio !== null && cr.chair_vs_member_annual_retainer_ratio !== undefined) {
+    items.push(['Committee Meeting Allowances', Math.round((cr.chair_vs_member_annual_retainer_ratio - 1)*100), '(Chair vs Member)']);
+  }
+  if (dr.chairperson_vs_other_ned_annual_retainer_ratio !== null && dr.chairperson_vs_other_ned_annual_retainer_ratio !== undefined) {
+    items.push(['Annual Retainers', Math.round((dr.chairperson_vs_other_ned_annual_retainer_ratio - 1)*100), '(Chair vs NED)']);
+  }
+  const chairTotal = (boardChair||0) + (saMetricAvg(dr.chairperson_annual_retainer, {raw:true})||0);
+  const nedTotal = (boardNed||0) + (saMetricAvg(dr.other_ned_annual_retainer, {raw:true})||0);
+  if (chairTotal > 0 && nedTotal > 0) {
+    items.push(['Total Remuneration', Math.round((chairTotal/nedTotal - 1)*100), '(Chair vs Member)']);
+  }
+  if (!items.length) return `<div class="empty">${naSpan('Not enough data to compute chair/member premiums')}</div>`;
+  return `<div class="row row-4">${items.map(([label, pct, sub]) => `
+    <div style="text-align:center;">
+      <div style="font-size:28px;font-weight:700;color:var(--blue);">${pct}%</div>
+      <div style="font-size:11px;font-weight:600;margin-top:2px;">${escapeHtml(label)}</div>
+      <div style="font-size:10px;color:var(--text-faint);">${escapeHtml(sub)}</div>
+    </div>`).join('')}</div>`;
+}
+function saComparativeAnalysisTakeaways(ov, dr, cr, highest, lowest){
+  const items = [];
+  if (highest) items.push(`${escapeHtml(highest.sector)} has the highest average remuneration across most metrics.`);
+  if (lowest) items.push(`${escapeHtml(lowest.sector)} remains the lowest-paying sector.`);
+  if (dr.chairperson_vs_other_ned_annual_retainer_ratio !== null) {
+    items.push(`Chairpersons earn a significant premium over other NEDs, particularly in annual retainers (${dr.chairperson_vs_other_ned_annual_retainer_ratio}x).`);
+  }
+  if (!items.length) return `<div class="empty">${naSpan('Not enough data on file yet for key takeaways')}</div>`;
+  return `<ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;">${items.map(i => `<li>${i}</li>`).join('')}</ul>`;
 }
 
 // ---- Tab 9: Appendix ----
@@ -4922,8 +5377,22 @@ function saAppendixTab(ov){
         ${saMiniStat(ov.companies_surveyed, 'Companies surveyed (NSE listed)')}
         ${saMiniStat(saMetricAvg(ov.board_overview.avg_board_size), 'Average board size (Directors)')}
         ${saMiniStat(saMetricAvg(ov.board_overview.avg_board_meetings_per_year), 'Average board meetings (per year)')}
+        ${saMiniStat(saAppendixFemalePct(ov.board_overview), 'Female representation (Board level)')}
+        ${saMiniStat(ov.directors_remuneration.chairperson_vs_other_ned_annual_retainer_ratio !== null ? ov.directors_remuneration.chairperson_vs_other_ned_annual_retainer_ratio + 'x' : null, 'Chairperson vs other NED retainer premium')}
+        ${saMiniStat(saAppendixHighestPayingSector(sectorRows), 'Highest paying sector (Avg. NED retainer)')}
       </div>
     </div>`;
+}
+function saAppendixFemalePct(bo){
+  const f = bo.total_directors_female, m = bo.total_directors_male;
+  if (f === null || m === null || (f + m) === 0) return null;
+  return Math.round(f / (f + m) * 100) + '%';
+}
+function saAppendixHighestPayingSector(sectorRows){
+  const withRetainer = sectorRows.filter(s => s.avg_other_ned_annual_retainer !== null);
+  if (!withRetainer.length) return null;
+  const top = withRetainer.reduce((a,b) => a.avg_other_ned_annual_retainer > b.avg_other_ned_annual_retainer ? a : b);
+  return fmtAmount(top.avg_other_ned_annual_retainer) + ' (' + escapeHtml(top.sector) + ')';
 }
 
 // ---------- Survey (old flat page - superseded by renderSurveyAnalyticsPage above,
