@@ -32,6 +32,35 @@ from datetime import datetime
 from models import db
 
 
+class ActivityLogEntry(db.Model):
+    """One immutable event in the survey/admin activity feed.
+
+    Activity is intentionally stored separately from the survey payload so
+    reviews and edits remain visible even when the underlying survey row is
+    replaced by a later import.
+    """
+    __tablename__ = 'activity_log_entries'
+
+    id = db.Column(db.Integer, primary_key=True)
+    company_id = db.Column(db.Integer, db.ForeignKey('company.id'), nullable=False)
+    fiscal_year = db.Column(db.String(20))
+    action = db.Column(db.String(80), nullable=False)
+    detail = db.Column(db.String(300))
+    actor = db.Column(db.String(150))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'company_id': self.company_id,
+            'fiscal_year': self.fiscal_year,
+            'action': self.action,
+            'detail': self.detail,
+            'actor': self.actor,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class SurveyCompanyData(db.Model):
     """One company's board/remuneration/performance figures for one
     fiscal year, scoped to only what the Survey page displays. One row

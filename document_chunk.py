@@ -29,6 +29,15 @@ from dataclasses import dataclass, field
 from typing import Optional
 import pdfplumber
 
+# Corrects two PDF-authoring/rendering artifacts confirmed on real filings
+# this session (see pdf_parse.py's normalize_extracted_line docstring):
+# doubled-bold-character headings and mirror-reversed table/heading text
+# blocks. Applied to every line this module builds directly from raw
+# pdfplumber character data below (this module has its own extraction
+# path, separate from pdf_parse.py's extract_pdf_document(), so it needs
+# this applied explicitly rather than inheriting it).
+from pdf_parse import normalize_extracted_line
+
 
 @dataclass
 class DocumentChunk:
@@ -206,7 +215,7 @@ def _line_groups(page):
             top = round(c['top'], 0)
             if current_top is None or abs(top - current_top) > 3:
                 if current_chars:
-                    text = ''.join(ch['text'] for ch in current_chars).strip()
+                    text = normalize_extracted_line(''.join(ch['text'] for ch in current_chars).strip())
                     if text:
                         avg_size = sum(ch.get('size', 0) for ch in current_chars) / len(current_chars)
                         all_lines.append((text, avg_size, current_chars[0]['top']))
@@ -215,7 +224,7 @@ def _line_groups(page):
             else:
                 current_chars.append(c)
         if current_chars:
-            text = ''.join(ch['text'] for ch in current_chars).strip()
+            text = normalize_extracted_line(''.join(ch['text'] for ch in current_chars).strip())
             if text:
                 avg_size = sum(ch.get('size', 0) for ch in current_chars) / len(current_chars)
                 all_lines.append((text, avg_size, current_chars[0]['top']))

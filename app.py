@@ -6,7 +6,8 @@ import json
 import hashlib
 import tempfile
 import uuid
-from flask import Flask, render_template, request, jsonify, send_file
+from functools import wraps
+from flask import Flask, render_template, request, jsonify, send_file, session
 from datetime import datetime
 import openpyxl
 import pdfplumber
@@ -16,9 +17,9 @@ from models import (
     SourceDocument, ImportJob, CalculatedMetric, FinancialSegment,
     OperationalMetric, FinancialNote,
     MarketDataSnapshot, PrincipalRisk, ManagementGuidance, DirectorRemunerationRow,
-    Committee, CommitteeMember,
+    Committee, CommitteeMember, User,
 )
-from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory
+from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, ActivityLogEntry
 from survey_data_parse import is_survey_data_format, parse_survey_data
 from intelligence_extractor import extract_survey_schema, extract_policy_disclosures
 from survey_aggregate import build_survey_overview, build_company_rows, build_historical_trends, build_portfolio_data_quality
@@ -81,6 +82,12 @@ if database_url.startswith('postgres://'):
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Session cookie signing key. Set SESSION_SECRET in the environment for
+# real deployments - sessions (and every logged-in user) get silently
+# invalidated on restart if this falls back to the dev default, since a
+# new random-looking-but-fixed string only holds within one process.
+app.config['SECRET_KEY'] = os.environ.get('SESSION_SECRET', 'dev-only-change-me')
+
 # Hosted Postgres (Replit's provisioned DB is Neon-backed) silently drops
 # idle connections after a short window. Without this, SQLAlchemy's pool
 # can hand out a connection that the server already closed - the driver
@@ -132,6 +139,169 @@ def handle_request_too_large(e):
 @app.errorhandler(404)
 def handle_not_found(e):
     return jsonify({'error': 'Not found.'}), 404
+
+
+# ---------- AUTH ----------
+# Three-tier access: 'admin' (upload/edit/delete/view/download), 'user'
+# (view/download only), and an unauthenticated visitor - no session at
+# all - treated as 'guest' (view only) everywhere below. There is no
+# guest account/row; "guest" just means current_role() falls through to
+# the default. The page itself (GET /) never redirects to a login wall -
+# guests can open and browse the app with zero login, per spec.
+
+def current_user():
+    uid = session.get('user_id')
+    if not uid:
+        return None
+    return User.query.get(uid)
+
+def current_role():
+    u = current_user()
+    return u.role if u else 'guest'
+
+def require_role(*roles):
+    """Server-side gate for a route. Hiding a button in the frontend is
+    just UI polish - this decorator is the actual enforcement, since a
+    guest or user could otherwise call the API endpoint directly."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if current_role() not in roles:
+                return jsonify({'error': "You don't have permission to do that."}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    """Public self-registration. Always creates a 'user' role account -
+    self-registering as admin is never allowed; new admins can only be
+    created by an existing admin from the User Management panel. The
+    name given here is what shows in the topbar everywhere in the app -
+    replaces the old hardcoded name."""
+    data = request.get_json(force=True) or {}
+    name = (data.get('name') or '').strip()
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+    if not name or not email or not password:
+        return jsonify({'error': 'Name, email, and password are all required.'}), 400
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters.'}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({'error': 'An account with that email already exists.'}), 409
+    user = User(name=name, email=email, role='user')
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    session['user_id'] = user.id
+    return jsonify(user.to_dict()), 201
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json(force=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+    user = User.query.filter_by(email=email).first()
+    if not user or not user.check_password(password):
+        return jsonify({'error': 'Incorrect email or password.'}), 401
+    session['user_id'] = user.id
+    return jsonify(user.to_dict())
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'ok': True})
+
+@app.route('/api/me')
+def me():
+    """Tells the frontend who's logged in (or that nobody is, i.e.
+    guest) so it can show the right name in the topbar and show/hide
+    upload/edit/delete/download controls. Always 200 - guest is a valid,
+    expected state, not an error."""
+    u = current_user()
+    if not u:
+        return jsonify({'logged_in': False, 'role': 'guest', 'name': None, 'email': None})
+    d = u.to_dict()
+    d['logged_in'] = True
+    return jsonify(d)
+
+
+# ---------- API: USER MANAGEMENT (admin only) ----------
+# Lets an admin promote/demote roles, create new accounts of any role
+# (including new admins), and reset a locked-out user's password by hand
+# - there's no email-based password-reset flow in this app.
+
+@app.route('/api/users', methods=['GET'])
+@require_role('admin')
+def list_users():
+    users = User.query.order_by(User.created_at.asc()).all()
+    return jsonify([u.to_dict() for u in users])
+
+@app.route('/api/users', methods=['POST'])
+@require_role('admin')
+def create_user():
+    data = request.get_json(force=True) or {}
+    name = (data.get('name') or '').strip()
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+    role = data.get('role') or 'user'
+    if role not in ('admin', 'user'):
+        return jsonify({'error': "Role must be 'admin' or 'user'."}), 400
+    if not name or not email or not password:
+        return jsonify({'error': 'Name, email, and password are all required.'}), 400
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters.'}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({'error': 'An account with that email already exists.'}), 409
+    user = User(name=name, email=email, role=role)
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    return jsonify(user.to_dict()), 201
+
+@app.route('/api/users/<int:user_id>/role', methods=['PATCH'])
+@require_role('admin')
+def update_user_role(user_id):
+    user = User.query.get_or_404(user_id)
+    data = request.get_json(force=True) or {}
+    role = data.get('role')
+    if role not in ('admin', 'user'):
+        return jsonify({'error': "Role must be 'admin' or 'user'."}), 400
+    if user.id == session.get('user_id') and role != 'admin':
+        return jsonify({'error': "You can't demote your own account."}), 400
+    if user.role == 'admin' and role != 'admin':
+        remaining_admins = User.query.filter(User.role == 'admin', User.id != user.id).count()
+        if remaining_admins == 0:
+            return jsonify({'error': 'At least one admin account must remain.'}), 400
+    user.role = role
+    db.session.commit()
+    return jsonify(user.to_dict())
+
+@app.route('/api/users/<int:user_id>/reset-password', methods=['POST'])
+@require_role('admin')
+def reset_user_password(user_id):
+    user = User.query.get_or_404(user_id)
+    data = request.get_json(force=True) or {}
+    password = data.get('password') or ''
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters.'}), 400
+    user.set_password(password)
+    db.session.commit()
+    return jsonify({'ok': True})
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@require_role('admin')
+def delete_user(user_id):
+    user = User.query.get_or_404(user_id)
+    if user.id == session.get('user_id'):
+        return jsonify({'error': "You can't delete your own account while logged in."}), 400
+    if user.role == 'admin':
+        remaining_admins = User.query.filter(User.role == 'admin', User.id != user.id).count()
+        if remaining_admins == 0:
+            return jsonify({'error': 'At least one admin account must remain.'}), 400
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'ok': True})
 
 
 @app.errorhandler(Exception)
@@ -312,6 +482,27 @@ def _ordered_periods(company_id):
         key=lambda p: (p.fiscal_year if p.fiscal_year is not None else extract_year(p.period_label) or 0),
         reverse=True,
     )
+
+def log_activity(company_id, action, detail=None, fiscal_year=None, actor=None):
+    """Write one ActivityLogEntry row - called from the survey write
+    paths that actually mutate data (see each call site). Deliberately
+    swallows its own errors rather than ever failing the caller's real
+    write: logging an activity is a courtesy for the Admin Dashboard's
+    Recent Activities panel, not something that should turn a
+    successful survey upload or field review into a 500 if, say, the
+    activity_log_entries table hasn't been migrated in yet on some
+    older deployment. db.session.commit() here is separate from the
+    caller's own commit (already done by the time this runs at every
+    call site), so a failure here can never roll back real data that
+    was already saved."""
+    try:
+        db.session.add(ActivityLogEntry(
+            company_id=company_id, fiscal_year=fiscal_year,
+            action=action, detail=detail, actor=actor,
+        ))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
 def latest_period_view(company_id):
     periods = _ordered_periods(company_id)
@@ -884,6 +1075,7 @@ def list_sectors():
     return jsonify({'sectors': sectors, 'total_revenue': total_revenue_all})
 
 @app.route('/api/companies', methods=['POST'])
+@require_role('admin')
 def add_company():
     data = request.get_json(force=True) or {}
     name = (data.get('name') or '').strip()
@@ -909,6 +1101,7 @@ def get_company(company_id):
     return jsonify(result)
 
 @app.route('/api/companies/<int:company_id>', methods=['DELETE'])
+@require_role('admin')
 def delete_company(company_id):
     """Deletes a company and everything that hangs off it.
 
@@ -983,11 +1176,45 @@ def delete_company(company_id):
             MarketDataSnapshot.query.filter_by(period_id=period_id).delete(synchronize_session=False)
             PrincipalRisk.query.filter_by(period_id=period_id).delete(synchronize_session=False)
             ManagementGuidance.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+            # Committee/CommitteeMember: added in a later session than this
+            # route too (models.py), same period_id FK/no-cascade shape as
+            # the four above - would hit the identical IntegrityError for
+            # any company with committee data saved. The ORM relationship's
+            # cascade='all, delete-orphan' (models.py) only fires on an
+            # ORM-level session.delete(), never on this route's bulk
+            # .delete() queries - so CommitteeMember still needs its own
+            # explicit cleanup here before Committee, same as everywhere
+            # else in this function.
+            committee_ids = [comm.id for comm in Committee.query.filter_by(period_id=period_id)]
+            if committee_ids:
+                CommitteeMember.query.filter(CommitteeMember.committee_id.in_(committee_ids)).delete(synchronize_session=False)
+            Committee.query.filter_by(period_id=period_id).delete(synchronize_session=False)
 
         FinancialPeriod.query.filter_by(company_id=company_id).delete(synchronize_session=False)
         ImportJob.query.filter_by(company_id=company_id).delete(synchronize_session=False)
         Financials.query.filter_by(company_id=company_id).delete(synchronize_session=False)
         SourceDocument.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+
+        # Survey-side tables (models_survey.py) - added in a later session
+        # than this route and never wired into its cleanup, so a company
+        # with ANY survey data (SurveyCompanyData row, named directors,
+        # benefits, remuneration/governance policy answers, or a flagged
+        # evidence conflict) hit the exact same class of bug documented
+        # above: a real FK to company.id, nullable=False, no
+        # ondelete=CASCADE, no ORM relationship - the delete 500'd with an
+        # IntegrityError instead of silently doing nothing. All keyed
+        # directly by company_id (none of them FK to each other), so order
+        # among these seven doesn't matter, only that they run before the
+        # Company row itself. ActivityLogEntry included for the same
+        # reason (added this same session, same unindexed FK-only shape).
+        SurveyDirector.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        SurveyDirectorBenefit.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        SurveyBenefitCategory.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        RemunerationPolicy.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        GovernancePolicy.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        EvidenceConflict.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        SurveyCompanyData.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+        ActivityLogEntry.query.filter_by(company_id=company_id).delete(synchronize_session=False)
 
         db.session.delete(c)
         db.session.commit()
@@ -1000,6 +1227,7 @@ def delete_company(company_id):
 # ---------- API: FINANCIALS ----------
 
 @app.route('/api/companies/<int:company_id>/financials', methods=['POST'])
+@require_role('admin')
 def add_financials(company_id):
     Company.query.get_or_404(company_id)
     data = request.get_json(force=True) or {}
@@ -1307,6 +1535,7 @@ def _save_one_import(data):
     }, 201
 
 @app.route('/api/import/upload-batch', methods=['POST'])
+@require_role('admin')
 def upload_documents_batch():
     """Upload several annual-report PDFs at once (multipart/form-data,
     repeated 'files' field) - any mix of companies and years in a single
@@ -1859,6 +2088,7 @@ def _find_or_create_company_for_survey(name, sector):
 
 
 @app.route('/api/survey-data/import', methods=['POST'])
+@require_role('admin')
 def import_survey_data():
     """Accepts an uploaded Survey Data condensed .txt file (multipart/
     form-data, field name 'file') for ONE company/fiscal-year, parses it,
@@ -1908,6 +2138,9 @@ def import_survey_data():
     row.source_filename = file.filename
 
     db.session.commit()
+    log_activity(company.id, 'survey_updated' if is_update else 'survey_uploaded',
+                  detail=f"Survey data {'updated' if is_update else 'uploaded'} from {file.filename}",
+                  fiscal_year=fiscal_year)
 
     return jsonify({
         'ok': True,
@@ -1918,6 +2151,7 @@ def import_survey_data():
 
 
 @app.route('/api/survey-data/import-pdf', methods=['POST'])
+@require_role('admin')
 def import_survey_data_from_pdf():
     """Accepts a raw filing PDF (multipart/form-data, field name 'file')
     plus REQUIRED form fields 'company_name' and 'fiscal_year' (the
@@ -1994,6 +2228,41 @@ def import_survey_data_from_pdf():
         except OSError:
             pass
 
+    # Backfill turnover/net_profit from the financial-statement pipeline's
+    # already-extracted Financials row for this same company+period, when
+    # the ontology scan above didn't find them itself. Real gap confirmed
+    # on KCB Group Plc's own 2024 filing: its income statement genuinely
+    # never uses the words "revenue"/"turnover" anywhere (says "Total
+    # income" instead), so extract_survey_schema's label-glued-to-number
+    # ontology match has nothing to latch onto and correctly comes back
+    # empty rather than guessing - but the identical figure is already
+    # sitting there, correctly extracted, in Financials, if this
+    # company+fiscal_year has already been through the standalone
+    # financial-statement import (a common real sequence: the same PDF,
+    # or a same-scope one, imported through both pipelines). Financials
+    # always stores in millions; converted here to whatever unit this
+    # survey record's own scan detected, since the two can genuinely
+    # differ (KCB: financial-statement figures in millions, survey
+    # ontology's own unit detection here found "thousands").
+    if 'turnover' not in parsed or 'net_profit' not in parsed:
+        fin = Financials.query.filter_by(company_id=company.id, period=fiscal_year).first()
+        if fin:
+            _unit_multiplier_from_millions = {'thousands': 1000, 'millions': 1, 'billions': 0.001}
+            multiplier = _unit_multiplier_from_millions.get(parsed.get('unit', 'millions'), 1)
+            parsed.setdefault('field_sources', {})
+            parsed.setdefault('field_confidence', {})
+            if 'turnover' not in parsed and fin.revenue is not None:
+                parsed['turnover'] = fin.revenue * multiplier
+                parsed['field_sources']['turnover'] = (
+                    f"backfilled from this company's financial-statement import for {fiscal_year} "
+                    "(this filing's own income statement doesn't state revenue/turnover by that name)")
+                parsed['field_confidence']['turnover'] = 0.85
+            if 'net_profit' not in parsed and fin.net_income is not None:
+                parsed['net_profit'] = fin.net_income * multiplier
+                parsed['field_sources']['net_profit'] = (
+                    f"backfilled from this company's financial-statement import for {fiscal_year}")
+                parsed['field_confidence']['net_profit'] = 0.85
+
     row = SurveyCompanyData.query.filter_by(company_id=company.id, fiscal_year=fiscal_year).first()
     is_update = row is not None
     if row is None:
@@ -2041,12 +2310,17 @@ def import_survey_data_from_pdf():
             ))
         db.session.commit()
 
+    fields_extracted_count = len([k for k in parsed if k not in ('field_sources', 'field_confidence')])
+    log_activity(company.id, 'survey_pdf_extracted',
+                  detail=f"{fields_extracted_count} field(s), {len(directors_extracted)} director(s) extracted from {file.filename}",
+                  fiscal_year=fiscal_year)
+
     return jsonify({
         'ok': True,
         'updated_existing': is_update,
         'company': company.to_dict(),
         'survey_data': row.to_dict(),
-        'fields_extracted': len([k for k in parsed if k not in ('field_sources', 'field_confidence')]),
+        'fields_extracted': fields_extracted_count,
         'field_confidence': parsed.get('field_confidence', {}),
         'directors_extracted': len(directors_extracted),
         'directors_layout_supported': not directors_result.get('unsupported_layout', False),
@@ -2055,6 +2329,7 @@ def import_survey_data_from_pdf():
 
 
 @app.route('/api/survey-data/import-policy-pdf', methods=['POST'])
+@require_role('admin')
 def import_remuneration_policy_from_pdf():
     """Same shape as /api/survey-data/import-pdf, but for
     RemunerationPolicy's yes/no + free-text fields instead of
@@ -2122,6 +2397,7 @@ def import_remuneration_policy_from_pdf():
 
 
 @app.route('/api/survey-data/<int:company_id>/<fiscal_year>/review', methods=['POST'])
+@require_role('admin')
 def review_survey_field(company_id, fiscal_year):
     """Approve, reject, or correct ONE extracted field on a
     SurveyCompanyData row. Body: {"field": "board_size", "action":
@@ -2181,6 +2457,9 @@ def review_survey_field(company_id, fiscal_year):
     row.field_review_status = review_status
     row.field_review_corrections = corrections
     db.session.commit()
+    activity_action = {'approve': 'field_approved', 'reject': 'field_rejected', 'correct': 'field_corrected'}[action]
+    log_activity(company_id, activity_action, detail=f"{field} {action}d" if action != 'correct' else f"{field} corrected",
+                  fiscal_year=fiscal_year, actor=reviewer)
 
     return jsonify({'ok': True, 'survey_data': row.to_dict()}), 200
 
@@ -2189,7 +2468,17 @@ def review_survey_field(company_id, fiscal_year):
 def list_survey_companies():
     """Every company with at least one SurveyCompanyData row, with the
     fiscal years available for each - lets the frontend build a fiscal-
-    year picker without guessing what's on file."""
+    year picker without guessing what's on file. Also includes, for
+    each company's LATEST fiscal year row (by the same fiscal_year
+    string-descending convention used elsewhere, e.g.
+    available_survey_years above), a real review-completion status -
+    not the Admin Dashboard's old mocked status. "Completed"/"In
+    Progress"/"Pending Review" is derived from field_review_status
+    (see review_survey_field's own docstring): a field is only
+    "reviewed" once a person has explicitly approved, rejected, or
+    corrected it there - a value that was simply extracted with a
+    confidence score, or hand-typed via the plain Survey Data import,
+    was never marked as reviewed."""
     rows = db.session.query(SurveyCompanyData, Company).join(
         Company, SurveyCompanyData.company_id == Company.id
     ).order_by(Company.name).all()
@@ -2198,9 +2487,54 @@ def list_survey_companies():
         entry = by_company.setdefault(r.company_id, {
             'company_id': r.company_id, 'company_name': c.name,
             'sector': r.sector or c.sector, 'fiscal_years': [],
+            '_latest_row': None,
         })
         entry['fiscal_years'].append(r.fiscal_year)
-    return jsonify(list(by_company.values()))
+        if entry['_latest_row'] is None or r.fiscal_year > entry['_latest_row'].fiscal_year:
+            entry['_latest_row'] = r
+
+    result = []
+    for entry in by_company.values():
+        latest = entry.pop('_latest_row')
+        scored_fields = latest.field_confidence or {}
+        review_status_map = latest.field_review_status or {}
+        total_scored = len(scored_fields)
+        reviewed = len([f for f in scored_fields if f in review_status_map])
+        if total_scored == 0:
+            # No PDF-extracted (scored) fields at all - this company's
+            # latest data was entered via the hand-typed Survey Data
+            # import, which never produces a confidence score to review
+            # in the first place (see review_survey_field's own
+            # docstring: hand-typed fields were never "pending review").
+            # Nothing here is awaiting review, so this counts as done.
+            status, progress_pct = 'completed', 100
+        else:
+            progress_pct = round(reviewed / total_scored * 100)
+            status = 'completed' if progress_pct == 100 else ('in-progress' if progress_pct > 0 else 'pending')
+        entry['latest_fiscal_year'] = latest.fiscal_year
+        entry['review_status'] = status
+        entry['review_progress_pct'] = progress_pct
+        entry['last_updated'] = latest.uploaded_at.isoformat() if latest.uploaded_at else None
+        result.append(entry)
+    return jsonify(result)
+
+
+@app.route('/api/survey/activity', methods=['GET'])
+def survey_activity_feed():
+    """Most recent real ActivityLogEntry rows across all companies, for
+    the Admin Dashboard's Recent Activities panel. ?limit=N (default
+    10). Each entry already carries its own company_id; the frontend
+    resolves company_name from the company list it already has rather
+    than this route re-joining Company for a field the caller likely
+    already has cached."""
+    try:
+        limit = min(int(request.args.get('limit', 10)), 50)
+    except ValueError:
+        limit = 10
+    entries = ActivityLogEntry.query.order_by(ActivityLogEntry.created_at.desc()).limit(limit).all()
+    company_ids = {e.company_id for e in entries}
+    companies_by_id = {c.id: c.name for c in Company.query.filter(Company.id.in_(company_ids)).all()} if company_ids else {}
+    return jsonify([{**e.to_dict(), 'company_name': companies_by_id.get(e.company_id)} for e in entries])
 
 
 @app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['GET'])
@@ -2232,6 +2566,7 @@ def get_survey_company_data(company_id, fiscal_year):
 
 
 @app.route('/api/survey/companies/<int:company_id>/<fiscal_year>', methods=['DELETE'])
+@require_role('admin')
 def delete_survey_company_data(company_id, fiscal_year):
     row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first_or_404()
     SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).delete()
@@ -2415,6 +2750,7 @@ def company_survey_report(company_id):
 
 
 @app.route('/api/companies/<int:company_id>/committees', methods=['POST'])
+@require_role('admin')
 def save_committees(company_id):
     """Replace ALL committees (and their members) for this company's
     latest period with the posted list - same full-replace pattern as
@@ -2454,11 +2790,13 @@ def save_committees(company_id):
             ))
         db.session.add(comm)
     db.session.commit()
+    log_activity(company_id, 'committees_updated', detail=f"{len(committees_in)} committee(s) saved")
     return jsonify({'committees': [comm.to_dict() for comm in Committee.query.filter_by(
         period_id=period.id).order_by(Committee.order_index).all()]})
 
 
 @app.route('/api/survey/export/report.pdf', methods=['GET'])
+@require_role('admin', 'user')
 def export_survey_pdf():
     """Renders the same fiscal-year overview as /api/survey/overview,
     as a downloadable PDF (survey_report_pdf.py). ?fiscal_year=FY2025."""
@@ -2624,6 +2962,7 @@ def get_period_detail_view(company_id, period_label):
     })
 
 @app.route('/api/companies/<int:company_id>/periods/<period_label>/report.docx')
+@require_role('admin', 'user')
 def generate_period_report(company_id, period_label):
     """Word report for one FY, built off the same verified line items and
     calculated metrics as the rest of the app - build_report_context()
@@ -2662,6 +3001,7 @@ def _safe_filename(name):
     return ''.join(c for c in (name or 'company') if c.isalnum() or c in (' ', '_', '-')).strip() or 'company'
 
 @app.route('/api/companies/<int:company_id>/export/snapshot')
+@require_role('admin', 'user')
 def export_snapshot(company_id):
     """Single-company snapshot: one sheet, company info + all periods + KPIs."""
     company = Company.query.get_or_404(company_id)
@@ -2696,6 +3036,7 @@ def export_snapshot(company_id):
     return send_file(filepath, as_attachment=True)
 
 @app.route('/api/export/comparison')
+@require_role('admin', 'user')
 def export_comparison():
     """All companies, one sheet per company plus a summary ranking sheet."""
     companies = Company.query.order_by(Company.name).all()
@@ -2733,6 +3074,7 @@ def export_comparison():
     return send_file(filepath, as_attachment=True)
 
 @app.route('/api/export/portfolio')
+@require_role('admin', 'user')
 def export_portfolio():
     """Full watchlist: one row per company with latest KPIs, single sheet."""
     companies = Company.query.order_by(Company.name).all()
@@ -2762,6 +3104,7 @@ def export_portfolio():
     return send_file(filepath, as_attachment=True)
 
 @app.route('/api/companies/<int:company_id>/export/raw.csv')
+@require_role('admin', 'user')
 def export_raw_csv(company_id):
     """Raw underlying financials rows, CSV, for external modeling."""
     company = Company.query.get_or_404(company_id)
@@ -3275,6 +3618,23 @@ def import_jobs():
 
 with app.app_context():
     db.create_all()
+
+    # One-time seed admin, from env vars so no credential is hardcoded in
+    # source. Only fires while zero admin accounts exist - after the
+    # first login, every further admin is created from inside the app
+    # (User Management panel), not from this env var again.
+    _seed_email = os.environ.get('ADMIN_EMAIL')
+    _seed_password = os.environ.get('ADMIN_PASSWORD')
+    if _seed_email and _seed_password and not User.query.filter_by(role='admin').first():
+        _seed_email = _seed_email.strip().lower()
+        _existing = User.query.filter_by(email=_seed_email).first()
+        if _existing:
+            _existing.role = 'admin'
+        else:
+            _seed_user = User(name='Admin', email=_seed_email, role='admin')
+            _seed_user.set_password(_seed_password)
+            db.session.add(_seed_user)
+        db.session.commit()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

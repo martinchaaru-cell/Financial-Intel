@@ -786,16 +786,13 @@ tr.li-child td:first-child{color:var(--text-dim);}
           <span class="notif-badge" id="notifBadge" style="display:none;">0</span>
         </button>
         <div class="user-badge" id="userBadge" onclick="toggleUserMenu(event)">
-          <div class="user-avatar">MC</div>
+          <div class="user-avatar" id="userAvatar">G</div>
           <div class="user-meta">
-            <div class="user-name">Martin Chaaru</div>
-            <div class="user-role">Analyst</div>
+            <div class="user-name" id="userNameLabel">Guest</div>
+            <div class="user-role" id="userRoleLabel">Viewing only</div>
           </div>
           <span class="user-chevron">▾</span>
-          <div class="user-dropdown" id="userDropdown">
-            <button onclick="goTo('settings')">Settings</button>
-            <button onclick="goTo('alerts')">Alerts</button>
-          </div>
+          <div class="user-dropdown" id="userDropdown"></div>
         </div>
       </div>
     </div>
@@ -819,6 +816,43 @@ tr.li-child td:first-child{color:var(--text-dim);}
     </div>
     <button onclick="addCompany()">Add Company</button>
     <div id="add-company-error" class="error"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="loginModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Log In</h2>
+      <span class="modal-close" onclick="closeAuthModals()">✕</span>
+    </div>
+    <div class="grid">
+      <input id="login-email" type="email" placeholder="Email" autocomplete="username">
+      <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
+    </div>
+    <button onclick="submitLogin()">Log In</button>
+    <div id="login-error" class="error"></div>
+    <p style="font-size:12.5px;margin-top:12px;color:var(--text-faint);">
+      No account? <a href="#" onclick="switchToRegister(event)">Register</a>
+    </p>
+  </div>
+</div>
+
+<div class="modal-overlay" id="registerModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Create Account</h2>
+      <span class="modal-close" onclick="closeAuthModals()">✕</span>
+    </div>
+    <div class="grid">
+      <input id="register-name" placeholder="Full name">
+      <input id="register-email" type="email" placeholder="Email" autocomplete="username">
+      <input id="register-password" type="password" placeholder="Password (min 6 characters)" autocomplete="new-password">
+    </div>
+    <button onclick="submitRegister()">Create Account</button>
+    <div id="register-error" class="error"></div>
+    <p style="font-size:12.5px;margin-top:12px;color:var(--text-faint);">
+      Registered accounts can view and download. Already have one? <a href="#" onclick="switchToLogin(event)">Log in</a>
+    </p>
   </div>
 </div>
 
@@ -905,8 +939,143 @@ const METRIC_LABELS = {
 };
 const PCT_METRICS = new Set(['net_margin', 'roe', 'roa']);
 
+// ---------- AUTH ----------
+// Three-tier access, mirroring app.py's require_role: 'admin' can
+// upload/edit/delete/view/download, 'user' can view/download, and an
+// unauthenticated visitor - the default - is treated as 'guest'
+// (view only), never redirected to a login wall. currentUser is
+// populated once at boot (see the bottom of this script) from
+// GET /api/me and kept in sync on login/register/logout.
+window.currentUser = {logged_in: false, role: 'guest', name: null, email: null};
+
+async function loadCurrentUser(){
+  try {
+    const res = await fetch('/api/me');
+    window.currentUser = await res.json();
+  } catch (e) {
+    window.currentUser = {logged_in: false, role: 'guest', name: null, email: null};
+  }
+}
+
+function canEdit(){ return window.currentUser.role === 'admin'; }
+function canDownload(){ return window.currentUser.role === 'admin' || window.currentUser.role === 'user'; }
+
+function initials(name){
+  if (!name) return 'G';
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] || '') + (parts[1]?.[0] || '')).toUpperCase() || 'U';
+}
+
+function updateUserBadge(){
+  const u = window.currentUser;
+  document.getElementById('userAvatar').textContent = u.logged_in ? initials(u.name) : 'G';
+  document.getElementById('userNameLabel').textContent = u.logged_in ? u.name : 'Guest';
+  document.getElementById('userRoleLabel').textContent =
+    u.role === 'admin' ? 'Admin' : u.role === 'user' ? 'Member' : 'Viewing only';
+  const dd = document.getElementById('userDropdown');
+  if (u.logged_in) {
+    dd.innerHTML = `
+      ${u.role === 'admin' ? `<button onclick="goTo('settings')">Settings</button>` : ''}
+      <button onclick="goTo('alerts')">Alerts</button>
+      <button onclick="logout()">Log Out</button>`;
+  } else {
+    dd.innerHTML = `
+      <button onclick="openLoginModal()">Log In</button>
+      <button onclick="openRegisterModal()">Register</button>`;
+  }
+}
+
+function openLoginModal(){
+  document.getElementById('login-error').textContent = '';
+  document.getElementById('loginModal').classList.add('open');
+}
+function openRegisterModal(){
+  document.getElementById('register-error').textContent = '';
+  document.getElementById('registerModal').classList.add('open');
+}
+function closeAuthModals(){
+  document.getElementById('loginModal').classList.remove('open');
+  document.getElementById('registerModal').classList.remove('open');
+}
+function switchToRegister(e){ e.preventDefault(); closeAuthModals(); openRegisterModal(); }
+function switchToLogin(e){ e.preventDefault(); closeAuthModals(); openLoginModal(); }
+
+async function submitLogin(){
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email, password}),
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'Login failed.'; return; }
+    window.currentUser = {...data, logged_in: true};
+    closeAuthModals();
+    updateUserBadge();
+    renderNav();
+    render();
+  } catch (e) { errEl.textContent = 'Login failed - please try again.'; }
+}
+
+async function submitRegister(){
+  const name = document.getElementById('register-name').value.trim();
+  const email = document.getElementById('register-email').value.trim();
+  const password = document.getElementById('register-password').value;
+  const errEl = document.getElementById('register-error');
+  errEl.textContent = '';
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, email, password}),
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'Registration failed.'; return; }
+    window.currentUser = {...data, logged_in: true};
+    closeAuthModals();
+    updateUserBadge();
+    renderNav();
+    render();
+  } catch (e) { errEl.textContent = 'Registration failed - please try again.'; }
+}
+
+async function logout(){
+  try { await fetch('/api/logout', {method: 'POST'}); } catch (e) {}
+  window.currentUser = {logged_in: false, role: 'guest', name: null, email: null};
+  updateUserBadge();
+  if (currentPage === 'settings') currentPage = 'overview';
+  renderNav();
+  render();
+}
+
+// Buttons/panels marked data-perm="admin" or data-perm="user" (the
+// latter meaning "admin or user, not guest") are shown/hidden to match
+// the current role every time the page content changes - covers
+// dynamically-rendered buttons (delete, committee edit, field review,
+// uploads) that aren't already covered by setPageActions' own
+// filtering below. This is UI convenience only; the actual enforcement
+// is server-side (require_role in app.py) since a guest could still
+// call an API route directly.
+function applyPermGating(){
+  const role = window.currentUser.role;
+  document.querySelectorAll('[data-perm]').forEach(el => {
+    const need = el.getAttribute('data-perm');
+    const allowed = need === 'admin' ? role === 'admin' : (role === 'admin' || role === 'user');
+    el.style.display = allowed ? '' : 'none';
+  });
+}
+(function(){
+  const appEl = document.getElementById('app');
+  if (!appEl) return;
+  new MutationObserver(() => applyPermGating()).observe(appEl, {childList: true, subtree: true});
+})();
+
 function renderNav(){
-  document.getElementById('navList').innerHTML = PAGES.map(p => p.soon ? `
+  const role = window.currentUser.role;
+  const pages = PAGES.filter(p => p.id !== 'settings' || role === 'admin');
+  document.getElementById('navList').innerHTML = pages.map(p => p.soon ? `
     <button class="nav-btn disabled" title="Coming soon" onclick="return false;">
       <span class="ic">${p.icon}</span><span>${p.label}</span><span class="soon-tag">Soon</span>
     </button>` : `
@@ -1111,10 +1280,19 @@ async function render(){
 // no page-level actions) so export/upload controls live in one
 // consistent place instead of scattered panels or inline header rows.
 // items: [{label, icon, onClick, disabled}]
-function setPageActions(items){
+function setPageActions(rawItems){
   const slot = document.getElementById('pageActionsSlot');
   if (!slot) return;
-  if (!items || !items.length) { slot.innerHTML = ''; return; }
+  const role = window.currentUser.role;
+  // perm: 'admin' -> admin only (uploads/edits); 'user' -> admin or
+  // user, not guest (downloads); no perm -> everyone (plain views).
+  const items = (rawItems || []).filter(it => {
+    if (!it.perm) return true;
+    if (it.perm === 'admin') return role === 'admin';
+    if (it.perm === 'user') return role === 'admin' || role === 'user';
+    return true;
+  });
+  if (!items.length) { slot.innerHTML = ''; return; }
   slot.innerHTML = `
     <div class="page-actions">
       <button class="page-actions-btn" onclick="togglePageActionsMenu(event)">Actions ▾</button>
@@ -1156,29 +1334,31 @@ async function renderOverview(){
   // Survey Administration Dashboard - rebuilt from user's design image
   // (2026-09-12). REAL data wired in: total companies, sector breakdown
   // (derived from /api/companies), the survey company list/fiscal
-  // years (from /api/survey/companies), and (added 2026-09-13) Data
-  // Quality Overview (from /api/survey/data-quality - complete/needs-
-  // review/missing field counts, the same per-field confidence logic
-  // Survey Report's own Data Quality tab uses per company, aggregated
-  // across every company's latest survey data). Still MOCK: per-company
-  // survey STATUS (Completed/In Progress/Pending Review - no review-
-  // workflow model exists), an activity log (Recent Activities), and
-  // analyst workload (no Analyst/User model exists). Those three stay
-  // mock until their respective backend models exist - flagged in-UI.
-  const [companiesRes, surveyCompaniesRes, dataQualityRes] = await Promise.all([
-    fetch('/api/companies'), fetch('/api/survey/companies'), fetch('/api/survey/data-quality')
+  // years (from /api/survey/companies), Data Quality Overview (from
+  // /api/survey/data-quality), and (added 2026-09-16) real per-company
+  // review status/progress and a real Recent Activities feed - both
+  // now backed by ActivityLogEntry and field_review_status (see
+  // list_survey_companies/survey_activity_feed/log_activity in
+  // app.py). Still honestly unavailable: Analyst Workload - this app
+  // has no user/authentication system anywhere in its backend, so
+  // there is no real "analyst" identity to assign work to or measure;
+  // building that would mean inventing a user model and auth flow
+  // that isn't a data-mapping fix, it's a separate feature decision.
+  const [companiesRes, surveyCompaniesRes, dataQualityRes, activityRes] = await Promise.all([
+    fetch('/api/companies'), fetch('/api/survey/companies'), fetch('/api/survey/data-quality'), fetch('/api/survey/activity?limit=6')
   ]);
   const companies = await safeJson(companiesRes, []);
   const surveyCompanies = await safeJson(surveyCompaniesRes, []);
   const dataQuality = await safeJson(dataQualityRes, {has_data: false});
+  const recentActivity = await safeJson(activityRes, []);
   const app = document.getElementById('app');
 
   const sub = document.getElementById('pageSub');
   if (sub) sub.textContent = 'Track survey progress, manage companies, monitor data quality and oversee analyst activities.';
 
   setPageActions([
-    {label: 'Export Portfolio (.xlsx)', icon: '⭳', onClick: "window.location.href='/api/export/portfolio'"},
-    {label: 'Upload Annual Reports', icon: '⭱', onClick: 'openUploadReportsModal()'},
+    {label: 'Export Portfolio (.xlsx)', icon: '⭳', perm: 'user', onClick: "window.location.href='/api/export/portfolio'"},
+    {label: 'Upload Annual Reports', icon: '⭱', perm: 'admin', onClick: 'openUploadReportsModal()'},
   ]);
 
   const totalCompanies = companies.length;
@@ -1210,39 +1390,62 @@ async function renderOverview(){
       <span class="pct">${totalCompanies ? Math.round(count/totalCompanies*100) : 0}%</span>
     </div>`).join('');
 
-  // ---- MOCK: per-company survey status (no review-workflow model yet) ----
-  const MOCK_STATUSES = ['completed','in-progress','pending','completed','in-progress','pending','completed'];
-  const MOCK_PROGRESS = [100,100,72,68,58,49,62];
-  const mockCompanyRows = companies.slice(0, 8).map((c, i) => {
-    const status = MOCK_STATUSES[i % MOCK_STATUSES.length];
-    const progress = MOCK_PROGRESS[i % MOCK_PROGRESS.length];
-    const statusLabel = status === 'completed' ? 'Completed' : status === 'in-progress' ? 'In Progress' : 'Pending Review';
-    const barColor = status === 'completed' ? 'var(--green)' : status === 'in-progress' ? 'var(--blue)' : 'var(--amber)';
+  // ---- REAL (2026-09-16): per-company review status/progress, from
+  // /api/survey/companies - see that route's own docstring for exactly
+  // how "Completed"/"In Progress"/"Pending Review" and the progress %
+  // are derived from field_review_status vs field_confidence. ----
+  const surveyByCompanyId = {};
+  surveyCompanies.forEach(sc => { surveyByCompanyId[sc.company_id] = sc; });
+  const companyRows = companies.slice(0, 8).map(c => {
+    const sc = surveyByCompanyId[c.id];
+    if (!sc) {
+      return `
+        <tr class="clickable" onclick="goToIntelligenceReport(${c.id})">
+          <td>${escapeHtml(c.name)}</td>
+          <td>${escapeHtml(c.sector || '-')}</td>
+          <td><span class="ov-status-pill pending">No Survey Data</span></td>
+          <td style="color:var(--text-faint);font-size:11.5px;">${naSpan('\u2014')}</td>
+          <td><span class="ov-mini-bar-track"><span class="ov-mini-bar-fill" style="width:0%;background:var(--text-faint);"></span></span>0%</td>
+        </tr>`;
+    }
+    const statusLabel = sc.review_status === 'completed' ? 'Completed' : sc.review_status === 'in-progress' ? 'In Progress' : 'Pending Review';
+    const barColor = sc.review_status === 'completed' ? 'var(--green)' : sc.review_status === 'in-progress' ? 'var(--blue)' : 'var(--amber)';
+    const lastUpdated = sc.last_updated ? new Date(sc.last_updated).toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'}) : naSpan('\u2014');
     return `
       <tr class="clickable" onclick="goToIntelligenceReport(${c.id})">
         <td>${escapeHtml(c.name)}</td>
         <td>${escapeHtml(c.sector || '-')}</td>
-        <td><span class="ov-status-pill ${status}">${statusLabel}</span></td>
-        <td style="color:var(--text-faint);font-size:11.5px;">Mock date</td>
-        <td><span class="ov-mini-bar-track"><span class="ov-mini-bar-fill" style="width:${progress}%;background:${barColor};"></span></span>${progress}%</td>
+        <td><span class="ov-status-pill ${sc.review_status}">${statusLabel}</span></td>
+        <td style="color:var(--text-faint);font-size:11.5px;">${lastUpdated}</td>
+        <td><span class="ov-mini-bar-track"><span class="ov-mini-bar-fill" style="width:${sc.review_progress_pct}%;background:${barColor};"></span></span>${sc.review_progress_pct}%</td>
       </tr>`;
   }).join('');
 
-  // ---- MOCK: activity feed (no activity-log model yet) ----
-  const MOCK_ACTIVITY = [
-    {icon:'✅', color:'green', label:'Survey marked completed', meta:'Mock analyst'},
-    {icon:'🛡️', color:'blue', label:'Data validated', meta:'Mock analyst'},
-    {icon:'⚠️', color:'red', label:'Flagged for manual review', meta:'Mock analyst'},
-    {icon:'✏️', color:'blue', label:'Survey data updated', meta:'Mock analyst'},
-  ];
-  const activityItems = MOCK_ACTIVITY.map(a => `
-    <div class="ov-activity-item">
-      <div class="ov-activity-icon" style="background:var(--${a.color}-soft);color:var(--${a.color});">${a.icon}</div>
-      <div>
-        <div class="ov-activity-label">${escapeHtml(a.label)}</div>
-        <div class="ov-activity-meta">By ${escapeHtml(a.meta)}</div>
-      </div>
-    </div>`).join('');
+  // ---- REAL (2026-09-16): activity feed, from /api/survey/activity
+  // (ActivityLogEntry, written by log_activity() at the actual write
+  // paths - survey import, PDF extraction, field review, committees
+  // saved). actor is shown only when the caller supplied one - this
+  // app has no login system, so most entries won't have one, and
+  // that's shown honestly rather than papered over with a fake name. ----
+  const activityIconMap = {
+    survey_uploaded: ['📤','blue'], survey_updated: ['✏️','blue'], survey_pdf_extracted: ['📄','blue'],
+    field_approved: ['✅','green'], field_rejected: ['⚠️','red'], field_corrected: ['✏️','amber'],
+    committees_updated: ['🛡️','blue'],
+  };
+  const activityItems = recentActivity.map(a => {
+    const [icon, color] = activityIconMap[a.action] || ['•','blue'];
+    const label = a.detail || a.action.replace(/_/g, ' ');
+    const company = companies.find(c => c.id === a.company_id);
+    const when = a.created_at ? new Date(a.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '';
+    return `
+      <div class="ov-activity-item">
+        <div class="ov-activity-icon" style="background:var(--${color}-soft);color:var(--${color});">${icon}</div>
+        <div>
+          <div class="ov-activity-label">${escapeHtml(label)}${company ? ' \u2014 ' + escapeHtml(company.name) : ''}</div>
+          <div class="ov-activity-meta">${a.actor ? 'By ' + escapeHtml(a.actor) : naSpan('No actor recorded')}${when ? ' · ' + when : ''}</div>
+        </div>
+      </div>`;
+  }).join('');
 
   // ---- REAL (2026-09-13): data quality, from /api/survey/data-quality
   // (build_portfolio_data_quality() in survey_aggregate.py) - complete/
@@ -1251,14 +1454,6 @@ async function renderOverview(){
   // Report's Data Quality tab applies to one company at a time. ----
   const dq = {complete: dataQuality.complete || 0, missing: dataQuality.missing || 0, partial: dataQuality.needs_review || 0};
   const dqTotal = dataQuality.total_fields || 0;
-
-  // ---- MOCK: analyst workload (no Analyst/User model yet) ----
-  const MOCK_ANALYSTS = [
-    {name:'Jane Wanjiru', assigned:20, completed:16},
-    {name:'Michael Otieno', assigned:18, completed:14},
-    {name:'Grace Njeri', assigned:15, completed:12},
-    {name:'Daniel Kamau', assigned:12, completed:8},
-  ];
 
   const timelineSteps = [
     {icon:'🏢', title:'1. Company Setup', count: totalCompanies},
@@ -1316,20 +1511,19 @@ async function renderOverview(){
 
       <div class="panel">
         <div class="ov-panel-head"><h2>Company Survey Status</h2></div>
-        ${mockCompanyRows ? `
+        ${companyRows ? `
         <table>
           <thead><tr><th>Company</th><th>Sector</th><th>Status</th><th>Last Updated</th><th>Progress</th></tr></thead>
-          <tbody>${mockCompanyRows}</tbody>
+          <tbody>${companyRows}</tbody>
         </table>
-        <div style="margin-top:10px;font-size:10.5px;color:var(--text-faint);">Status/progress shown here are placeholder values — no survey review-status data exists yet.</div>
+        <div style="margin-top:10px;font-size:10.5px;color:var(--text-faint);">Status reflects field-level review activity on each company's latest survey data (see the Data Quality tab for full detail).</div>
         <span class="ov-panel-link" onclick="goTo('companies')" style="display:inline-block;margin-top:8px;">View all companies &rarr;</span>
         ` : `<div class="empty">No companies on file yet.</div>`}
       </div>
 
       <div class="panel">
-        <div class="ov-panel-head"><h2>Recent Activities</h2><span class="ov-panel-link">View all &rarr;</span></div>
-        ${activityItems}
-        <div style="margin-top:8px;font-size:10.5px;color:var(--text-faint);">Placeholder activity — no activity log exists yet.</div>
+        <div class="ov-panel-head"><h2>Recent Activities</h2></div>
+        ${activityItems || `<div class="empty">No recorded activity yet \u2014 uploading survey data or reviewing a field will appear here.</div>`}
       </div>
     </div>
 
@@ -1362,17 +1556,8 @@ async function renderOverview(){
       </div>
 
       <div class="panel">
-        <div class="ov-panel-head"><h2>Analyst Workload</h2><span class="ov-panel-link">View team &rarr;</span></div>
-        <div class="ov-workload-row" style="font-size:10.5px;color:var(--text-faint);font-weight:600;border-bottom:1px solid var(--border);">
-          <div>Analyst</div><div>Assigned</div><div>Completed</div>
-        </div>
-        ${MOCK_ANALYSTS.map(a => `
-          <div class="ov-workload-row">
-            <div class="ov-analyst-name"><span class="ov-analyst-avatar">${a.name.split(' ').map(w=>w[0]).join('')}</span>${escapeHtml(a.name)}</div>
-            <div>${a.assigned}</div>
-            <div>${a.completed}</div>
-          </div>`).join('')}
-        <div style="margin-top:8px;font-size:10.5px;color:var(--text-faint);">Placeholder analysts — no Analyst/User model exists yet.</div>
+        <div class="ov-panel-head"><h2>Analyst Workload</h2></div>
+        <div class="empty">${naSpan('This app has no user or authentication system, so there is no real analyst identity to assign work to or measure completion against \u2014 adding this would mean building a user/login system first, not a data-mapping fix')}</div>
       </div>
 
       <div class="panel">
@@ -1693,8 +1878,8 @@ async function renderCompaniesPage(filterText){
   if (filterText !== undefined) coFilterText = filterText || '';
   coPage = 1;
   setPageActions([
-    {label: 'Export Portfolio (.xlsx)', icon: '⭳', onClick: "window.location.href='/api/export/portfolio'"},
-    {label: 'Upload Annual Reports', icon: '⭱', onClick: 'openUploadReportsModal()'},
+    {label: 'Export Portfolio (.xlsx)', icon: '⭳', perm: 'user', onClick: "window.location.href='/api/export/portfolio'"},
+    {label: 'Upload Annual Reports', icon: '⭱', perm: 'admin', onClick: 'openUploadReportsModal()'},
   ]);
   renderCompaniesTable(coFilterText);
 }
@@ -1760,7 +1945,7 @@ function renderCompaniesTable(filterText){
   if (allCompaniesCache.length === 0) {
     app.innerHTML = `<div class="panel"><div class="empty">No companies yet.
       Upload a financial statement PDF, or
-      <button class="btn-primary-cta" style="margin:0 6px;" onclick="openAddCompanyModal()">+ Add Company</button>
+      <button class="btn-primary-cta" data-perm="admin" style="margin:0 6px;" onclick="openAddCompanyModal()">+ Add Company</button>
       to enter one manually.</div></div>`;
     return;
   }
@@ -1842,7 +2027,7 @@ function renderCompaniesTable(filterText){
             </label>`).join('')}
         </div>
       </div>
-      <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
+      <button class="btn-primary-cta" data-perm="admin" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
     </div>`;
 
   if (companies.length === 0) {
@@ -2520,7 +2705,7 @@ async function renderSurveyReportPage(){
   const allCompanies = await safeJson(await fetch('/api/companies'), []);
 
   setPageActions([
-    {label: 'Export Company Report', icon: '⭳', disabled: !data.has_survey_data,
+    {label: 'Export Company Report', icon: '⭳', perm: 'user', disabled: !data.has_survey_data,
       onClick: `window.location.href='/api/companies/${srCompanyId}/export/snapshot'`},
     {label: 'View Source Documents', icon: '📄', onClick: `switchSRTab('evidence')`},
   ]);
@@ -3164,19 +3349,19 @@ function srCommitteesTab(data){
     <div class="panel" style="margin-bottom:14px;">
       <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Edit Board Committees</h2>
         <span>
-          <button class="secondary" onclick="srAddCommitteeRow()">+ Add Committee</button>
+          <button class="secondary" data-perm="admin" onclick="srAddCommitteeRow()">+ Add Committee</button>
           <button class="secondary" onclick="srCommitteesEditMode=false;renderSRTabBody();">Done Editing</button>
         </span>
       </div>
       ${!committees.length && !srEditableCommittees.length ? `<div class="empty">${naSpan('No committee data has been added for this company yet \u2014 use "+ Add Committee" to start recording committee structure')}</div>` : ''}
       <div id="srCommitteeList">${srRenderCommitteeRows()}</div>
-      ${srEditableCommittees.length ? `<button class="btn-primary-cta" style="margin-top:12px;" onclick="srSaveCommittees()">Save Committees</button>` : ''}
+      ${srEditableCommittees.length ? `<button class="btn-primary-cta" data-perm="admin" style="margin-top:12px;" onclick="srSaveCommittees()">Save Committees</button>` : ''}
     </div>`;
 }
 function srCommitteesReadView(committees){
   if (!committees.length) {
     return `<div class="panel"><div class="empty">${naSpan('No committee data has been added for this company yet')}</div>
-      <button class="secondary" style="margin-top:10px;" onclick="srCommitteesEditMode=true;renderSRTabBody();">+ Add Committee</button></div>`;
+      <button class="secondary" data-perm="admin" style="margin-top:10px;" onclick="srCommitteesEditMode=true;renderSRTabBody();">+ Add Committee</button></div>`;
   }
   const totalCommittees = committees.length;
   const totalMembers = committees.reduce((sum, c) => sum + (c.members ? c.members.length : (c.member_count || 0)), 0);
@@ -3196,7 +3381,7 @@ function srCommitteesReadView(committees){
     </div>
     <div class="panel" style="margin-bottom:14px;">
       <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Committee Structure</h2>
-        <button class="secondary" onclick="srCommitteesEditMode=true;renderSRTabBody();">Edit Committees</button>
+        <button class="secondary" data-perm="admin" onclick="srCommitteesEditMode=true;renderSRTabBody();">Edit Committees</button>
       </div>
       <table><thead><tr><th>Committee</th><th>Chairperson</th><th>Members</th><th>Meetings Held</th><th>Attendance Rate</th><th>Source Page</th><th>Confidence</th></tr></thead><tbody>
         ${committees.map(c => `
@@ -3239,8 +3424,8 @@ function srRenderCommitteeRows(){
             <option value="chair" ${m.role_on_committee === 'chair' ? 'selected' : ''}>Chair</option>
           </select>
         </div>`).join('')}
-      <button class="secondary" onclick="srEditableCommittees[${i}].members=srEditableCommittees[${i}].members||[];srEditableCommittees[${i}].members.push({director_name:'',role_on_committee:'member'});renderSRTabBody();">+ Add Member</button>
-      <button class="secondary" style="margin-left:8px;color:var(--red);" onclick="srEditableCommittees.splice(${i},1);renderSRTabBody();">Remove Committee</button>
+      <button class="secondary" data-perm="admin" onclick="srEditableCommittees[${i}].members=srEditableCommittees[${i}].members||[];srEditableCommittees[${i}].members.push({director_name:'',role_on_committee:'member'});renderSRTabBody();">+ Add Member</button>
+      <button class="secondary" data-perm="admin" style="margin-left:8px;color:var(--red);" onclick="srEditableCommittees.splice(${i},1);renderSRTabBody();">Remove Committee</button>
     </div>`).join('');
 }
 function srAddCommitteeRow(){
@@ -5407,7 +5592,7 @@ async function renderSurveyPage(){
   );
 
   app.innerHTML = `
-    <div class="panel" style="margin-bottom:14px;">
+    <div class="panel" data-perm="admin" style="margin-bottom:14px;">
       <div class="panel-head"><h2>Add Company Data</h2></div>
       <p style="color:var(--text-dim);font-size:12.5px;margin:0 0 12px;">
         Upload one Survey Data file per company (see SURVEY_FORMAT_SPEC.md). Every figure on this
@@ -5835,7 +6020,7 @@ async function showSurveyCompanyDetail(companyId, fiscalYear){
         </div>` : ''}
 
       <div style="margin-top:12px;">
-        <button class="secondary" style="color:var(--red);" onclick="deleteSurveyCompanyData(${companyId}, '${escapeHtml(fiscalYear)}')">Remove this company from the survey</button>
+        <button class="secondary" data-perm="admin" style="color:var(--red);" onclick="deleteSurveyCompanyData(${companyId}, '${escapeHtml(fiscalYear)}')">Remove this company from the survey</button>
       </div>
     </div>
   `;
@@ -5985,8 +6170,8 @@ function renderMappingTab(sd, opts){
         <td>${confBadge}</td>
         <td>${statusBadge(r.status)}</td>
         <td>
-          ${hasConfidence && r.status !== 'mapped' ? `<button onclick="${onApprove}('${r.field}')" style="font-size:11px;padding:3px 8px;margin-right:4px;">Approve</button>` : ''}
-          ${hasConfidence ? `<button onclick="${onCorrect}('${r.field}', ${JSON.stringify(String(r.value ?? '')).replace(/"/g, '&quot;')})" style="font-size:11px;padding:3px 8px;">Edit</button>` : ''}
+          ${hasConfidence && r.status !== 'mapped' ? `<button data-perm="admin" onclick="${onApprove}('${r.field}')" style="font-size:11px;padding:3px 8px;margin-right:4px;">Approve</button>` : ''}
+          ${hasConfidence ? `<button data-perm="admin" onclick="${onCorrect}('${r.field}', ${JSON.stringify(String(r.value ?? '')).replace(/"/g, '&quot;')})" style="font-size:11px;padding:3px 8px;">Edit</button>` : ''}
         </td>
       </tr>`;
   }).join('');
@@ -6053,6 +6238,10 @@ function renderMappingTab(sd, opts){
 
 async function renderSettingsPage(){
   const app = document.getElementById('app');
+  if (window.currentUser.role !== 'admin') {
+    app.innerHTML = `<div class="panel"><div class="empty">Settings is only available to admin accounts.</div></div>`;
+    return;
+  }
   const res = await fetch('/api/system/status');
   const status = await res.json();
 
@@ -6085,7 +6274,112 @@ async function renderSettingsPage(){
       </div>
     </div>
     ${manageRows}
+    <div class="panel" id="userManagementPanel">
+      <div class="panel-head"><h2>User Management</h2></div>
+      <div id="userManagementBody"><div class="empty">Loading...</div></div>
+    </div>
   `;
+  await renderUserManagementPanel();
+}
+
+// ---------- User Management (Settings, admin only - the route itself
+// is also require_role('admin')-gated in app.py, so this panel never
+// even loads for a non-admin who reaches this far) ----------
+let umUsers = [];
+async function renderUserManagementPanel(){
+  const body = document.getElementById('userManagementBody');
+  try {
+    const res = await fetch('/api/users');
+    umUsers = await safeJson(res, []);
+  } catch (e) { umUsers = []; }
+
+  const rows = umUsers.map(u => `
+    <div class="data-summary-row">
+      <div class="ds-label">
+        <span class="ds-icon">${u.role === 'admin' ? '🛡️' : '👤'}</span>
+        ${escapeHtml(u.name)} <span style="color:var(--text-faint);">— ${escapeHtml(u.email)}</span>
+        ${u.id === window.currentUser.id ? ' <span style="color:var(--text-faint);">(you)</span>' : ''}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <select onchange="umChangeRole(${u.id}, this.value)" style="font-size:11.5px;padding:3px 6px;">
+          <option value="user" ${u.role==='user'?'selected':''}>User</option>
+          <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+        </select>
+        <button class="secondary" style="font-size:11.5px;padding:3px 8px;" onclick="umResetPassword(${u.id}, '${escapeHtml(u.name).replace(/'/g, "\\'")}')">Reset Password</button>
+        <button class="secondary" style="font-size:11.5px;padding:3px 8px;color:var(--red);" onclick="umDeleteUser(${u.id}, '${escapeHtml(u.name).replace(/'/g, "\\'")}')">Delete</button>
+      </div>
+    </div>`).join('');
+
+  body.innerHTML = `
+    ${rows || '<div class="empty">No accounts yet.</div>'}
+    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+      <div style="font-weight:700;font-size:12.5px;margin-bottom:10px;">Create Account</div>
+      <div class="grid" style="margin-bottom:10px;">
+        <input id="um-name" placeholder="Full name">
+        <input id="um-email" type="email" placeholder="Email">
+        <input id="um-password" type="password" placeholder="Password (min 6 characters)">
+        <select id="um-role" style="padding:8px;">
+          <option value="user">User</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <button onclick="umCreateUser()">Create Account</button>
+      <div id="um-error" class="error"></div>
+    </div>`;
+}
+
+async function umChangeRole(userId, role){
+  try {
+    const res = await fetch(`/api/users/${userId}/role`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({role}),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Could not update role.'); }
+    await renderUserManagementPanel();
+  } catch (e) { alert('Could not update role.'); await renderUserManagementPanel(); }
+}
+
+async function umResetPassword(userId, name){
+  const password = prompt(`New password for ${name} (min 6 characters):`);
+  if (!password) return;
+  try {
+    const res = await fetch(`/api/users/${userId}/reset-password`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password}),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Could not reset password.'); return; }
+    alert(`Password reset for ${name}.`);
+  } catch (e) { alert('Could not reset password.'); }
+}
+
+async function umDeleteUser(userId, name){
+  if (!confirm(`Delete the account for ${name}? This can't be undone.`)) return;
+  try {
+    const res = await fetch(`/api/users/${userId}`, {method: 'DELETE'});
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Could not delete account.'); return; }
+    await renderUserManagementPanel();
+  } catch (e) { alert('Could not delete account.'); }
+}
+
+async function umCreateUser(){
+  const name = document.getElementById('um-name').value.trim();
+  const email = document.getElementById('um-email').value.trim();
+  const password = document.getElementById('um-password').value;
+  const role = document.getElementById('um-role').value;
+  const errEl = document.getElementById('um-error');
+  errEl.textContent = '';
+  try {
+    const res = await fetch('/api/users', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, email, password, role}),
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'Could not create account.'; return; }
+    await renderUserManagementPanel();
+  } catch (e) { errEl.textContent = 'Could not create account.'; }
 }
 
 async function renderCompanyDetail(companyId){
@@ -6137,14 +6431,14 @@ async function renderCompanyOverviewTab(companyId){
   const cNameEsc = escapeHtml(c.name).replace(/'/g, "\\'");
   const hasPeriod = !!currentPeriodLabel;
   setPageActions([
-    {label: 'Upload Documents', icon: '⭱', onClick: `openUploadReportsModal(${companyId}, '${cNameEsc}')`},
-    {label: 'Add / Edit Data', icon: '✏️', onClick: 'toggleEditDataPanel()'},
-    {label: 'Full FY Report (.docx)', icon: '📄', disabled: !hasPeriod,
+    {label: 'Upload Documents', icon: '⭱', perm: 'admin', onClick: `openUploadReportsModal(${companyId}, '${cNameEsc}')`},
+    {label: 'Add / Edit Data', icon: '✏️', perm: 'admin', onClick: 'toggleEditDataPanel()'},
+    {label: 'Full FY Report (.docx)', icon: '📄', perm: 'user', disabled: !hasPeriod,
       onClick: `window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(currentPeriodLabel || '')}/report.docx'`},
-    {label: 'Company Snapshot (.xlsx)', icon: '📊', onClick: `window.location.href='/api/companies/${companyId}/export/snapshot'`},
-    {label: 'Raw Financials (.csv)', icon: '🗂️', onClick: `window.location.href='/api/companies/${companyId}/export/raw.csv'`},
-    {label: 'Portfolio Export (.xlsx)', icon: '📁', onClick: "window.location.href='/api/export/portfolio'"},
-    {label: 'Comparison Report (.xlsx)', icon: '📁', onClick: "window.location.href='/api/export/comparison'"},
+    {label: 'Company Snapshot (.xlsx)', icon: '📊', perm: 'user', onClick: `window.location.href='/api/companies/${companyId}/export/snapshot'`},
+    {label: 'Raw Financials (.csv)', icon: '🗂️', perm: 'user', onClick: `window.location.href='/api/companies/${companyId}/export/raw.csv'`},
+    {label: 'Portfolio Export (.xlsx)', icon: '📁', perm: 'user', onClick: "window.location.href='/api/export/portfolio'"},
+    {label: 'Comparison Report (.xlsx)', icon: '📁', perm: 'user', onClick: "window.location.href='/api/export/comparison'"},
   ]);
 
   if (!currentPeriodsCache.length) {
@@ -6152,7 +6446,7 @@ async function renderCompanyOverviewTab(companyId){
       <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
       <div class="panel">
         <div class="empty">No financial periods recorded yet for ${escapeHtml(c.name)}.</div>
-        <button style="margin-top:10px;" onclick="openUploadReportsModal(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">⭱ Upload Documents</button>
+        <button style="margin-top:10px;" data-perm="admin" onclick="openUploadReportsModal(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">⭱ Upload Documents</button>
       </div>
       ${await renderCompanyDetailLegacyBody(companyId)}`;
     return;
@@ -6195,7 +6489,7 @@ async function renderCompanyOverviewTab(companyId){
           <div class="fy-label">Currency</div>
           <div style="font-size:15px;font-weight:700;">${escapeHtml((dv && dv.period && dv.period.currency) || 'KES')}</div>
         </div>
-        <button class="icon-btn" title="Delete company" onclick="deleteCurrentCompany()">🗑️</button>
+        <button class="icon-btn" data-perm="admin" title="Delete company" onclick="deleteCurrentCompany()">🗑️</button>
         <button class="btn-primary-cta" style="margin:0;" onclick="goToIntelligenceReport(${companyId})">📊 Intelligence Report</button>
       </div>
     </div>`;
@@ -6369,12 +6663,12 @@ async function renderIntelligenceReport(companyId, opts){
         ${companyPicker}
         ${yearSelect}
         ${standalone ? '' : `<button class="secondary" onclick="goToCompany(${companyId})">&larr; Back to Company</button>`}
-        <button class="danger" onclick="deleteCompany(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
+        <button class="danger" data-perm="admin" onclick="deleteCompany(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
       </div>
     </div>`;
 
   setPageActions([
-    {label: 'Export Report (.xlsx)', icon: '⭱', disabled: !ir.has_data,
+    {label: 'Export Report (.xlsx)', icon: '⭱', perm: 'user', disabled: !ir.has_data,
       onClick: `window.location.href='/api/companies/${companyId}/export/snapshot'`},
   ]);
 
@@ -7182,7 +7476,11 @@ function irOutlookTab(ir){
 function irSourceEvidenceTab(ir){
   const docs = ir.source_documents || [];
   const jobs = ir.import_jobs || [];
-  const successJobs = jobs.filter(j => j.status === 'success' || j.status === 'completed').length;
+  // Backend ImportJob.status is only ever 'pending', 'parsed',
+  // 'reviewed', 'saved', or 'failed' (models.py) - checking for
+  // 'success'/'completed' here matched nothing, so this always showed 0
+  // even with every import genuinely saved.
+  const successJobs = jobs.filter(j => j.status === 'saved').length;
   const topCards = [
     {label: 'Source Documents', value: String(docs.length), color: 'blue', icon: '📄'},
     {label: 'Periods on Record', value: String((ir.available_periods || []).length), color: 'green', icon: '📅'},
@@ -7551,8 +7849,15 @@ function fmtAmount(val){
 }
 function fmtMoney(val){
   if (val === null || val === undefined) return '-';
-  if (Math.abs(val) >= 1000) return (val/1000).toFixed(1) + 'T';
-  return Number(val).toFixed(1) + 'B';
+  // Input here is always c.latest.revenue/net_income - already stored in
+  // MILLIONS (same convention as every PDF's own "Shs' millions"
+  // columns, and the same unit Financials always stores in - see the
+  // backfill comment in app.py's PDF import route). Millions in,
+  // correct-scale label out.
+  const abs = Math.abs(val);
+  if (abs >= 1000000) return (val / 1000000).toFixed(1) + 'T';
+  if (abs >= 1000) return (val / 1000).toFixed(1) + 'B';
+  return Number(val).toFixed(1) + 'M';
 }
 function timeAgo(isoString){
   if (!isoString) return '';
@@ -7587,9 +7892,13 @@ function escapeHtml(str){
   return div.innerHTML;
 }
 
-renderNav();
-render();
-refreshNotifBadge();
+(async function boot(){
+  await loadCurrentUser();
+  updateUserBadge();
+  renderNav();
+  render();
+  refreshNotifBadge();
+})();
 
 // ---- live updates (SSE) ----
 // One persistent connection to the backend. The moment a filing is

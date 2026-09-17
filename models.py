@@ -24,8 +24,43 @@ Design principles:
 
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
 db = SQLAlchemy()
+
+
+# ---------- USER / AUTH ----------
+# Three roles: 'admin' (upload/edit/delete/view/download), 'user'
+# (view/download only), and an implicit fourth state - not logged in at
+# all - treated as 'guest' (view only) throughout app.py. Guests never get
+# a row here; there is no guest account, just the absence of a session.
+# Password is never stored in plaintext - only a salted hash
+# (werkzeug's generate_password_hash, PBKDF2 by default).
+
+class User(db.Model):
+    # The database already contains a legacy `users` table from the earlier
+    # application (`id`, `username`, `password`). Keep that table untouched
+    # and store the current email/role-based accounts separately.
+    __tablename__ = 'app_users'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    email = db.Column(db.String(150), nullable=False, unique=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default='user')  # 'admin' | 'user'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'name': self.name, 'email': self.email,
+            'role': self.role,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 # ---------- COMPANY (unchanged shape, just imported into this module) ----------

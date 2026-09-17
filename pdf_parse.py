@@ -30,7 +30,13 @@ except ImportError:  # pragma: no cover - pypdf is in requirements.txt
 
 STATEMENT_HEADINGS = {
     'income_statement': [
-        r"statement\s+of\s+comprehensive\s+income",
+        # (?:other\s+)? - a real filing (Equity Group Holdings 2024)
+        # reports OCI as its OWN standalone statement immediately after
+        # profit-or-loss, headed "Consolidated statement of OTHER
+        # comprehensive income" - without this, that heading matched
+        # nothing and its lines fell through to whatever bucket the
+        # previous statement left current_stmt pointed at.
+        r"statement\s+of\s+(?:other\s+)?comprehensive\s+income",
         r"statement\s+of\s+profit\s+or\s+loss",
         r"income\s+statement",
     ],
@@ -91,7 +97,11 @@ _SECTION_STOP_RES = [
 # the same short-line heading guard as _SECTION_STOP_HEADING_RES so a
 # numbered list item deep inside ordinary body prose (rare, but possible)
 # doesn't trip it.
-_NUMBERED_NOTE_HEADING_RE = re.compile(r"^\s*\d{1,2}\.\s+[A-Z]")
+# \.? (not \.) - a real filing (Equity Group Holdings 2024) numbers its
+# first note "1 Corporate information", no period after the digit at all,
+# alongside others that do use one ("2. Material accounting policies") -
+# both forms seen in practice, so the period is optional not required.
+_NUMBERED_NOTE_HEADING_RE = re.compile(r"^\s*\d{1,2}\.?\s+[A-Z]")
 
 
 def _is_numbered_note_heading(line: str) -> bool:
@@ -404,6 +414,29 @@ _HEADING_BAD_ENDINGS = {
 }
 
 def _dedupe_word(word: str):
+    result = _dedupe_word_pairs(word)
+    if result is not None:
+        return result
+    # A bold-rendered 'fi'/'fl' LIGATURE glyph (a single character in the
+    # PDF's font) doubled by this same bold-rendering trick produces the
+    # literal 4 characters "fifi"/"flfl" (the ligature's decomposed text
+    # typed twice) rather than the expected paired doubling "ffii"/"ffll"
+    # every ordinary character produces - confirmed on a real filing
+    # (Equity Group Holdings' 2024 Integrated Report): "financial" in a
+    # bold heading came through as "fifinnaanncciiaall", not
+    # "ffiinnaanncciiaall", which silently failed the even/odd-index
+    # check below and broke heading detection for EVERY heading
+    # containing a ligature word (financial position, profit or loss,
+    # cash flows) - only "equity" (no ligature) survived, so every other
+    # statement's line items were wrongly absorbed into the equity
+    # section. Normalize the ligature artifact back to ordinary paired
+    # doubling and retry once before giving up.
+    normalized = word.replace('fifi', 'ffii').replace('flfl', 'ffll')
+    if normalized != word:
+        return _dedupe_word_pairs(normalized)
+    return None
+
+def _dedupe_word_pairs(word: str):
     if len(word) < 2 or len(word) % 2 != 0:
         return None
     even, odd = word[0::2], word[1::2]
@@ -422,7 +455,15 @@ def _dedupe_char_doubled(line: str):
     is never mistaken for one."""
     words = line.split(' ')
     alpha_words = [w for w in words if any(ch.isalpha() for ch in w)]
-    if len(alpha_words) < 2:
+    # Was `< 2` - blocked a genuine single-word doubled heading ("NNootteess"
+    # for "Notes") from ever deduping, which meant the notes-section stop
+    # condition never recognized it, and extraction ran away into every
+    # numbered note afterward (confirmed on Equity Group Holdings' 2024
+    # filing - cash_flow ballooned to 600 line items, most of them notes
+    # prose). The per-word pairwise-equality check below is already strict
+    # enough on its own that a real ordinary single word essentially never
+    # satisfies it by accident.
+    if len(alpha_words) < 1:
         return None
     deduped, hits = [], 0
     for w in words:
@@ -436,7 +477,12 @@ def _dedupe_char_doubled(line: str):
     if hits < len(alpha_words) - 1:
         return None
     result = ' '.join(deduped)
-    if sum(1 for ch in result if ch.isalpha()) < 8:
+    # Was `< 8` - blocked a real single-word doubled heading ("NNootteess"
+    # -> "Notes", 5 letters) from ever qualifying, which is what broke
+    # the notes-section stop detection above. Lowered to 4: still rejects
+    # a coincidental short-word accident ("AANNDD" -> "And", 3 letters)
+    # while accepting genuine short section headings.
+    if sum(1 for ch in result if ch.isalpha()) < 4:
         return None
     return result
 
@@ -587,11 +633,23 @@ _PERIOD_END_RES = [
     # also match "...for the year ended..." twice.
     re.compile(rf"^\s*year\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
     re.compile(rf"^\s*period\s+ended\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})", re.IGNORECASE),
-    # Balance-sheet-style "AT 31 DECEMBER 2022" heading - anchored to the
-    # WHOLE line (not just "ends with", which .search() doesn't enforce on
-    # its own) so it can't match "...at 2022" buried inside a wrapped
-    # narrative paragraph elsewhere in the report.
-    re.compile(rf"^at\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})$", re.IGNORECASE),
+    # Balance-sheet-style "AT 31 DECEMBER 2022" heading. Anchored to the
+    # START of the line (so it can't match "...at 2022" buried inside a
+    # wrapped narrative paragraph elsewhere in the report) but NOT to the
+    # end - a real bug found on Equity Group Holdings' 2024 Integrated
+    # Report: the current-year column header often continues on the same
+    # line with unit labels ("At 31 December 2024 Shs' millions Shs'
+    # millions...") while the prior-year header repeats bare ("At 31
+    # December 2023") since the units were already stated once. The old
+    # end-of-line ($) anchor matched the bare prior-year line but NOT the
+    # current-year line carrying trailing units, systematically
+    # under-counting the actual current year and causing detect_period_label
+    # to pick the prior year instead. What still guards against a real
+    # narrative match (a sentence like "At 31 December 2022 the Group's
+    # liquidity position was..." wrapped onto its own line) is checked in
+    # detect_period_label itself: a genuine table header's trailing text
+    # is never a lowercase word or a comma.
+    re.compile(rf"^at\s+\d{{1,2}}\s+{_MONTHS}\s+(\d{{4}})(?P<trailing>.*)$", re.IGNORECASE),
 ]
 # Fallback: the report's own running header, e.g. "... INTEGRATED REPORT AND
 # FINANCIAL STATEMENTS 2022" repeated on nearly every page - a much weaker
@@ -657,6 +715,17 @@ def detect_period_label(pages_text, filename: str | None = None) -> str | None:
             for rx in _PERIOD_END_RES:
                 m = rx.search(line)
                 if m:
+                    trailing = m.groupdict().get('trailing')
+                    if trailing:
+                        stripped = trailing.strip()
+                        # Reject a genuine narrative continuation wrapped
+                        # onto this line ("At 31 December 2022 the Group's
+                        # liquidity..." / "At 31 December 2022, the..."),
+                        # which a real table/column header never looks
+                        # like - a table header's trailing text is unit
+                        # labels, currency symbols, or nothing at all.
+                        if stripped.startswith(',') or (stripped and stripped[0].islower()):
+                            continue
                     years_on_this_page.add(m.group(1))
         for y in years_on_this_page:
             year_page_counts[y] = year_page_counts.get(y, 0) + 1
@@ -773,10 +842,6 @@ def detect_company_name(pages_text, max_pages: int = 400, filename: str | None =
                 name = m.group(1).strip()
                 counts[name] = counts.get(name, 0) + 1
 
-    if not counts:
-        fname_candidate = _filename_company_candidate(filename)
-        return fname_candidate
-
     try:
         from company_directory import match_company
         best_candidate, best_candidate_score = None, 0.0
@@ -788,6 +853,43 @@ def detect_company_name(pages_text, max_pages: int = 400, filename: str | None =
             return best_candidate.title()
     except ImportError:
         pass
+
+    # The all-caps regex above only catches a repeated all-caps banner
+    # header ("KCB GROUP PLC INTEGRATED REPORT..."). Some real filings
+    # (confirmed on Equity Group Holdings Plc's 2024 Integrated Report)
+    # never print their own name that way anywhere in the scanned pages -
+    # it only appears in ordinary mixed-case body text ("Equity Group
+    # Holdings Plc is regulated by..."), so `counts` above is either empty
+    # or, worse, non-empty but full of unrelated all-caps phrases that
+    # happen to end in GROUP/HOLDINGS/etc. (e.g. a table-of-contents
+    # heading "STRUCTURE OF THE GROUP" - a real false positive this
+    # exact fallback used to return, silently mislabeling the company).
+    # Before trusting "most frequent all-caps candidate" at all, try a
+    # direct case-insensitive literal match of each known NSE company's
+    # own name/alias against the raw page text - a real name appearing
+    # verbatim several times is a far stronger signal than an unrelated
+    # heading that happens to fit the regex once or twice.
+    try:
+        from company_directory import NSE_COMPANIES
+        name_hits = {}
+        for page_num, page_text in pages_text:
+            if page_num > max_pages:
+                break
+            lower_text = page_text.lower()
+            for company in NSE_COMPANIES:
+                for candidate_name in [company["name"]] + company.get("aliases", []):
+                    if candidate_name.lower() in lower_text:
+                        name_hits[company["name"]] = name_hits.get(company["name"], 0) + 1
+        if name_hits:
+            best_name = max(name_hits, key=name_hits.get)
+            if name_hits[best_name] >= 2:
+                return best_name
+    except ImportError:
+        pass
+
+    if not counts:
+        fname_candidate = _filename_company_candidate(filename)
+        return fname_candidate
 
     return max(counts, key=counts.get).title()
 
@@ -1099,6 +1201,7 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict:
                 # unaffected and costs nothing extra (extract_words() is
                 # only called for pages that fail the aspect-ratio check).
                 halves = _split_double_page_text(page)
+                halves = [_unreverse_page_text(h) for h in halves]
                 for half_text in halves:
                     pages_text.append((i, half_text))
                 combined_len = sum(len(h) for h in halves)
@@ -1117,6 +1220,81 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict:
             )
 
     return {'pages_text': pages_text, 'statements': parse_financials_text(pages_text)['statements']}
+
+
+_COMMON_WORDS_FOR_REVERSAL_CHECK = {
+    'the', 'and', 'of', 'in', 'to', 'for', 'on', 'director', 'directors',
+    'remuneration', 'report', 'statement', 'total', 'fees', 'salary',
+    'bonus', 'pension', 'committee', 'board', 'company', 'group',
+    'financial', 'year', 'shareholders', 'audit', 'audited', 'not', 'are',
+    'is', 'with', 'information', 'continued', 'benefits', 'allowances',
+    'service', 'gratuity', 'receive', 'entitled', 'executive',
+}
+
+
+def _unreverse_line_if_needed(line: str) -> str:
+    """Some filings (confirmed: Equity Group Holdings' 2024 Integrated
+    Report, its Directors' Remuneration Report continuation pages 126-127)
+    have specific lines - and specific whole table blocks - extract with
+    every character in mirror-image order: "SEEF EVIECER" for "RECEIVE
+    FEES", numbers and all. This is isolated to that one table's content
+    stream (the page's own repeating header, "FINANCIAL STATEMENTS" etc.,
+    extracts completely normally on the very same page), so this checks
+    and corrects per LINE rather than assuming a whole page is affected.
+    Detection: a line that reverses into something with common
+    English/financial-report words it didn't have before is almost
+    certainly one of these - an ordinary correctly-extracted line only
+    ever loses common-word hits when reversed, never gains them.
+    """
+    if len(line) < 6:
+        return line
+    words = re.findall(r"[a-zA-Z']+", line.lower())
+    if not words:
+        return line
+    normal_hits = sum(1 for w in words if w in _COMMON_WORDS_FOR_REVERSAL_CHECK)
+    reversed_line = line[::-1]
+    rev_hits = sum(1 for w in re.findall(r"[a-zA-Z']+", reversed_line.lower())
+                    if w in _COMMON_WORDS_FOR_REVERSAL_CHECK)
+    return reversed_line if rev_hits > normal_hits and rev_hits >= 1 else line
+
+
+def _unreverse_page_text(text: str) -> str:
+    return '\n'.join(_unreverse_line_if_needed(ln) for ln in text.split('\n'))
+
+
+def normalize_extracted_line(line: str) -> str:
+    """Single entry point for another module (document_chunk.py's
+    survey/ontology pipeline, which builds its own lines directly from
+    pdfplumber character data rather than going through
+    extract_pdf_document() above) to get the same two corrections this
+    module's own pipeline applies, including their combination - a
+    real filing (Equity Group Holdings 2024) has heading lines that are
+    BOTH doubled-bold AND mirror-reversed at once ("ttrrooppeerr" is
+    "report" doubled, THEN reversed).
+
+    A doubled-and-reversed word is *also* trivially valid input to the
+    plain doubled-dedupe check on its own - every 2-char pair still
+    matches, it just spells the word backwards ("troper") - so "did
+    dedupe succeed" alone can't tell a plain-doubled line from a
+    doubled-then-reversed one. When dedupe succeeds on BOTH the line
+    as-is and its reversal, the two results are compared by common-word
+    hits to pick the real one; when only one side dedupes, that side is
+    trusted directly (no scoring needed - the strict pairwise dedupe
+    check is already a reliable signal on its own for the ordinary,
+    much more common, doubled-but-not-reversed case).
+    """
+    doubled = _dedupe_char_doubled(line)
+    doubled_reversed = _dedupe_char_doubled(line[::-1])
+    if doubled is not None and doubled_reversed is not None:
+        def _hits(s):
+            return sum(1 for w in re.findall(r"[a-zA-Z']+", s.lower())
+                        if w in _COMMON_WORDS_FOR_REVERSAL_CHECK)
+        return doubled_reversed if _hits(doubled_reversed) > _hits(doubled) else doubled
+    if doubled is not None:
+        return doubled
+    if doubled_reversed is not None:
+        return doubled_reversed
+    return _unreverse_line_if_needed(line)
 
 
 def _split_double_page_text(page) -> list:

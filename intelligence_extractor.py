@@ -545,6 +545,67 @@ def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currenc
                 window_lower = text_lower[window_start:window_end]
                 if not any(term in window_lower for term in proximity_terms):
                     return None, None   # neither the heading nor nearby body text ties this amount to the field - likely a different figure that happens to share the chunk
+                # The 200-char window above can still tie the amount to
+                # THIS field's synonym while the number actually belongs
+                # to a completely different, unrelated metric mentioned
+                # right next to it - confirmed on a real filing (Equity
+                # Group Holdings 2024, a subsidiary commentary paragraph):
+                # "...Profit After Tax (PAT) increasing by 134%...Total
+                # assets stood at Shs 119.3 billion" put net_profit's own
+                # synonym ("profit after tax") well within 200 chars of a
+                # completely unrelated Shs 119.3bn TOTAL ASSETS figure,
+                # and net_profit got assigned a real total-assets value.
+                # The giveaway: "total assets" is the label immediately
+                # glued to the number (a handful of characters before
+                # it), while this field's synonym is much further away
+                # and attached to a %-change clause, not this amount.
+                # Whatever label sits closest to the amount wins; if
+                # that closest label isn't one of THIS field's own
+                # synonyms, the match is rejected even though a synonym
+                # is technically present somewhere in the wider window.
+                immediate_pre_window = text_lower[max(0, matches[0].start() - 40):matches[0].start()]
+                # ONTOLOGY only covers board/pay/performance fields, not
+                # general balance-sheet or scale metrics - so "total
+                # assets" (the actual real-world false-positive magnet
+                # confirmed above) was never in it to begin with and
+                # can't be found via other ONTOLOGY fields' own
+                # synonyms. This small curated list exists specifically
+                # to catch labels of that kind: common in narrative
+                # commentary, easily glued right next to a currency
+                # figure, and never themselves what any survey field is
+                # looking for.
+                _NON_ONTOLOGY_DISTRACTOR_LABELS = [
+                    'total assets', 'total liabilities', 'customer deposits',
+                    'total deposits', 'loan book', 'gross loans', 'net loans',
+                    'market capitalisation', 'market capitalization',
+                    # Confirmed on a real filing (Safaricom PLC's own annual
+                    # report): a "% of total NSE market capitalisation"
+                    # sentence sat in the same short paragraph as, and just
+                    # far enough from, "Closing price of KShs 17.75" that
+                    # NEITHER label fell inside the immediate 40-char
+                    # pre-window below - market_cap's own synonym too far
+                    # back, and (before this fix) nothing to flag "closing
+                    # price" as belonging to an unrelated, much smaller
+                    # figure (a per-share price, not a market cap). With
+                    # both nearest_own and nearest_competing defaulting to
+                    # -1 in that case, the match fell through unrejected.
+                    # A per-share price is never any board/pay/performance
+                    # field this ontology tracks, so these are always
+                    # distractors regardless of which field is being matched.
+                    'closing price', 'share price', 'opening price',
+                ]
+                competing_labels = [
+                    s for f, e in ONTOLOGY.items() if f != canonical_field
+                    for s in e.get('synonyms', [])
+                ] + _NON_ONTOLOGY_DISTRACTOR_LABELS
+                nearest_competing = max((text_lower.rfind(lbl, 0, matches[0].start())
+                                          for lbl in competing_labels if lbl in immediate_pre_window),
+                                         default=-1)
+                nearest_own = max((text_lower.rfind(term, 0, matches[0].start())
+                                    for term in proximity_terms if term in immediate_pre_window),
+                                   default=-1)
+                if nearest_competing > nearest_own:
+                    return None, None
         return _finish_amount_match(text, matches[0])
     if len(matches) > 1:
         return None, None   # multiple marked amounts in one chunk - ambiguous, don't guess
