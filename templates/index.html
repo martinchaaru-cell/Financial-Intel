@@ -825,11 +825,11 @@ tr.li-child td:first-child{color:var(--text-dim);}
       <h2>Log In</h2>
       <span class="modal-close" onclick="closeAuthModals()">✕</span>
     </div>
-    <div class="grid">
+    <form class="grid" onsubmit="event.preventDefault(); submitLogin();">
       <input id="login-email" type="email" placeholder="Email" autocomplete="username">
       <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
-    </div>
-    <button onclick="submitLogin()">Log In</button>
+      <button type="submit">Log In</button>
+    </form>
     <div id="login-error" class="error"></div>
     <p style="font-size:12.5px;margin-top:12px;color:var(--text-faint);">
       No account? <a href="#" onclick="switchToRegister(event)">Register</a>
@@ -843,12 +843,12 @@ tr.li-child td:first-child{color:var(--text-dim);}
       <h2>Create Account</h2>
       <span class="modal-close" onclick="closeAuthModals()">✕</span>
     </div>
-    <div class="grid">
+    <form class="grid" onsubmit="event.preventDefault(); submitRegister();">
       <input id="register-name" placeholder="Full name">
       <input id="register-email" type="email" placeholder="Email" autocomplete="username">
       <input id="register-password" type="password" placeholder="Password (min 6 characters)" autocomplete="new-password">
-    </div>
-    <button onclick="submitRegister()">Create Account</button>
+      <button type="submit">Create Account</button>
+    </form>
     <div id="register-error" class="error"></div>
     <p style="font-size:12.5px;margin-top:12px;color:var(--text-faint);">
       Registered accounts can view and download. Already have one? <a href="#" onclick="switchToLogin(event)">Log in</a>
@@ -882,6 +882,13 @@ tr.li-child td:first-child{color:var(--text-dim);}
         <span id="uploadReportsProgressSpeed"></span>
         <span id="uploadReportsProgressEta"></span>
       </div>
+    </div>
+    <div id="uploadBackendLogWrap" style="display:none;margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:var(--bg-panel-2,#f4f4f4);font-size:12px;font-weight:700;">
+        <span>Backend activity</span>
+        <span id="uploadBackendTimer">0.0s</span>
+      </div>
+      <div id="uploadBackendLog" style="max-height:160px;overflow-y:auto;padding:6px 10px;font-size:11.5px;font-family:ui-monospace,monospace;color:var(--text-dim,#555);"></div>
     </div>
     <div id="uploadReportsStatus" style="margin-top:10px;font-size:13px;"></div>
     <div id="uploadReportsResults" style="margin-top:10px;max-height:300px;overflow-y:auto;"></div>
@@ -1298,7 +1305,7 @@ function setPageActions(rawItems){
       <button class="page-actions-btn" onclick="togglePageActionsMenu(event)">Actions ▾</button>
       <div class="page-actions-menu hidden" id="pageActionsMenu" onclick="event.stopPropagation()">
         ${items.map(it => `
-          <div class="pa-item ${it.disabled ? 'disabled' : ''}" onclick="${it.disabled ? '' : it.onClick}">
+          <div class="pa-item ${it.disabled ? 'disabled' : ''}" onclick="${it.disabled ? '' : it.onClick + "; document.getElementById('pageActionsMenu').classList.add('hidden')"}">
             <span>${it.icon || ''}</span><span>${escapeHtml(it.label)}</span>
           </div>`).join('')}
       </div>
@@ -1741,6 +1748,9 @@ async function submitUploadReports(){
   const progPct = document.getElementById('uploadReportsProgressPct');
   const progSpeed = document.getElementById('uploadReportsProgressSpeed');
   const progEta = document.getElementById('uploadReportsProgressEta');
+  const logWrap = document.getElementById('uploadBackendLogWrap');
+  const logEl = document.getElementById('uploadBackendLog');
+  const timerEl = document.getElementById('uploadBackendTimer');
 
   btn.disabled = true;
   btn.textContent = 'Uploading...';
@@ -1751,18 +1761,72 @@ async function submitUploadReports(){
   progPct.textContent = '0%';
   progSpeed.textContent = '';
   progEta.textContent = '';
+  logWrap.style.display = 'none';
+  logEl.innerHTML = '';
 
   const fd = new FormData();
   uploadReportsFiles.forEach(f => fd.append('files', f));
   if (uploadReportsCompanyId) fd.append('company_id', uploadReportsCompanyId);
 
+  // batch_id ties this upload's own POST to the live backend-activity
+  // log below - the SSE connection opens on the strength of this id
+  // alone, before the POST is even sent, so no event from the very
+  // first file gets missed.
+  const batchId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  fd.append('batch_id', batchId);
+
   const totalBytes = uploadReportsFiles.reduce((sum, f) => sum + f.size, 0);
   const startedAt = Date.now();
+
+  // Live backend-stage log - what's shown here is exactly what the
+  // server emits, stage by stage, as it genuinely reaches that point in
+  // processing each file. Not a simulated sequence.
+  const STAGE_LABELS = {
+    reading: 'Reading file', detecting_format: 'Detecting format',
+    parsing: 'Parsing document', matching_company: 'Matching company',
+    saving: 'Saving to database', scoring: 'Scoring extraction quality',
+  };
+  let timerHandle = null;
+  const logLine = (html) => {
+    const row = document.createElement('div');
+    row.innerHTML = html;
+    logEl.appendChild(row);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  const fmtTime = (iso) => { try { return new Date(iso).toLocaleTimeString(); } catch(e) { return ''; } };
+  const es = new EventSource(`/api/upload-progress/${batchId}`);
+  logWrap.style.display = 'block';
+  timerHandle = setInterval(() => {
+    timerEl.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + 's';
+  }, 100);
+  es.onmessage = (evt) => {
+    let e; try { e = JSON.parse(evt.data); } catch (err) { return; }
+    const t = fmtTime(e.ts);
+    if (e.type === 'batch_start') {
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> Starting batch — ${e.file_count} file(s)`);
+    } else if (e.type === 'stage') {
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> <strong>${escapeHtml(e.filename)}</strong> — ${STAGE_LABELS[e.stage] || e.stage}${e.format ? ` (${e.format})` : ''}`);
+    } else if (e.type === 'file_done') {
+      const scoreTxt = (e.extraction_score !== null && e.extraction_score !== undefined)
+        ? ` — extraction score ${e.extraction_score}/100${e.extraction_score < 70 ? ' ⚠️ low' : ''}` : '';
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> ✅ <strong>${escapeHtml(e.filename)}</strong> done in ${e.elapsed_seconds}s${scoreTxt}`);
+    } else if (e.type === 'file_failed') {
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> ❌ <strong>${escapeHtml(e.filename)}</strong> — ${escapeHtml(e.error || 'failed')}`);
+    } else if (e.type === 'batch_done') {
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> <strong>Batch complete in ${e.elapsed_seconds}s</strong> — ${e.saved} saved, ${e.failed} failed`);
+      clearInterval(timerHandle);
+      timerEl.textContent = e.elapsed_seconds + 's (done)';
+      es.close();
+    }
+  };
+  es.onerror = () => { /* connection drop mid-upload isn't fatal - the upload POST itself still completes and reports results normally */ };
 
   const finish = (ok, message) => {
     btn.disabled = false;
     btn.textContent = 'Upload & Save';
     if (!ok) statusEl.textContent = message;
+    clearInterval(timerHandle);
+    es.close();
   };
 
   try {
@@ -3018,10 +3082,23 @@ function srBoardCompositionTab(data){
     </div>
     <div class="panel">
       <div class="sa-panel-title">Source Documents</div>
-      ${(data.source_documents || []).length ? `<table><thead><tr><th>Document</th><th>Financial Year</th><th>Pages</th></tr></thead><tbody>
-        ${data.source_documents.map(d => `<tr><td>${escapeHtml(d.filename || d.url || 'Untitled document')}</td><td>${d.period_label ? escapeHtml(d.period_label) : naSpan('\u2014')}</td><td>${d.page_count !== null && d.page_count !== undefined ? d.page_count : naSpan('\u2014')}</td></tr>`).join('')}
+      ${(data.source_documents || []).length ? `<table><thead><tr><th>Document</th><th>Financial Year</th><th>Pages</th>${canEdit() ? '<th>Extraction Score</th>' : ''}</tr></thead><tbody>
+        ${data.source_documents.map(d => `<tr><td>${escapeHtml(d.filename || d.url || 'Untitled document')}</td><td>${d.period_label ? escapeHtml(d.period_label) : naSpan('\u2014')}</td><td>${d.page_count !== null && d.page_count !== undefined ? d.page_count : naSpan('\u2014')}</td>${canEdit() ? `<td>${extractionScoreBadge(d)}</td>` : ''}</tr>`).join('')}
       </tbody></table>` : `<div class="empty">${naSpan('No source documents on file for this company yet')}</div>`}
     </div>`;
+}
+// Small admin-only badge for a source document's extraction-quality
+// score - "not available" (not a fake 0) when the doc has no
+// confidence-bearing rows yet, otherwise the real 0-100 average with a
+// low-confidence flag below the shared threshold. The score/flag are
+// only ever present in the payload for an admin (see include_score in
+// app.py) - this only reads what's already there, it doesn't gate
+// visibility itself.
+function extractionScoreBadge(d){
+  if (d.extraction_score === null || d.extraction_score === undefined) return naSpan('not scored yet');
+  const low = d.extraction_score_low;
+  const color = low ? 'var(--red,#c0392b)' : 'var(--green,#1a7f37)';
+  return `<span style="color:${color};font-weight:600;">${d.extraction_score}/100</span>${low ? ' <span title="Below the extraction-quality threshold - consider re-uploading after a parser fix" style="cursor:help;">⚠️</span>' : ''}`;
 }
 // Deterministic, non-fabricated observations - only fires a line when
 // the underlying figures are actually on file, never a generic filler.
@@ -3608,8 +3685,8 @@ function srEvidenceTab(data){
       <div>
         <div class="panel" style="margin-bottom:14px;">
           <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">Source Documents</h2></div>
-          ${docs.length ? `<table><thead><tr><th>Document</th><th>Financial Year</th><th>Pages</th></tr></thead><tbody>
-            ${docs.map(d => `<tr><td>${escapeHtml(d.filename || d.url || 'Untitled document')}</td><td>${d.period_label ? escapeHtml(d.period_label) : naSpan('\u2014')}</td><td>${d.page_count !== null && d.page_count !== undefined ? d.page_count : naSpan('\u2014')}</td>${d.url ? `<td><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">View</a></td>` : '<td></td>'}</tr>`).join('')}
+          ${docs.length ? `<table><thead><tr><th>Document</th><th>Financial Year</th><th>Pages</th>${canEdit() ? '<th>Extraction Score</th>' : ''}</tr></thead><tbody>
+            ${docs.map(d => `<tr><td>${escapeHtml(d.filename || d.url || 'Untitled document')}</td><td>${d.period_label ? escapeHtml(d.period_label) : naSpan('\u2014')}</td><td>${d.page_count !== null && d.page_count !== undefined ? d.page_count : naSpan('\u2014')}</td>${canEdit() ? `<td>${extractionScoreBadge(d)}</td>` : ''}${d.url ? `<td><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">View</a></td>` : '<td></td>'}</tr>`).join('')}
           </tbody></table>` : `<div class="empty">${naSpan('No source documents on file for this company yet')}</div>`}
         </div>
         <div class="panel" style="margin-bottom:14px;">
@@ -4670,13 +4747,14 @@ async function renderReportsPage(){
       <td>${j.source_url ? `<a href="${escapeHtml(j.source_url)}" target="_blank" rel="noopener">Source PDF</a>` : '-'}</td>
       <td>${j.started_at ? new Date(j.started_at).toLocaleString() : '-'}</td>
       <td>${j.error_message ? `<span style="color:var(--red);">${escapeHtml(j.error_message)}</span>` : '-'}</td>
+      ${canEdit() ? `<td>${extractionScoreBadge(j)}</td>` : ''}
     </tr>`).join('');
 
   app.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h2>Import Activity</h2><span class="badge">${jobs.length}</span></div>
       <table>
-        <thead><tr><th>Company</th><th>Period</th><th>Status</th><th>Source</th><th>Started</th><th>Error</th></tr></thead>
+        <thead><tr><th>Company</th><th>Period</th><th>Status</th><th>Source</th><th>Started</th><th>Error</th>${canEdit() ? '<th>Extraction Score</th>' : ''}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -7498,7 +7576,7 @@ function irSourceEvidenceTab(ir){
           <div class="ir-source-icon">📄</div>
           <div class="ir-source-meta">
             <div class="sm-name">${escapeHtml(d.filename || d.url || 'Filing')}${d.period_label ? ` · ${escapeHtml(d.period_label)}` : ''}</div>
-            <div class="sm-date">${d.uploaded_at ? 'Uploaded ' + new Date(d.uploaded_at).toLocaleDateString() : ''}${d.page_count ? ` · ${d.page_count} pages` : ''}</div>
+            <div class="sm-date">${d.uploaded_at ? 'Uploaded ' + new Date(d.uploaded_at).toLocaleDateString() : ''}${d.page_count ? ` · ${d.page_count} pages` : ''}${canEdit() ? ` · ${extractionScoreBadge(d)}` : ''}</div>
           </div>
           ${d.url ? `<button class="secondary" onclick="window.open('${escapeHtml(d.url)}','_blank')">View ↗</button>` : ''}
         </div>`).join('') : `<div class="empty">No parsed source PDFs on file for this company yet. Figures for ${escapeHtml(ir.period)} were entered as: <b>${escapeHtml(ir.legacy_source || 'manual')}</b>.</div>`}

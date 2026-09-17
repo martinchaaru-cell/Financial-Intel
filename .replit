@@ -12,7 +12,7 @@ localPort = 5000
 externalPort = 80
 
 [nix]
-packages = ["freetype", "glibcLocales"]
+packages = ["freetype", "glibcLocales", "mailutils"]
 channel = "stable-25_05"
 
 [workflows]

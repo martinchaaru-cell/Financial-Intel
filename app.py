@@ -6,8 +6,10 @@ import json
 import hashlib
 import tempfile
 import uuid
+import queue
+import threading
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, send_file, session
+from flask import Flask, render_template, request, jsonify, send_file, session, Response
 from datetime import datetime
 import openpyxl
 import pdfplumber
@@ -17,7 +19,7 @@ from models import (
     SourceDocument, ImportJob, CalculatedMetric, FinancialSegment,
     OperationalMetric, FinancialNote,
     MarketDataSnapshot, PrincipalRisk, ManagementGuidance, DirectorRemunerationRow,
-    Committee, CommitteeMember, User,
+    Committee, CommitteeMember, User, LOW_EXTRACTION_SCORE_THRESHOLD,
 )
 from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, ActivityLogEntry
 from survey_data_parse import is_survey_data_format, parse_survey_data
@@ -1322,6 +1324,65 @@ def _save_current_and_prior_period(base_payload, statements_payload, period_labe
     return current_result, current_status, prior_result, prior_status
 
 
+def compute_extraction_score(source_document_id):
+    """Aggregate, honest per-document extraction-quality score (0-100) -
+    the average of every real per-field/per-row confidence score the
+    parser attached to data it pulled from this specific document
+    (financial line items via their statement, plus every
+    directly-linked confidence-bearing row: market data, principal
+    risks, management guidance, director remuneration, committees,
+    survey directors/benefits/categories). Never a fabricated number -
+    returns None (not a fake 0 or 100) when this document has no
+    confidence-bearing rows at all yet."""
+    if not source_document_id:
+        return None
+    scores = []
+
+    li_rows = db.session.query(FinancialLineItem.confidence).join(
+        FinancialStatement, FinancialLineItem.statement_id == FinancialStatement.id
+    ).filter(
+        FinancialStatement.source_document_id == source_document_id,
+        FinancialLineItem.confidence.isnot(None),
+    ).all()
+    scores.extend(r[0] for r in li_rows)
+
+    for Model in (MarketDataSnapshot, PrincipalRisk, ManagementGuidance,
+                  DirectorRemunerationRow, Committee,
+                  SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory):
+        rows = Model.query.filter(
+            Model.source_document_id == source_document_id,
+            Model.confidence.isnot(None),
+        ).all()
+        scores.extend(r.confidence for r in rows)
+
+    if not scores:
+        return None
+    avg = sum(scores) / len(scores)
+    return round(max(0.0, min(1.0, avg)) * 100, 1)
+
+
+def _finalize_source_document_score(source_document_id):
+    """Computes and stores the score for one just-saved document,
+    right after all of its confidence-bearing rows have been
+    committed. Best-effort: a scoring failure should never turn an
+    otherwise-successful upload into a failed one."""
+    if not source_document_id:
+        return None
+    try:
+        doc = SourceDocument.query.get(source_document_id)
+        if doc is None:
+            return None
+        score = compute_extraction_score(source_document_id)
+        doc.extraction_score = score
+        doc.extraction_score_computed_at = datetime.utcnow()
+        db.session.commit()
+        return score
+    except Exception:
+        db.session.rollback()
+        app.logger.exception(f'Extraction score computation failed for source_document_id={source_document_id} (non-fatal)')
+        return None
+
+
 def _save_one_import(data):
     """Shared save logic behind /api/import/upload-batch (and, per file,
     the current/prior-period pair via _save_current_and_prior_period
@@ -1532,7 +1593,101 @@ def _save_one_import(data):
         'company_id': company_id,
         'period': period.to_dict(),
         'financials': f.to_dict(),   # legacy shape, for any frontend code still reading it
+        'source_document_id': source_doc_id,
     }, 201
+
+# ---------- LIVE EVENTS / UPLOAD PROGRESS ----------
+# The dashboard keeps one SSE connection open for notifications that data
+# changed. Each request gets its own queue so a slow browser cannot block
+# another subscriber or an upload-progress stream.
+_event_subscribers = set()
+_event_subscribers_lock = threading.Lock()
+
+def _event_emit(event):
+    """Broadcast a JSON-serializable event to connected dashboard clients."""
+    with _event_subscribers_lock:
+        subscribers = list(_event_subscribers)
+    for subscriber in subscribers:
+        subscriber.put(event)
+
+@app.route('/api/events')
+def event_stream():
+    subscriber = queue.Queue()
+    with _event_subscribers_lock:
+        _event_subscribers.add(subscriber)
+
+    def gen():
+        try:
+            yield ': connected\n\n'
+            while True:
+                try:
+                    event = subscriber.get(timeout=25)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except queue.Empty:
+                    # Keep proxies from closing an otherwise idle SSE stream.
+                    yield ': keep-alive\n\n'
+        finally:
+            with _event_subscribers_lock:
+                _event_subscribers.discard(subscriber)
+
+    return Response(gen(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+    })
+
+@app.route('/favicon.ico')
+def favicon():
+    # Keep the browser request valid without adding a binary asset to the
+    # deployment. The same mark is used by the application shell.
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<rect width="64" height="64" rx="14" fill="#4285f4"/>'
+        '<path d="M18 16h28v32H18z" fill="#fff" opacity=".95"/>'
+        '<path d="M24 24h16M24 31h16M24 38h10" stroke="#4285f4" '
+        'stroke-width="4" stroke-linecap="round"/>'
+        '</svg>'
+    )
+    return Response(svg, mimetype='image/svg+xml')
+
+# ---------- UPLOAD PROGRESS (live, per-file backend stage log) ----------
+# The frontend generates a batch_id per upload attempt, opens
+# GET /api/upload-progress/<batch_id> (Server-Sent Events) right before
+# POSTing the files, and the upload route below emits one real,
+# timestamped event at each genuine stage boundary it actually reaches
+# for each file (reading -> detecting format -> parsing -> matching
+# company -> saving -> scoring -> done/failed), plus a final
+# 'batch_done' event with the total elapsed time. Nothing here is
+# simulated - every event fires exactly when that line of code runs.
+_progress_channels = {}  # batch_id -> queue.Queue, one per in-flight upload
+
+def _progress_emit(batch_id, event):
+    if not batch_id:
+        return
+    event = {**event, 'ts': datetime.utcnow().isoformat()}
+    q = _progress_channels.get(batch_id)
+    if q is not None:
+        q.put(event)
+
+@app.route('/api/upload-progress/<batch_id>')
+@require_role('admin')
+def upload_progress_stream(batch_id):
+    q = _progress_channels.setdefault(batch_id, queue.Queue())
+
+    def gen():
+        try:
+            while True:
+                event = q.get(timeout=120)  # upload can't legitimately hang longer than this
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get('type') == 'batch_done':
+                    break
+        except queue.Empty:
+            yield f"data: {json.dumps({'type': 'timeout', 'ts': datetime.utcnow().isoformat()})}\n\n"
+        finally:
+            _progress_channels.pop(batch_id, None)
+
+    return Response(gen(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+    })
 
 @app.route('/api/import/upload-batch', methods=['POST'])
 @require_role('admin')
@@ -1573,6 +1728,14 @@ def upload_documents_batch():
     if len(files) > 10:
         return jsonify({'error': f'Too many files ({len(files)}). Upload at most 10 at a time.'}), 400
 
+    # Client-generated id for the matching GET /api/upload-progress/<batch_id>
+    # SSE stream, opened by the frontend right before this POST. Optional -
+    # an old client (or a direct API call) that doesn't send one just
+    # doesn't get live progress; the upload itself works exactly the same.
+    batch_id = request.form.get('batch_id')
+    batch_started = datetime.utcnow()
+    _progress_emit(batch_id, {'type': 'batch_start', 'file_count': len(files)})
+
     # Optional: called from a specific Company Detail page ("Upload
     # Documents" there, as opposed to the general multi-company import).
     # When present, every file in this batch is attributed to this one
@@ -1595,9 +1758,12 @@ def upload_documents_batch():
     saved = 0
     for file in files:
         filename = file.filename or 'unnamed.pdf'
+        file_started = datetime.utcnow()
+        _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'reading'})
         try:
             pdf_bytes = file.read()
         except Exception as e:
+            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not read upload: {e}'})
             results.append({'filename': filename, 'ok': False, 'error': f'Could not read upload: {e}'})
             continue
 
@@ -1616,6 +1782,10 @@ def upload_documents_batch():
             is_survey_data = is_survey_data_format(sniff_text)
         except Exception:
             pass
+        _progress_emit(batch_id, {
+            'type': 'stage', 'filename': filename, 'stage': 'detecting_format',
+            'format': 'condensed' if is_condensed else ('survey_data' if is_survey_data else 'pdf'),
+        })
 
         if is_survey_data:
             results.append({'filename': filename, 'ok': False,
@@ -1624,6 +1794,7 @@ def upload_documents_batch():
             continue
 
         if is_condensed:
+            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'parsing'})
             try:
                 condensed_text = pdf_bytes.decode('utf-8')
                 condensed = parse_condensed_filing(condensed_text)
@@ -1675,14 +1846,17 @@ def upload_documents_batch():
             # expectation as this whole feature already sets in
             # condensed_format/SPEC.md.
             try:
+                _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'saving'})
                 result, status = _save_one_import({**save_payload, 'period': period_label, 'statements': condensed['statements']})
             except Exception as e:
                 db.session.rollback()
                 app.logger.exception(f'Unexpected error saving condensed file {filename}')
+                _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not save: {e}'})
                 results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
                 continue
 
             if status != 201:
+                _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': result.get('error', 'Save failed.')})
                 results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Save failed.')})
                 continue
 
@@ -1787,6 +1961,14 @@ def upload_documents_batch():
                             ))
                 db.session.commit()
 
+            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'scoring'})
+            extraction_score = _finalize_source_document_score(result.get('source_document_id'))
+            file_elapsed = (datetime.utcnow() - file_started).total_seconds()
+            _progress_emit(batch_id, {
+                'type': 'file_done', 'filename': filename, 'elapsed_seconds': round(file_elapsed, 1),
+                'extraction_score': extraction_score,
+            })
+
             results.append({
                 'filename': filename, 'ok': True, 'company_id': result.get('company_id'),
                 'company_name': company_info.get('name'), 'period': period_label,
@@ -1814,8 +1996,10 @@ def upload_documents_batch():
         # (the main reason a large report like a 300-page integrated
         # report could time out).
         try:
+            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'parsing'})
             extracted = extract_pdf_document(pdf_bytes)
         except Exception as e:
+            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not read/parse PDF: {e}'})
             results.append({'filename': filename, 'ok': False, 'error': f'Could not read/parse PDF: {e}'})
             continue
 
@@ -1830,6 +2014,7 @@ def upload_documents_batch():
             })
             continue
 
+        _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'matching_company'})
         if forced_company:
             detected_name = forced_company.name
             matched, score = {'name': forced_company.name, 'ticker': forced_company.ticker,
@@ -1886,6 +2071,7 @@ def upload_documents_batch():
         # the page unsaved.
         prior_period_label = detect_prior_period_label(period_label)
         try:
+            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'saving'})
             result, status, prior_result, prior_status = _save_current_and_prior_period(
                 save_payload, extracted['statements'], period_label, prior_period_label
             )
@@ -1897,6 +2083,7 @@ def upload_documents_batch():
             # should show up as a per-file failure instead.
             db.session.rollback()
             app.logger.exception(f'Unexpected error saving {filename}')
+            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not save: {e}'})
             results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
             continue
         if status == 201:
@@ -2041,6 +2228,14 @@ def upload_documents_batch():
                 db.session.rollback()
                 app.logger.exception(f'Director remuneration detail extraction failed for {filename} (non-fatal)')
 
+            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'scoring'})
+            extraction_score = _finalize_source_document_score(result.get('source_document_id'))
+            file_elapsed = (datetime.utcnow() - file_started).total_seconds()
+            _progress_emit(batch_id, {
+                'type': 'file_done', 'filename': filename, 'elapsed_seconds': round(file_elapsed, 1),
+                'extraction_score': extraction_score,
+            })
+
             results.append({
                 'filename': filename, 'ok': True,
                 'company_id': result['company_id'],
@@ -2052,9 +2247,16 @@ def upload_documents_batch():
                 'created_company': created_company,
             })
         else:
+            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': result.get('error', 'Unknown error')})
             results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Unknown error')})
 
-    return jsonify({'results': results, 'saved': saved, 'failed': sum(1 for r in results if not r.get('ok'))}), 200
+    total_elapsed = (datetime.utcnow() - batch_started).total_seconds()
+    failed_count = sum(1 for r in results if not r.get('ok'))
+    _progress_emit(batch_id, {
+        'type': 'batch_done', 'saved': saved, 'failed': failed_count,
+        'elapsed_seconds': round(total_elapsed, 1),
+    })
+    return jsonify({'results': results, 'saved': saved, 'failed': failed_count}), 200
 
 
 # ---------- SURVEY (multi-company board/remuneration benchmark) ----------
@@ -2743,7 +2945,7 @@ def company_survey_report(company_id):
         'survey_director_rows': survey_director_rows,
         'survey_director_benefits': [b for b in survey_director_benefits],
         'committees': committees,
-        'source_documents': [d.to_dict() for d in SourceDocument.query.filter_by(company_id=company_id).all()],
+        'source_documents': [d.to_dict(include_score=(current_role() == 'admin')) for d in SourceDocument.query.filter_by(company_id=company_id).all()],
         'evidence_conflicts': evidence_conflicts,
         'quality_by_year': quality_by_year,
     })
@@ -2950,7 +3152,7 @@ def get_period_detail_view(company_id, period_label):
     stmt = period.statement('income_statement')
     if stmt and stmt.source_document_id:
         doc = SourceDocument.query.get(stmt.source_document_id)
-        source_doc = doc.to_dict() if doc else None
+        source_doc = doc.to_dict(include_score=(current_role() == 'admin')) if doc else None
 
     return jsonify({
         'company': company.to_dict(),
@@ -3541,7 +3743,7 @@ def company_intelligence_report(company_id):
         'risk_categories': risk_categories, 'overall_risk_score': overall_risk_score,
         'overall_risk_band': _risk_band(overall_risk_score), 'risk_exposures': risk_exposures,
         'peer_comparison': peer_comparison,
-        'source_documents': [d.to_dict() for d in source_docs],
+        'source_documents': [d.to_dict(include_score=(current_role() == 'admin')) for d in source_docs],
         'import_jobs': [{**j.to_dict(), 'source_url': (SourceDocument.query.get(j.source_document_id).url if j.source_document_id else None)} for j in jobs],
         'legacy_source': latest.source,
         'outlook_drivers': outlook_drivers,
@@ -3613,6 +3815,11 @@ def import_jobs():
         row['company_name'] = company.name if company else None
         row['source_url'] = doc.url if doc else None
         row['period_label'] = doc.period_label if doc else None
+        if current_role() == 'admin' and doc:
+            row['extraction_score'] = doc.extraction_score
+            row['extraction_score_low'] = (
+                doc.extraction_score is not None and doc.extraction_score < LOW_EXTRACTION_SCORE_THRESHOLD
+            )
         result.append(row)
     return jsonify(result)
 
@@ -3637,4 +3844,10 @@ with app.app_context():
         db.session.commit()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    # threaded=True: the live upload-progress SSE stream (GET, held open)
+    # and the upload POST it's reporting on need to be served
+    # concurrently - Flask's dev server is single-threaded by default,
+    # which would silently block the SSE connection until the upload
+    # request finished (defeating the whole point of a *live* progress
+    # popup, even though nothing would error).
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False, threaded=True)

@@ -38,9 +38,10 @@ db = SQLAlchemy()
 # (werkzeug's generate_password_hash, PBKDF2 by default).
 
 class User(db.Model):
-    # The database already contains a legacy `users` table from the earlier
-    # application (`id`, `username`, `password`). Keep that table untouched
-    # and store the current email/role-based accounts separately.
+    # The database already contains a legacy `users` table with a different
+    # schema (id, username, password). Keep the current email/role-based
+    # accounts isolated so startup queries cannot select columns that do not
+    # exist in that legacy table.
     __tablename__ = 'app_users'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
@@ -106,13 +107,45 @@ class SourceDocument(db.Model):
     sha256 = db.Column(db.String(64))                 # dedupe re-uploads of the same filing
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    def to_dict(self):
-        return {
+    # Extraction-quality score, 0-100 - the average of every real
+    # per-field/per-row confidence score the parser attached to data it
+    # pulled from THIS document (financial line items, director
+    # remuneration rows, market data, committees, ...), never a
+    # fabricated number. NULL until compute_extraction_score() runs
+    # (right after this document's data finishes saving) and stays
+    # NULL forever if the document ended up with no confidence-bearing
+    # rows at all - an honest "not available", not a fake 0.
+    extraction_score = db.Column(db.Float)
+    extraction_score_computed_at = db.Column(db.DateTime)
+
+    def to_dict(self, include_score=False):
+        d = {
             'id': self.id, 'company_id': self.company_id, 'url': self.url,
             'filename': self.filename, 'period_label': self.period_label,
             'page_count': self.page_count,
             'uploaded_at': self.uploaded_at.isoformat() if self.uploaded_at else None
         }
+        # Admin-only field (see require_role usage around every call
+        # site of this with include_score=True in app.py) - never
+        # included by default so a route that forgets the check can't
+        # accidentally leak it to a user/guest.
+        if include_score:
+            d['extraction_score'] = self.extraction_score
+            d['extraction_score_low'] = (
+                self.extraction_score is not None and self.extraction_score < LOW_EXTRACTION_SCORE_THRESHOLD
+            )
+            d['extraction_score_computed_at'] = (
+                self.extraction_score_computed_at.isoformat() if self.extraction_score_computed_at else None
+            )
+        return d
+
+
+# Below this, a document is flagged low-confidence wherever the score is
+# shown - it still feeds every tab exactly like any other document (per
+# product decision: retained + flagged, never silently excluded), the
+# flag is just a visible signal to an admin that it may be worth
+# re-uploading after a parser fix. Not a hard gate on anything.
+LOW_EXTRACTION_SCORE_THRESHOLD = 70
 
 
 # ---------- FINANCIAL PERIOD ----------
