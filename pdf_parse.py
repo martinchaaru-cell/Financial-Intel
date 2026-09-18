@@ -1356,11 +1356,31 @@ def _page_word_groups(page) -> list:
     but returns the raw word lists (dicts with x0/x1/top/text) per
     logical half instead of joined text - callers that need to reason
     about column positions (e.g. gap-based table reconstruction) can't
-    use the joined-text version, which throws the x-positions away."""
+    use the joined-text version, which throws the x-positions away.
+
+    Each word's own text is run through normalize_extracted_line() before
+    being returned - pdfplumber's extract_words() can hand back an
+    individual word already doubled-and-mirror-reversed (confirmed on a
+    real filing: Equity Group Holdings' own Directors' Remuneration
+    Report page, where extract_words() returned tokens like
+    "))ddeeuunniittnnoocc((" for "(continued)" and "’’ssrroottcceerriiDD"
+    for "Directors'" - not lines, individual words, already broken before
+    any line-level text ever gets assembled). normalize_extracted_line()
+    is a pure character-level pairwise-equality/mirror check, so it
+    fixes a word this way regardless of language or whether it's a
+    dictionary word - including a person's name, which an older comment
+    on extract_director_remuneration (above) noted couldn't be reliably
+    self-corrected without this: that was true before this fix existed,
+    not after."""
     width, height = page.width, page.height
     if height == 0 or width / height < 1.4:
-        return [page.extract_words()]
+        words = page.extract_words()
+        for w in words:
+            w['text'] = normalize_extracted_line(w['text'])
+        return [words]
     words = page.extract_words()
+    for w in words:
+        w['text'] = normalize_extracted_line(w['text'])
     if not words:
         return [words]
     midpoint = width / 2

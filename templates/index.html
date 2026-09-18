@@ -781,10 +781,6 @@ tr.li-child td:first-child{color:var(--text-dim);}
       </div>
       <div class="topbar-right">
         <div id="pageActionsSlot"></div>
-        <button class="notif-btn" id="notifBtn" onclick="goTo('alerts')" aria-label="Alerts" title="Alerts">
-          🔔
-          <span class="notif-badge" id="notifBadge" style="display:none;">0</span>
-        </button>
         <div class="user-badge" id="userBadge" onclick="toggleUserMenu(event)">
           <div class="user-avatar" id="userAvatar">G</div>
           <div class="user-meta">
@@ -903,23 +899,26 @@ const PAGES = [
   {id:'intelligence-layer', label:'Intelligence Layer', icon:'🧠'},
   {id:'settings', label:'Settings', icon:'⚙️'},
 ];
-// Removed from the visible nav per user request (2026-09-12/13 sessions):
-// Compare Companies, Rankings, Sectors, Watchlist, Saved Views, Data
-// Explorer, Financial Analytics, Exports, AND (latest request) Companies,
-// Intelligence Report, Alerts, Reports. Companies/Alerts/Reports/
-// Company Detail (renderCompaniesPage, renderAlertsPage, renderReportsPage,
-// renderCompanyDetail) and their /api routes are left in the codebase,
-// just unreachable from the sidebar nav - they're still reached via
-// goTo('companies')/goTo('alerts')/goTo('reports') calls elsewhere in
-// the UI (back-links, the notif bell, "Go to Companies" CTAs) and via
-// goToCompany/goToIntelligenceReport drill-ins from tables. Compare,
-// Rankings, Sectors, and Financial Analytics (renderComparePage,
-// renderRankingsPage, renderSectorsPage, renderAnalyticsPage) and
-// Exports (renderExportsPage) had no remaining call sites at all and
-// were deleted (2026-09-13 cleanup) rather than kept as dead code.
-// "Overview" currently still points at the old portfolio dashboard
-// (renderOverview) - user is sending a design image to rebuild this as
-// an admin-dashboard-style page; not yet replaced.
+// Removed from the visible nav (2026-09-12/13 sessions): Compare
+// Companies, Rankings, Sectors, Watchlist, Saved Views, Data Explorer,
+// Financial Analytics, Exports - render functions kept as unreachable
+// dead code (no remaining call sites removed those - only Compare/
+// Rankings/Sectors/Analytics/Exports had zero callers left and were
+// actually deleted, 2026-09-13 cleanup).
+// 2026-09-18: Companies, Intelligence Report, Alerts, and Reports (and
+// Company Detail, which only existed to host Intelligence Report) were
+// FULLY DELETED per explicit user request - not just hidden from nav.
+// Financial-statement analysis (ratios/peer comparison/risk/trends) and
+// the Alerts risk/opportunity feed built on it are out of scope for a
+// board/remuneration survey tool, per that discussion. Every place that
+// used to link into those pages now goes straight to that company's
+// Survey Report instead (goToCompanySurveyData()). Company management
+// (add/delete) and Import Activity moved into Settings
+// (renderSettingsCompaniesPanel/renderSettingsActivityPanel) rather
+// than staying separate pages. The underlying FinancialPeriod/
+// FinancialStatement data model was NOT deleted - DirectorRemunerationRow
+// (Survey Report's Directors' Register) is anchored to FinancialPeriod,
+// so that storage is still needed even with no page presenting it.
 let currentPage = 'overview';
 let currentCompanyId = null;
 let currentCompanyName = '';
@@ -983,7 +982,6 @@ function updateUserBadge(){
   if (u.logged_in) {
     dd.innerHTML = `
       ${u.role === 'admin' ? `<button onclick="goTo('settings')">Settings</button>` : ''}
-      <button onclick="goTo('alerts')">Alerts</button>
       <button onclick="logout()">Log Out</button>`;
   } else {
     dd.innerHTML = `
@@ -1093,25 +1091,7 @@ function renderNav(){
 
 function goTo(pageId){
   currentPage = pageId;
-  // Every other page starts fresh with no company in context - but
-  // Intelligence Report reached from the nav (rather than via
-  // goToIntelligenceReport(id) from a specific company's page) should
-  // behave like Financial Analytics: land on whichever company was last
-  // viewed (or the first company on record), not force a blank
-  // "no company selected" state every single time the nav link is
-  // clicked. currentCompanyId itself stays null here so other pages -
-  // company-detail in particular - don't inherit a stale id; the
-  // Intelligence Report entry point tracks its own irLandingCompanyId
-  // instead (see renderIntelligenceReportEntry). irStandalone=true is
-  // what tells render()'s dispatcher to take the company-picker landing
-  // branch instead of expecting a specific company already in context -
-  // without setting it here, a plain nav click would fall through to the
-  // breadcrumb/back-button view with no company id to render it for.
-  if (pageId !== 'intelligence-report') {
-    currentCompanyId = null;
-  } else {
-    irStandalone = true;
-  }
+  currentCompanyId = null;
   renderNav();
   render();
   closeSidebar();
@@ -1138,92 +1118,11 @@ document.addEventListener('click', () => {
   document.querySelectorAll('.row-menu').forEach(m => m.classList.add('hidden'));
 });
 
-async function refreshNotifBadge(){
-  try {
-    const res = await fetch('/api/alerts');
-    const data = await res.json();
-    const count = Array.isArray(data) ? data.length : ((data.risk_count || 0) + (data.opportunity_count || 0));
-    const badge = document.getElementById('notifBadge');
-    if (!badge) return;
-    if (count > 0) {
-      badge.textContent = count > 9 ? '9+' : String(count);
-      badge.style.display = 'flex';
-    } else {
-      badge.style.display = 'none';
-    }
-  } catch (e) { /* badge is cosmetic - fail silently */ }
-}
-
-function goToCompany(companyId){
-  currentPage = 'company-detail';
-  currentCompanyId = companyId;
-  renderNav();
-  render();
-  closeSidebar();
-}
-
-let irPeriod = null;
-let irCache = null;
-let irTab = 'executive-summary';
-let irStandalone = false;  // true when reached via the nav nav item (no single "back to company" to return to)
-// Tracks which company the standalone nav entry to Intelligence Report
-// should show - separate from currentCompanyId (which company-detail
-// uses) so switching companies from the Intelligence Report's own
-// picker doesn't affect the Companies/Company Detail pages, and so
-// coming back to the nav item later re-opens the same company instead
-// of resetting to the first one every time.
-let irLandingCompanyId = null;
-
-function goToIntelligenceReport(companyId){
-  currentPage = 'intelligence-report';
-  currentCompanyId = companyId;
-  irLandingCompanyId = companyId;
-  irStandalone = false;
-  irPeriod = null; irCache = null; irTab = 'executive-summary';
-  renderNav();
-  render();
-  closeSidebar();
-}
-
 function goToCompanySurveyData(companyId){
   currentPage = 'survey-report';
   renderNav();
   closeSidebar();
   srSwitchCompany(companyId);
-}
-
-async function renderIntelligenceReportEntry(){
-  // Entry point for the sidebar nav item - unlike goToIntelligenceReport
-  // (always called with a specific company already chosen, from that
-  // company's own detail page), this can be reached with no company in
-  // context at all. Picks a sensible default (last-viewed, or the first
-  // company on record) and renders a company picker in the header so the
-  // page is immediately useful without forcing a detour through
-  // Companies first.
-  const app = document.getElementById('app');
-  if (!allCompaniesCache.length) {
-    const res = await fetch('/api/companies');
-    allCompaniesCache = await res.json();
-  }
-  if (!allCompaniesCache.length) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet.
-      <button class="btn-primary-cta" style="margin:0 6px;" onclick="goTo('companies')">Go to Companies</button>
-      to add one, or seed the full NSE roster from there.</div></div>`;
-    return;
-  }
-  if (!irLandingCompanyId || !allCompaniesCache.some(c => c.id === irLandingCompanyId)) {
-    irLandingCompanyId = allCompaniesCache[0].id;
-  }
-  currentCompanyId = irLandingCompanyId;
-  irStandalone = true;
-  await renderIntelligenceReport(irLandingCompanyId, {standalone: true});
-}
-
-function switchIRLandingCompany(id){
-  irLandingCompanyId = parseInt(id, 10);
-  currentCompanyId = irLandingCompanyId;
-  irPeriod = null; irCache = null; irTab = 'executive-summary';
-  renderIntelligenceReportEntry();
 }
 
 async function render(){
@@ -1237,21 +1136,9 @@ async function render(){
     title.textContent = 'Overview';
     sub.innerHTML = 'Portfolio Overview · All Companies';
     await renderOverview();
-  } else if (currentPage === 'companies') {
-    title.textContent = 'Companies';
-    sub.textContent = 'Manage and analyze all companies you track';
-    await renderCompaniesPage('');
-  } else if (currentPage === 'alerts') {
-    title.textContent = 'Alerts';
-    sub.textContent = 'Active risk flags and opportunities across the portfolio';
-    await renderAlertsPage();
-  } else if (currentPage === 'reports') {
-    title.textContent = 'Reports';
-    sub.textContent = 'Import activity — every scan, parse, and save attempt';
-    await renderReportsPage();
   } else if (currentPage === 'settings') {
     title.textContent = 'Settings';
-    sub.textContent = 'Database status and portfolio management';
+    sub.textContent = 'Database status, portfolio management, and import activity';
     await renderSettingsPage();
   } else if (currentPage === 'survey-report') {
     // Title/sub set inside renderSurveyReportPage() per-tab, same pattern
@@ -1263,21 +1150,6 @@ async function render(){
     await renderSurveyAnalyticsPage();
   } else if (currentPage === 'intelligence-layer') {
     await renderIntelligenceLayerPage();
-  } else if (currentPage === 'company-detail') {
-    await renderCompanyDetail(currentCompanyId);
-  } else if (currentPage === 'intelligence-report') {
-    title.textContent = 'Intelligence Report';
-    sub.textContent = 'Deep-dive company analysis across 8 areas — health, ratios, trends, peers, risk, remuneration, outlook, and sources';
-    // goToIntelligenceReport(companyId) (drilling in from a specific
-    // company's own page) sets irStandalone=false and wants that exact
-    // company's breadcrumb view; reaching this page via the sidebar nav
-    // item goes through renderIntelligenceReportEntry() instead, which
-    // sets irStandalone=true and shows the company-picker landing state.
-    if (irStandalone) {
-      await renderIntelligenceReportEntry();
-    } else {
-      await renderIntelligenceReport(currentCompanyId, {standalone: false});
-    }
   }
 }
 
@@ -1407,7 +1279,7 @@ async function renderOverview(){
     const sc = surveyByCompanyId[c.id];
     if (!sc) {
       return `
-        <tr class="clickable" onclick="goToIntelligenceReport(${c.id})">
+        <tr class="clickable" onclick="goToCompanySurveyData(${c.id})">
           <td>${escapeHtml(c.name)}</td>
           <td>${escapeHtml(c.sector || '-')}</td>
           <td><span class="ov-status-pill pending">No Survey Data</span></td>
@@ -1419,7 +1291,7 @@ async function renderOverview(){
     const barColor = sc.review_status === 'completed' ? 'var(--green)' : sc.review_status === 'in-progress' ? 'var(--blue)' : 'var(--amber)';
     const lastUpdated = sc.last_updated ? new Date(sc.last_updated).toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'}) : naSpan('\u2014');
     return `
-      <tr class="clickable" onclick="goToIntelligenceReport(${c.id})">
+      <tr class="clickable" onclick="goToCompanySurveyData(${c.id})">
         <td>${escapeHtml(c.name)}</td>
         <td>${escapeHtml(c.sector || '-')}</td>
         <td><span class="ov-status-pill ${sc.review_status}">${statusLabel}</span></td>
@@ -1524,7 +1396,7 @@ async function renderOverview(){
           <tbody>${companyRows}</tbody>
         </table>
         <div style="margin-top:10px;font-size:10.5px;color:var(--text-faint);">Status reflects field-level review activity on each company's latest survey data (see the Data Quality tab for full detail).</div>
-        <span class="ov-panel-link" onclick="goTo('companies')" style="display:inline-block;margin-top:8px;">View all companies &rarr;</span>
+        <span class="ov-panel-link" onclick="goTo('settings')" style="display:inline-block;margin-top:8px;">Manage companies &rarr;</span>
         ` : `<div class="empty">No companies on file yet.</div>`}
       </div>
 
@@ -1570,7 +1442,7 @@ async function renderOverview(){
       <div class="panel">
         <div class="ov-panel-head"><h2>Quick Actions</h2></div>
         <div class="ov-quick-actions">
-          <div class="ov-qa-card" onclick="goTo('reports')">
+          <div class="ov-qa-card" onclick="goTo('settings')">
             <div class="ov-qa-icon" style="background:var(--amber-soft);color:var(--amber);">📄</div>
             <div><div class="ov-qa-title">Generate Report</div><div class="ov-qa-desc">Create survey progress or quality report</div></div>
           </div>
@@ -1898,301 +1770,15 @@ async function submitUploadReports(){
       </div>`;
     }).join('');
     finish(true);
-    if (data.saved > 0) {
-      if (uploadReportsCompanyId) {
-        closeUploadReportsModal();
-        await renderCompanyOverviewTab(uploadReportsCompanyId);  // refresh this company's page with the new period(s)
-      } else {
-        await renderCompaniesPage(coFilterText);  // refresh the table with new/updated companies
-      }
+    if (data.saved > 0 && currentPage === 'settings') {
+      await renderSettingsCompaniesPanel();
+      await renderSettingsActivityPanel();
     }
   } catch (e) {
     finish(false, 'Upload failed: ' + e.message);
   }
 }
 
-
-// ---------- Companies page ----------
-
-let coFilterText = '';
-let coSectorFilter = '';
-let coExchangeFilter = '';
-let coCountryFilter = '';
-let coScoreFilter = '';
-let coOnlyWithData = false;
-let coSortKey = null;
-let coSortDir = 'desc';
-let coPage = 1;
-let coRowsPerPage = 10;
-const CO_ALL_COLUMNS = [
-  {key:'ticker', label:'Ticker', default:true},
-  {key:'exchange', label:'Exchange', default:true},
-  {key:'sector', label:'Sector', default:true},
-  {key:'country', label:'Country', default:true},
-  {key:'period', label:'Latest Period', default:true},
-  {key:'net_income', label:'Net Income', default:true},
-  {key:'net_margin', label:'Net Margin', default:true},
-  {key:'roe', label:'ROE', default:true},
-];
-let coVisibleColumns = new Set(CO_ALL_COLUMNS.filter(c => c.default).map(c => c.key));
-
-async function renderCompaniesPage(filterText){
-  const res = await fetch('/api/companies');
-  allCompaniesCache = await res.json();
-  if (filterText !== undefined) coFilterText = filterText || '';
-  coPage = 1;
-  setPageActions([
-    {label: 'Export Portfolio (.xlsx)', icon: '⭳', perm: 'user', onClick: "window.location.href='/api/export/portfolio'"},
-    {label: 'Upload Annual Reports', icon: '⭱', perm: 'admin', onClick: 'openUploadReportsModal()'},
-  ]);
-  renderCompaniesTable(coFilterText);
-}
-
-function setCoSectorFilter(v){ coSectorFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
-function setCoExchangeFilter(v){ coExchangeFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
-function setCoCountryFilter(v){ coCountryFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
-function setCoScoreFilter(v){ coScoreFilter = v; coPage = 1; renderCompaniesTable(coFilterText); }
-function toggleCoOnlyWithData(el){
-  el.classList.toggle('on');
-  coOnlyWithData = el.classList.contains('on');
-  coPage = 1;
-  renderCompaniesTable(coFilterText);
-}
-function onCoSearchInput(v){ coFilterText = v; coPage = 1; renderCompaniesTable(coFilterText); }
-function setCoSort(key){
-  if (coSortKey === key) { coSortDir = coSortDir === 'asc' ? 'desc' : 'asc'; }
-  else { coSortKey = key; coSortDir = 'desc'; }
-  renderCompaniesTable(coFilterText);
-}
-function setCoPage(p){ coPage = p; renderCompaniesTable(coFilterText); }
-function setCoRowsPerPage(v){ coRowsPerPage = parseInt(v, 10); coPage = 1; renderCompaniesTable(coFilterText); }
-function toggleCoColumnsMenu(e){
-  e.stopPropagation();
-  document.getElementById('coColumnsMenu').classList.toggle('hidden');
-}
-function toggleCoColumn(key, checked){
-  if (checked) coVisibleColumns.add(key); else coVisibleColumns.delete(key);
-  renderCompaniesTable(coFilterText);
-}
-
-function sparklineSvg(scores){
-  if (!scores || scores.length < 2) return `<span class="empty" style="padding:0;">-</span>`;
-  const w = 64, h = 26, pad = 3;
-  const minV = Math.min(...scores), maxV = Math.max(...scores);
-  const stepX = (w - pad*2) / (scores.length - 1);
-  const yFor = v => h - pad - ((v - minV) / (maxV - minV || 1)) * (h - pad*2);
-  const pts = scores.map((v, i) => ({x: pad + i*stepX, y: yFor(v)}));
-  const line = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
-  const up = scores[scores.length - 1] >= scores[0];
-  const color = up ? 'var(--green)' : 'var(--red)';
-  const last = pts[pts.length - 1];
-  return `<svg class="sparkline-svg" viewBox="0 0 ${w} ${h}">
-    <path class="spark-line" d="${line}" stroke="${color}"></path>
-    <circle class="spark-dot" cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" fill="${color}"></circle>
-  </svg>`;
-}
-
-function deltaSpan(value, {suffix = '%', decimals = 1, invert = false} = {}){
-  if (value === null || value === undefined) return '';
-  const num = Number(value);
-  const isUp = invert ? num < 0 : num > 0;
-  const isFlat = num === 0;
-  const dir = isFlat ? 'flat' : (isUp ? 'up' : 'down');
-  const arrow = isFlat ? '→' : (isUp ? '▲' : '▼');
-  return `<span class="delta ${dir}">${arrow} ${Math.abs(num).toFixed(decimals)}${suffix}</span>`;
-}
-
-function renderCompaniesTable(filterText){
-  const app = document.getElementById('app');
-  const q = (filterText || '').trim().toLowerCase();
-
-  if (allCompaniesCache.length === 0) {
-    app.innerHTML = `<div class="panel"><div class="empty">No companies yet.
-      Upload a financial statement PDF, or
-      <button class="btn-primary-cta" data-perm="admin" style="margin:0 6px;" onclick="openAddCompanyModal()">+ Add Company</button>
-      to enter one manually.</div></div>`;
-    return;
-  }
-
-  const sectors = [...new Set(allCompaniesCache.map(c => c.sector).filter(Boolean))].sort();
-  const exchanges = [...new Set(allCompaniesCache.map(c => c.exchange).filter(Boolean))].sort();
-  const countries = [...new Set(allCompaniesCache.map(c => c.country).filter(Boolean))].sort();
-
-  let companies = allCompaniesCache.filter(c =>
-    !q || (c.name || '').toLowerCase().includes(q) ||
-    (c.ticker || '').toLowerCase().includes(q) ||
-    (c.sector || '').toLowerCase().includes(q));
-  if (coSectorFilter) companies = companies.filter(c => c.sector === coSectorFilter);
-  if (coExchangeFilter) companies = companies.filter(c => c.exchange === coExchangeFilter);
-  if (coCountryFilter) companies = companies.filter(c => c.country === coCountryFilter);
-  if (coOnlyWithData) companies = companies.filter(c => !!c.latest);
-  if (coScoreFilter) companies = companies.filter(c => c.latest && c.latest.score_band === coScoreFilter);
-
-  if (coSortKey) {
-    const dir = coSortDir === 'asc' ? 1 : -1;
-    companies = [...companies].sort((a, b) => {
-      const av = coSortValue(a, coSortKey), bv = coSortValue(b, coSortKey);
-      if (av === null || av === undefined) return 1;
-      if (bv === null || bv === undefined) return -1;
-      if (typeof av === 'string') return av.localeCompare(bv) * dir;
-      return (av - bv) * dir;
-    });
-  }
-
-  const withData = allCompaniesCache.filter(c => c.latest);
-  const combinedRevenue = withData.reduce((s, c) => s + (c.latest.revenue || 0), 0);
-  const combinedNetIncome = withData.reduce((s, c) => s + (c.latest.net_income || 0), 0);
-  const scored = withData.filter(c => c.latest.financial_score !== null && c.latest.financial_score !== undefined);
-  const avgScore = scored.length ? Math.round(scored.reduce((s, c) => s + c.latest.financial_score, 0) / scored.length) : null;
-  const avgBand = avgScore === null ? null : avgScore >= 70 ? 'strong' : avgScore >= 40 ? 'moderate' : 'weak';
-
-  const statCards = `
-    <div class="stat-grid">
-      ${statCard('blue', '🏢', allCompaniesCache.length, 'Total Companies', `<div class="stat-trend neutral">All companies in your portfolio</div>`)}
-      ${statCard('green', '📈', withData.length, 'Companies with Data', `<div class="stat-trend neutral">${allCompaniesCache.length ? fmt(withData.length / allCompaniesCache.length * 100, 1) : '0'}% of total companies</div>`)}
-      ${statCard('purple', '💰', combinedRevenue ? fmtMoney(combinedRevenue) : '-', 'Combined Revenue', `<div class="stat-trend neutral">Across companies with data</div>`)}
-      ${statCard('amber', '💼', combinedNetIncome ? fmtMoney(combinedNetIncome) : '-', 'Combined Net Income', `<div class="stat-trend neutral">Across companies with data</div>`)}
-      ${statCard('blue', '🛡️', avgScore !== null ? avgScore + ' /100' : '-', 'Avg Financial Score', `<div class="stat-trend neutral">${avgBand ? scoreBandLabel(avgBand) + ' overall health' : 'No scored companies yet'}</div>`)}
-    </div>`;
-
-  const filterBar = `
-    <div class="filter-bar" style="position:relative;">
-      <input class="filter-search-compact" style="order:0;" placeholder="Search companies..." value="${escapeHtml(filterText || '')}" oninput="onCoSearchInput(this.value)">
-      <select class="filter-select" onchange="setCoSectorFilter(this.value)">
-        <option value="">All Sectors</option>
-        ${sectors.map(s => `<option value="${escapeHtml(s)}" ${s === coSectorFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
-      </select>
-      <select class="filter-select" onchange="setCoExchangeFilter(this.value)">
-        <option value="">All Exchanges</option>
-        ${exchanges.map(x => `<option value="${escapeHtml(x)}" ${x === coExchangeFilter ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('')}
-      </select>
-      <select class="filter-select" onchange="setCoCountryFilter(this.value)">
-        <option value="">All Countries</option>
-        ${countries.map(c => `<option value="${escapeHtml(c)}" ${c === coCountryFilter ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
-      </select>
-      <select class="filter-select" onchange="setCoScoreFilter(this.value)">
-        <option value="">All Scores</option>
-        <option value="strong" ${coScoreFilter === 'strong' ? 'selected' : ''}>Strong (70-100)</option>
-        <option value="moderate" ${coScoreFilter === 'moderate' ? 'selected' : ''}>Moderate (40-69)</option>
-        <option value="weak" ${coScoreFilter === 'weak' ? 'selected' : ''}>Weak (0-39)</option>
-      </select>
-      <div class="toggle-row" onclick="toggleCoOnlyWithData(document.getElementById('coOnlyWithDataToggle'))">
-        <div class="toggle-switch ${coOnlyWithData ? 'on' : ''}" id="coOnlyWithDataToggle"><div class="knob"></div></div>
-        Show only with data
-      </div>
-      <div style="flex:1"></div>
-      <div style="position:relative;">
-        <button class="export-btn" onclick="toggleCoColumnsMenu(event)">☰ Columns</button>
-        <div class="columns-menu hidden" id="coColumnsMenu" onclick="event.stopPropagation()">
-          ${CO_ALL_COLUMNS.map(c => `
-            <label class="columns-menu-item">
-              <input type="checkbox" ${coVisibleColumns.has(c.key) ? 'checked' : ''} onchange="toggleCoColumn('${c.key}', this.checked)">
-              ${escapeHtml(c.label)}
-            </label>`).join('')}
-        </div>
-      </div>
-      <button class="btn-primary-cta" data-perm="admin" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
-    </div>`;
-
-  if (companies.length === 0) {
-    app.innerHTML = statCards + `<div class="panel">${filterBar}<div class="empty">No companies match the current filters.</div></div>`;
-    return;
-  }
-
-  const totalFiltered = companies.length;
-  const totalPages = Math.max(1, Math.ceil(totalFiltered / coRowsPerPage));
-  if (coPage > totalPages) coPage = totalPages;
-  const pageStart = (coPage - 1) * coRowsPerPage;
-  const pageCompanies = companies.slice(pageStart, pageStart + coRowsPerPage);
-
-  const col = key => coVisibleColumns.has(key);
-  const sortTh = (key, label) => `<th class="sortable ${coSortKey===key?'active':''}" onclick="setCoSort('${key}')">${label}<span class="sort-ic">${coSortKey===key ? (coSortDir==='asc'?'▲':'▼') : '↕'}</span></th>`;
-
-  const headerCols = [
-    sortTh('name', 'Company'),
-    col('ticker') ? sortTh('ticker', 'Ticker') : '',
-    col('exchange') ? '<th>Exchange</th>' : '',
-    col('sector') ? sortTh('sector', 'Sector') : '',
-    col('country') ? '<th>Country</th>' : '',
-    col('period') ? '<th>Latest Period</th>' : '',
-    sortTh('revenue', 'Revenue'),
-    col('net_income') ? sortTh('net_income', 'Net Income') : '',
-    col('net_margin') ? sortTh('net_margin', 'Net Margin') : '',
-    col('roe') ? sortTh('roe', 'ROE') : '',
-    sortTh('financial_score', 'Financial Score'),
-    '<th>Score Trend</th>',
-    '<th></th>',
-  ].join('');
-
-  const rows = pageCompanies.map(c => {
-    const l = c.latest;
-    const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
-    const cells = [
-      `<td>
-        <div class="co-cell">
-          <div class="co-avatar" style="background:${coAvatarColor(c.name)};">${coInitials(c.name)}</div>
-          <span class="co-name">${escapeHtml(c.name)}</span>
-        </div>
-      </td>`,
-      col('ticker') ? `<td><span class="badge">${escapeHtml(c.ticker || '-')}</span></td>` : '',
-      col('exchange') ? `<td>${escapeHtml(c.exchange || '-')}</td>` : '',
-      col('sector') ? `<td>${escapeHtml(c.sector || '-')}</td>` : '',
-      col('country') ? `<td>${escapeHtml(c.country || '-')}</td>` : '',
-      col('period') ? `<td>${l ? escapeHtml(l.period) : '-'}</td>` : '',
-      `<td>${l && l.revenue !== null && l.revenue !== undefined ? fmtAmount(l.revenue) : '-'}${l ? deltaSpan(l.revenue_yoy) : ''}</td>`,
-      col('net_income') ? `<td>${l && l.net_income !== null && l.net_income !== undefined ? fmtAmount(l.net_income) : '-'}${l ? deltaSpan(l.net_income_yoy) : ''}</td>` : '',
-      col('net_margin') ? `<td>${l ? fmt(l.net_margin) + '%' : '-'}${l ? deltaSpan(l.net_margin_delta, {suffix:'pp'}) : ''}</td>` : '',
-      col('roe') ? `<td>${l ? fmt(l.roe) + '%' : '-'}${l ? deltaSpan(l.roe_delta, {suffix:'pp'}) : ''}</td>` : '',
-      `<td>${band ? `<span class="score-badge score-${band}">${l.financial_score}</span>` : '-'}</td>`,
-      `<td>${sparklineSvg(l ? l.score_trend : null)}</td>`,
-      `<td>
-        <div class="row-actions">
-          <button class="view-btn" onclick="event.stopPropagation();goToIntelligenceReport(${c.id})">View</button>
-        </div>
-      </td>`,
-    ].join('');
-    return `<tr class="clickable" onclick="goToIntelligenceReport(${c.id})">${cells}</tr>`;
-  }).join('');
-
-  const pageNumbers = [];
-  for (let p = 1; p <= totalPages; p++) pageNumbers.push(p);
-  const pagerBtns = pageNumbers.map(p =>
-    `<button class="page-btn ${p===coPage?'active':''}" onclick="setCoPage(${p})">${p}</button>`
-  ).join('');
-
-  app.innerHTML = statCards + `
-    <div class="panel">
-      ${filterBar}
-      <table>
-        <thead><tr>${headerCols}</tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <div class="results-footer">
-        <span>Showing ${pageStart + 1} to ${Math.min(pageStart + coRowsPerPage, totalFiltered)} of ${totalFiltered} companies</span>
-        <div class="pagination">
-          <button class="page-btn" ${coPage<=1?'disabled':''} onclick="setCoPage(${coPage-1})">‹</button>
-          ${pagerBtns}
-          <button class="page-btn" ${coPage>=totalPages?'disabled':''} onclick="setCoPage(${coPage+1})">›</button>
-        </div>
-        <div class="rows-per-page">
-          Rows per page
-          <select onchange="setCoRowsPerPage(this.value)">
-            ${[10,25,50].map(n => `<option value="${n}" ${n===coRowsPerPage?'selected':''}>${n}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function coSortValue(c, key){
-  if (key === 'name') return (c.name || '').toLowerCase();
-  if (key === 'ticker') return (c.ticker || '').toLowerCase();
-  if (key === 'sector') return (c.sector || '').toLowerCase();
-  const l = c.latest;
-  if (!l) return null;
-  return l[key];
-}
 
 async function deleteCompany(companyId, companyName){
   if (!confirm(`Delete ${companyName} and all of its saved financial data? This can't be undone.`)) return;
@@ -2204,19 +1790,7 @@ async function deleteCompany(companyId, companyName){
       return;
     }
     allCompaniesCache = allCompaniesCache.filter(c => c.id !== companyId);
-    // Called from the Intelligence Report page (its own Delete button) -
-    // the company just deleted is the one currently being viewed, so
-    // there's nothing left here to refresh in place. Send the person
-    // back to the Companies list instead of trying to re-render a report
-    // for a company that no longer exists.
-    if (currentPage === 'companies') {
-      renderCompaniesTable(coFilterText);
-    } else {
-      currentCompanyId = null;
-      irLandingCompanyId = null;
-      irCache = null;
-      goTo('companies');
-    }
+    await renderSettingsCompaniesPanel();
   } catch (err) {
     console.error('Delete failed:', err);
     alert('Delete failed — check the browser console for details.');
@@ -2299,7 +1873,7 @@ function renderRankingsTable(){
     const band = l && l.financial_score !== null ? (l.financial_score >= 70 ? 'strong' : l.financial_score >= 40 ? 'moderate' : 'weak') : null;
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i + 1);
     return `
-      <tr class="clickable" onclick="goToIntelligenceReport(${c.id})">
+      <tr class="clickable" onclick="goToCompanySurveyData(${c.id})">
         <td class="rank-medal">${medal}</td>
         <td>
           <div class="co-cell">
@@ -2312,7 +1886,7 @@ function renderRankingsTable(){
         <td>${band ? `<span class="score-badge score-${band}">${l.financial_score}/100</span>` : '-'}</td>
         <td>${l && l.revenue !== null && l.revenue !== undefined ? fmtAmount(l.revenue) : '-'}</td>
         <td>${l && l.net_income !== null && l.net_income !== undefined ? fmtAmount(l.net_income) : '-'}</td>
-        <td><button class="view-btn" onclick="event.stopPropagation();goToIntelligenceReport(${c.id})">View</button></td>
+        <td><button class="view-btn" onclick="event.stopPropagation();goToCompanySurveyData(${c.id})">View</button></td>
       </tr>`;
   }).join('');
 
@@ -2685,37 +2259,6 @@ async function loadAnalyticsTrends(){
 }
 
 // ---------- Alerts ----------
-
-async function renderAlertsPage(){
-  const app = document.getElementById('app');
-  const res = await fetch('/api/alerts');
-  const data = await res.json();
-
-  const riskCards = data.risks.length ? data.risks.map(a => `
-    <div class="alert-card">
-      <div class="alert-title clickable" onclick="goToIntelligenceReport(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
-      <div class="alert-meta"><span class="severity-badge severity-${a.severity}">${a.severity}</span> · ${escapeHtml(a.metric)}</div>
-    </div>`).join('') : '<div class="empty">No active risk flags.</div>';
-
-  const oppCards = data.opportunities.length ? data.opportunities.map(a => `
-    <div class="alert-card">
-      <div class="alert-title clickable" onclick="goToIntelligenceReport(${a.company_id})">${escapeHtml(a.company_name)} — ${escapeHtml(a.title)}</div>
-      <div class="alert-meta"><span class="severity-badge severity-Positive">Positive</span> · ${escapeHtml(a.metric)}</div>
-    </div>`).join('') : '<div class="empty">No standout opportunities detected right now.</div>';
-
-  app.innerHTML = `
-    <div class="row row-2" style="grid-template-columns:1fr 1fr;">
-      <div class="panel">
-        <div class="panel-head"><h2>Risk Alerts</h2><span class="badge">${data.risk_count}</span></div>
-        ${riskCards}
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Opportunities</h2><span class="badge">${data.opportunity_count}</span></div>
-        ${oppCards}
-      </div>
-    </div>
-  `;
-}
 
 // ---------- Survey Report (per-company, 9 tabs) ----------
 // One company's own filed board/director/remuneration data - the
@@ -4194,7 +3737,7 @@ function ilTopCompaniesTable(rows, field, limit){
   const sorted = [...rows].filter(r => r[field] !== null).sort((a,b) => b[field] - a[field]).slice(0, limit);
   if (!sorted.length) return `<div class="empty">${naSpan('Not enough data')}</div>`;
   return `<table><thead><tr><th>#</th><th>Company</th><th>Sector</th><th>Total Director Remuneration</th></tr></thead><tbody>
-    ${sorted.map((r,i) => `<tr class="clickable" onclick="goToIntelligenceReport(${r.company_id})"><td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sector || '-')}</td><td>${fmtAmount(r[field])}</td></tr>`).join('')}
+    ${sorted.map((r,i) => `<tr class="clickable" onclick="goToCompanySurveyData(${r.company_id})"><td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.sector || '-')}</td><td>${fmtAmount(r[field])}</td></tr>`).join('')}
   </tbody></table>`;
 }
 
@@ -4439,7 +3982,7 @@ function ilCompanyProfilesTab(){
           <tr><td>Total Director Remuneration</td><td>${company.total_director_remuneration !== null ? fmtAmount(company.total_director_remuneration) : naSpan('Not filed')}</td></tr>
         </tbody></table>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-          <button class="secondary" onclick="goToIntelligenceReport(${company.company_id})">View Intelligence Report (financials) &rarr;</button>
+          <button class="secondary" onclick="goToCompanySurveyData(${company.company_id})">View Intelligence Report (financials) &rarr;</button>
           <button class="secondary" onclick="goToCompanySurveyData(${company.company_id})">View Survey Data (board, committees, evidence) &rarr;</button>
         </div>
       </div>
@@ -4728,38 +4271,6 @@ function ilGovernanceKeyInsights(withIndep, withGender, indepCompliant, genderCo
 }
 
 // ---------- Reports (import job audit trail) ----------
-
-async function renderReportsPage(){
-  const app = document.getElementById('app');
-  const res = await fetch('/api/import-jobs');
-  const jobs = await res.json();
-
-  if (!jobs.length) {
-    app.innerHTML = `<div class="panel"><div class="empty">No import activity yet. Filings saved via NSE import or the report builder will show up here.</div></div>`;
-    return;
-  }
-
-  const rows = jobs.map(j => `
-    <tr>
-      <td>${j.company_name ? `<span class="clickable" onclick="goToIntelligenceReport(${j.company_id})">${escapeHtml(j.company_name)}</span>` : '-'}</td>
-      <td>${escapeHtml(j.period_label || '-')}</td>
-      <td><span class="status-badge status-${escapeHtml(j.status)}">${escapeHtml(j.status)}</span></td>
-      <td>${j.source_url ? `<a href="${escapeHtml(j.source_url)}" target="_blank" rel="noopener">Source PDF</a>` : '-'}</td>
-      <td>${j.started_at ? new Date(j.started_at).toLocaleString() : '-'}</td>
-      <td>${j.error_message ? `<span style="color:var(--red);">${escapeHtml(j.error_message)}</span>` : '-'}</td>
-      ${canEdit() ? `<td>${extractionScoreBadge(j)}</td>` : ''}
-    </tr>`).join('');
-
-  app.innerHTML = `
-    <div class="panel">
-      <div class="panel-head"><h2>Import Activity</h2><span class="badge">${jobs.length}</span></div>
-      <table>
-        <thead><tr><th>Company</th><th>Period</th><th>Status</th><th>Source</th><th>Started</th><th>Error</th>${canEdit() ? '<th>Extraction Score</th>' : ''}</tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-  `;
-}
 
 // ---------- Survey Analytics & Reporting ----------
 // A fixed-edition aggregate report across every company with
@@ -6327,19 +5838,6 @@ async function renderSettingsPage(){
     ? `<div class="status-banner ok">✓ Connected to ${escapeHtml(status.database_engine)} — a persistent database. Saved data will survive restarts and redeploys.</div>`
     : `<div class="status-banner warn">⚠ Connected to ${escapeHtml(status.database_engine)}. ${escapeHtml(status.warning || '')}</div>`;
 
-  const manageRows = `
-    <div class="panel">
-      <div class="panel-head"><h2>Manage</h2></div>
-      <div class="data-summary-row">
-        <div class="ds-label"><span class="ds-icon">🏢</span>Companies — edit, view, or delete tracked companies</div>
-        <button class="secondary" onclick="goTo('companies')">Open</button>
-      </div>
-      <div class="data-summary-row">
-        <div class="ds-label"><span class="ds-icon">📥</span>Import Activity — full history of scan/parse/save attempts</div>
-        <button class="secondary" onclick="goTo('reports')">Open</button>
-      </div>
-    </div>`;
-
   app.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h2>Database</h2></div>
@@ -6351,13 +5849,78 @@ async function renderSettingsPage(){
         ${statCard('amber', '📥', status.counts.import_jobs, 'Import Jobs')}
       </div>
     </div>
-    ${manageRows}
+    <div class="panel" id="settingsCompaniesPanel">
+      <div class="panel-head"><h2>Companies</h2>
+        <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
+      </div>
+      <div id="settingsCompaniesBody"><div class="empty">Loading...</div></div>
+    </div>
     <div class="panel" id="userManagementPanel">
       <div class="panel-head"><h2>User Management</h2></div>
       <div id="userManagementBody"><div class="empty">Loading...</div></div>
     </div>
+    <div class="panel" id="settingsActivityPanel">
+      <div class="panel-head"><h2>Import Activity</h2></div>
+      <div id="settingsActivityBody"><div class="empty">Loading...</div></div>
+    </div>
   `;
   await renderUserManagementPanel();
+  await renderSettingsCompaniesPanel();
+  await renderSettingsActivityPanel();
+}
+
+// Companies now only manage from here (the standalone Companies page
+// was deleted per user's request - every other part of the app that
+// used to link into it or into a per-company detail page now goes
+// straight to that company's Survey Report instead, via
+// goToCompanySurveyData()). Deliberately minimal - name, sector, and a
+// delete button - not the old page's full filter/sort/column-picker
+// table, since browsing/analyzing companies now happens from Survey
+// Report's own company picker.
+async function renderSettingsCompaniesPanel(){
+  const body = document.getElementById('settingsCompaniesBody');
+  const res = await fetch('/api/companies');
+  const companies = await res.json();
+  if (!companies.length) {
+    body.innerHTML = `<div class="empty">No companies yet.</div>`;
+    return;
+  }
+  body.innerHTML = companies.map(c => `
+    <div class="data-summary-row">
+      <div class="ds-label">
+        <span class="clickable" onclick="goToCompanySurveyData(${c.id})">${escapeHtml(c.name)}</span>
+        ${c.sector ? `<span style="color:var(--text-faint);"> — ${escapeHtml(c.sector)}</span>` : ''}
+      </div>
+      <button class="secondary" style="color:var(--red);" onclick="deleteCompany(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
+    </div>`).join('');
+}
+
+// Import Activity - inlined here from the old standalone Reports page
+// (deleted per user's request), same data (/api/import-jobs), same
+// admin-only extraction-score column.
+async function renderSettingsActivityPanel(){
+  const body = document.getElementById('settingsActivityBody');
+  const res = await fetch('/api/import-jobs');
+  const jobs = await res.json();
+  if (!jobs.length) {
+    body.innerHTML = `<div class="empty">No import activity yet.</div>`;
+    return;
+  }
+  const rows = jobs.map(j => `
+    <tr>
+      <td>${j.company_name ? `<span class="clickable" onclick="goToCompanySurveyData(${j.company_id})">${escapeHtml(j.company_name)}</span>` : '-'}</td>
+      <td>${escapeHtml(j.period_label || '-')}</td>
+      <td><span class="status-badge status-${escapeHtml(j.status)}">${escapeHtml(j.status)}</span></td>
+      <td>${j.source_url ? `<a href="${escapeHtml(j.source_url)}" target="_blank" rel="noopener">Source PDF</a>` : '-'}</td>
+      <td>${j.started_at ? new Date(j.started_at).toLocaleString() : '-'}</td>
+      <td>${j.error_message ? `<span style="color:var(--red);">${escapeHtml(j.error_message)}</span>` : '-'}</td>
+      <td>${extractionScoreBadge(j)}</td>
+    </tr>`).join('');
+  body.innerHTML = `
+    <table>
+      <thead><tr><th>Company</th><th>Period</th><th>Status</th><th>Source</th><th>Started</th><th>Error</th><th>Extraction Score</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
 }
 
 // ---------- User Management (Settings, admin only - the route itself
@@ -6460,1328 +6023,6 @@ async function umCreateUser(){
   } catch (e) { errEl.textContent = 'Could not create account.'; }
 }
 
-async function renderCompanyDetail(companyId){
-  currentCompanyId = companyId;
-  const res = await fetch(`/api/companies/${companyId}`);
-  const c = await res.json();
-  currentCompanyName = c.name;
-  document.getElementById('pageTitle').textContent = c.name;
-  document.getElementById('pageSub').textContent = `${c.ticker || ''} · ${c.exchange || ''} · ${c.sector || ''} · ${c.country || ''}`;
-
-  const periodsRes = await fetch(`/api/companies/${companyId}/periods`);
-  currentPeriodsCache = await periodsRes.json();
-  if (!currentPeriodLabel || !currentPeriodsCache.find(p => p.period_label === currentPeriodLabel)) {
-    currentPeriodLabel = currentPeriodsCache.length ? currentPeriodsCache[0].period_label : null;
-  }
-  currentStatementTab = null;
-  builderPeriod = ''; builderTab = 'income_statement';
-  builderRows = { income_statement: [], balance_sheet: [], cash_flow: [], equity: [] };
-
-  await renderCompanyDetailBody(companyId);
-}
-
-async function deleteCurrentCompany(){
-  if (!confirm(`Delete ${currentCompanyName} and all of its saved financial data? This can't be undone.`)) return;
-  try {
-    const res = await fetch(`/api/companies/${currentCompanyId}`, { method: 'DELETE' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      alert(data.error || `Delete failed (status ${res.status}).`);
-      return;
-    }
-    goTo('companies');
-  } catch (err) {
-    console.error('Delete failed:', err);
-    alert('Delete failed — check the browser console for details.');
-  }
-}
-
-async function renderCompanyDetailBody(companyId){
-  const app = document.getElementById('app');
-  app.innerHTML = `<span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span><div class="empty">Loading...</div>`;
-  await renderCompanyOverviewTab(companyId);
-}
-
-async function renderCompanyOverviewTab(companyId){
-  const app = document.getElementById('app');
-  const cRes = await fetch(`/api/companies/${companyId}`);
-  const c = await cRes.json();
-  const cNameEsc = escapeHtml(c.name).replace(/'/g, "\\'");
-  const hasPeriod = !!currentPeriodLabel;
-  setPageActions([
-    {label: 'Upload Documents', icon: '⭱', perm: 'admin', onClick: `openUploadReportsModal(${companyId}, '${cNameEsc}')`},
-    {label: 'Add / Edit Data', icon: '✏️', perm: 'admin', onClick: 'toggleEditDataPanel()'},
-    {label: 'Full FY Report (.docx)', icon: '📄', perm: 'user', disabled: !hasPeriod,
-      onClick: `window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(currentPeriodLabel || '')}/report.docx'`},
-    {label: 'Company Snapshot (.xlsx)', icon: '📊', perm: 'user', onClick: `window.location.href='/api/companies/${companyId}/export/snapshot'`},
-    {label: 'Raw Financials (.csv)', icon: '🗂️', perm: 'user', onClick: `window.location.href='/api/companies/${companyId}/export/raw.csv'`},
-    {label: 'Portfolio Export (.xlsx)', icon: '📁', perm: 'user', onClick: "window.location.href='/api/export/portfolio'"},
-    {label: 'Comparison Report (.xlsx)', icon: '📁', perm: 'user', onClick: "window.location.href='/api/export/comparison'"},
-  ]);
-
-  if (!currentPeriodsCache.length) {
-    app.innerHTML = `
-      <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
-      <div class="panel">
-        <div class="empty">No financial periods recorded yet for ${escapeHtml(c.name)}.</div>
-        <button style="margin-top:10px;" data-perm="admin" onclick="openUploadReportsModal(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">⭱ Upload Documents</button>
-      </div>
-      ${await renderCompanyDetailLegacyBody(companyId)}`;
-    return;
-  }
-
-  const periodLabel = currentPeriodLabel || currentPeriodsCache[0].period_label;
-  const dvRes = await fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(periodLabel)}/detail-view`);
-  const dv = dvRes.ok ? await dvRes.json() : null;
-
-  const breadcrumb = `
-    <div class="co-breadcrumb">
-      <a onclick="goTo('companies')">Companies</a> <span>&rsaquo;</span>
-      <span>${escapeHtml(c.name)}</span> <span>&rsaquo;</span>
-      <span>Financials</span> <span>&rsaquo;</span>
-      <span style="color:var(--text);">${escapeHtml(periodLabel)}</span>
-    </div>`;
-
-  const initials = coInitials(c.name);
-  const years = currentPeriodsCache.map(p => p.period_label);
-  const fySelect = `
-    <div class="fy-select-block">
-      <div class="fy-label">Financial Year</div>
-      <select onchange="setCurrentPeriodAndReload(this.value)">
-        ${years.map(y => `<option value="${escapeHtml(y)}" ${y === periodLabel ? 'selected' : ''}>${escapeHtml(y)}</option>`).join('')}
-      </select>
-      ${dv && dv.period && dv.period.end_date ? `<div class="fy-range">Year ended ${escapeHtml(dv.period.end_date)}</div>` : ''}
-    </div>`;
-
-  const head = `
-    ${breadcrumb}
-    <div class="co-detail-head">
-      <div class="co-detail-logo" style="background:${coAvatarColor(c.name)};">${initials}</div>
-      <div class="co-detail-title">
-        <h2>${escapeHtml(c.name)}</h2>
-        <div class="sub">${escapeHtml(c.ticker || '')} · ${escapeHtml(c.exchange || '')}</div>
-      </div>
-      <div class="co-detail-right">
-        ${fySelect}
-        <div class="fy-select-block">
-          <div class="fy-label">Currency</div>
-          <div style="font-size:15px;font-weight:700;">${escapeHtml((dv && dv.period && dv.period.currency) || 'KES')}</div>
-        </div>
-        <button class="icon-btn" data-perm="admin" title="Delete company" onclick="deleteCurrentCompany()">🗑️</button>
-        <button class="btn-primary-cta" style="margin:0;" onclick="goToIntelligenceReport(${companyId})">📊 Intelligence Report</button>
-      </div>
-    </div>`;
-
-  if (!dv) {
-    app.innerHTML = `<span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>${head}
-      <div class="panel"><div class="empty">No income statement recorded for ${escapeHtml(periodLabel)} yet.</div></div>
-      ${await renderCompanyDetailLegacyBody(companyId)}`;
-    return;
-  }
-
-  const m = dv.metrics || {};
-  const rows = dv.income_statement_rows || [];
-  const colLabels = dv.period_columns || [];
-
-  const incomeTable = rows.length ? `
-    <table>
-      <thead>
-        <tr>
-          <th>Line Item</th>
-          ${colLabels.map(y => `<th class="amount">${y ? escapeHtml(y) : '—'}</th>`).join('')}
-          <th class="amount">YoY Change</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows.map(r => `
-          <tr>
-            <td>${escapeHtml(r.label)}</td>
-            ${r.values.map(v => `<td class="amount">${v !== null && v !== undefined ? fmtAmount(v) : '—'}</td>`).join('')}
-            <td class="amount">${r.yoy_change_pct !== null && r.yoy_change_pct !== undefined ? deltaSpan(r.yoy_change_pct) : '—'}</td>
-          </tr>`).join('')}
-      </tbody>
-    </table>` : `<div class="empty">No income statement line items for ${escapeHtml(periodLabel)}.</div>`;
-
-  const fyOverview = `
-    <div class="detail-side-panel">
-      <h3>Financial Year Overview</h3>
-      <div class="fyoverview-grid">
-        <div class="fyoverview-cell"><div class="fo-label">Net Profit</div><div class="fo-value">${m.net_income !== undefined ? fmtAmount(m.net_income) : (rows.find(r=>/net.profit|net.income/i.test(r.label)) ? fmtAmount(rows.find(r=>/net.profit|net.income/i.test(r.label)).values[0]) : '—')}</div></div>
-        <div class="fyoverview-cell"><div class="fo-label">ROE</div><div class="fo-value">${m.roe !== undefined ? fmt(m.roe) + '%' : '—'}</div></div>
-        <div class="fyoverview-cell"><div class="fo-label">ROA</div><div class="fo-value">${m.roa !== undefined ? fmt(m.roa) + '%' : '—'}</div></div>
-        <div class="fyoverview-cell"><div class="fo-label">EPS</div><div class="fo-value">${m.eps !== undefined ? fmt(m.eps, 2) : '—'}</div></div>
-      </div>
-    </div>`;
-
-  const ratiosPanel = `
-    <div class="detail-side-panel">
-      <h3>Key Ratios</h3>
-      <div class="ratio-row"><span class="rr-metric">Net Profit Margin</span><span class="rr-values">${m.net_margin !== undefined ? fmt(m.net_margin) + '%' : '—'}</span></div>
-      <div class="ratio-row"><span class="rr-metric">ROE</span><span class="rr-values">${m.roe !== undefined ? fmt(m.roe) + '%' : '—'}</span></div>
-      <div class="ratio-row"><span class="rr-metric">ROA</span><span class="rr-values">${m.roa !== undefined ? fmt(m.roa) + '%' : '—'}</span></div>
-      <div class="ratio-row"><span class="rr-metric">Debt / Equity</span><span class="rr-values">${m.debt_equity !== undefined ? fmt(m.debt_equity, 2) : '—'}</span></div>
-    </div>`;
-
-  const sourceDocPanel = dv.source_document ? `
-    <div class="detail-side-panel">
-      <h3>Source Document</h3>
-      <div class="source-doc-row">
-        <div class="source-doc-icon">📄</div>
-        <div class="source-doc-meta">
-          <div class="sd-name">${escapeHtml(dv.source_document.filename || dv.source_document.url || 'Source filing')}</div>
-          <div class="sd-date">${dv.source_document.uploaded_at ? 'Uploaded ' + new Date(dv.source_document.uploaded_at).toLocaleDateString() : ''}</div>
-        </div>
-      </div>
-      ${dv.source_document.url ? `<button class="secondary" style="margin-top:10px;width:100%;" onclick="window.open('${escapeHtml(dv.source_document.url)}','_blank')">View Document ↗</button>` : ''}
-    </div>` : '';
-
-  app.innerHTML = `
-    <span class="back-link" onclick="goTo('companies')">&larr; Back to Companies</span>
-    ${head}
-    <div class="detail-2col">
-      <div>
-        <div class="panel">
-          <div class="panel-head"><h2>Income Statement</h2></div>
-          ${incomeTable}
-        </div>
-      </div>
-      <div>
-        ${fyOverview}
-        ${ratiosPanel}
-        ${sourceDocPanel}
-      </div>
-    </div>
-    <div id="legacy-detail-body">${await renderCompanyDetailLegacyBody(companyId)}</div>
-  `;
-}
-
-function setCurrentPeriodAndReload(label){
-  currentPeriodLabel = label;
-  renderCompanyOverviewTab(currentCompanyId);
-}
-
-// ========================================================================
-// INTELLIGENCE REPORT — 8-tab company report page
-// ========================================================================
-
-const IR_TABS = [
-  {id:'executive-summary', label:'Executive Summary', icon:'🔵'},
-  {id:'financial-analysis', label:'Financial Analysis', icon:'📊'},
-  {id:'performance-trends', label:'Performance Trends', icon:'📈'},
-  {id:'peer-comparison', label:'Peer Comparison', icon:'👥'},
-  {id:'risk-analysis', label:'Risk Analysis', icon:'⚠️'},
-  {id:'remuneration', label:'Remuneration', icon:'🧾'},
-  {id:'outlook', label:'Outlook', icon:'🧭'},
-  {id:'source-evidence', label:'Source Evidence', icon:'📁'},
-  {id:'raw-data', label:'Raw Data', icon:'🗂️'},
-];
-
-let irChart1 = null, irChart2 = null;
-let irPtChart1 = null, irPtChart2 = null, irPtChart3 = null, irPtChart4 = null, irPtChart5 = null;
-
-async function renderIntelligenceReport(companyId, opts){
-  const standalone = !!(opts && opts.standalone);
-  const app = document.getElementById('app');
-  document.getElementById('pageTitle').textContent = 'Intelligence Report';
-  document.getElementById('pageSub').textContent = '';
-  app.innerHTML = `<div class="empty">Loading intelligence report...</div>`;
-
-  if (!allCompaniesCache.length) {
-    const acRes = await fetch('/api/companies');
-    allCompaniesCache = await acRes.json();
-  }
-  const cRes = await fetch(`/api/companies/${companyId}`);
-  const c = await cRes.json();
-
-  if (!irCache) {
-    const res = await fetch(`/api/companies/${companyId}/intelligence-report${irPeriod ? '?period=' + encodeURIComponent(irPeriod) : ''}`);
-    irCache = await safeJson(res, {has_data: false});
-    irPeriod = irCache.period || null;
-  }
-  const ir = irCache;
-
-  // Reached straight from the nav (no single originating company page to
-  // breadcrumb back to) - swap the Companies-path breadcrumb for a
-  // company picker instead, same pattern as Financial Analytics' own
-  // page-level company dropdown.
-  const companyPicker = standalone ? `
-    <select class="period-select" onchange="switchIRLandingCompany(this.value)">
-      ${allCompaniesCache.map(co => `<option value="${co.id}" ${co.id === companyId ? 'selected' : ''}>${escapeHtml(co.name)}</option>`).join('')}
-    </select>` : '';
-
-  const breadcrumb = standalone ? `
-    <div class="co-breadcrumb">
-      <span>Intelligence Report</span> <span>&rsaquo;</span>
-      <span style="color:var(--text);">${escapeHtml(c.name)}</span>
-    </div>` : `
-    <div class="co-breadcrumb">
-      <a onclick="goTo('companies')">Companies</a> <span>&rsaquo;</span>
-      <a onclick="goToCompany(${companyId})">${escapeHtml(c.name)}</a> <span>&rsaquo;</span>
-      <span style="color:var(--text);">Intelligence Report</span>
-    </div>`;
-
-  const initials = coInitials(c.name);
-  const yearSelect = ir.has_data ? `
-    <div class="fy-select-block">
-      <div class="fy-label">Financial Year</div>
-      <select onchange="switchIRPeriod(this.value)">
-        ${ir.available_periods.map(p => `<option value="${escapeHtml(p)}" ${p === ir.period ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
-      </select>
-    </div>` : '';
-
-  const head = `
-    ${breadcrumb}
-    <div class="co-detail-head">
-      <div class="co-detail-logo" style="background:${coAvatarColor(c.name)};">${initials}</div>
-      <div class="co-detail-title">
-        <h2>${escapeHtml(c.name)}</h2>
-        <div class="sub">${escapeHtml(c.ticker || '')} · ${escapeHtml(c.exchange || '')} · ${escapeHtml(c.sector || '')}</div>
-      </div>
-      <div class="co-detail-right">
-        ${companyPicker}
-        ${yearSelect}
-        ${standalone ? '' : `<button class="secondary" onclick="goToCompany(${companyId})">&larr; Back to Company</button>`}
-        <button class="danger" data-perm="admin" onclick="deleteCompany(${companyId}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
-      </div>
-    </div>`;
-
-  setPageActions([
-    {label: 'Export Report (.xlsx)', icon: '⭱', perm: 'user', disabled: !ir.has_data,
-      onClick: `window.location.href='/api/companies/${companyId}/export/snapshot'`},
-  ]);
-
-  if (!ir.has_data) {
-    app.innerHTML = `${head}<div class="panel"><div class="empty">No financial data recorded yet for ${escapeHtml(c.name)} — add a period from the Company page first.</div></div>`;
-    return;
-  }
-
-  const tabBar = `
-    <div class="ir-tabbar">
-      ${IR_TABS.map(t => `<button class="ir-tab-btn ${irTab === t.id ? 'active' : ''}" onclick="switchIRTab('${t.id}')">${t.icon} ${t.label}</button>`).join('')}
-    </div>`;
-
-  app.innerHTML = `${head}${tabBar}<div id="ir-tab-body"></div>`;
-  renderIRTabBody();
-}
-
-function switchIRTab(tabId){
-  irTab = tabId;
-  document.querySelectorAll('.ir-tab-btn').forEach((btn, i) => btn.classList.toggle('active', IR_TABS[i].id === tabId));
-  renderIRTabBody();
-}
-
-async function switchIRPeriod(period){
-  irPeriod = period;
-  irCache = null;
-  await renderIntelligenceReport(currentCompanyId, {standalone: irStandalone});
-}
-
-function renderIRTabBody(){
-  const el = document.getElementById('ir-tab-body');
-  const ir = irCache;
-  if (irTab === 'executive-summary') el.innerHTML = irExecutiveSummaryTab(ir);
-  else if (irTab === 'financial-analysis') { el.innerHTML = irFinancialAnalysisTab(ir); irMountFinancialCharts(ir); }
-  else if (irTab === 'performance-trends') { el.innerHTML = irPerformanceTrendsTab(ir); irMountTrendCharts(ir); }
-  else if (irTab === 'peer-comparison') { el.innerHTML = irPeerComparisonTab(ir); irMountPeerChart(ir); }
-  else if (irTab === 'risk-analysis') el.innerHTML = irRiskAnalysisTab(ir);
-  else if (irTab === 'remuneration') { el.innerHTML = `<div class="empty">Loading remuneration report...</div>`; irRemunerationTab(ir); }
-  else if (irTab === 'outlook') el.innerHTML = irOutlookTab(ir);
-  else if (irTab === 'source-evidence') el.innerHTML = irSourceEvidenceTab(ir);
-  else if (irTab === 'raw-data') { el.innerHTML = `<div class="empty">Loading raw financial statements...</div>`; irRawDataTab(irCache.company.id); }
-}
-
-function irGauge(score, band, displayOverride){
-  const pct = Math.max(0, Math.min(100, score || 0));
-  const color = band === 'strong' ? 'var(--green)' : band === 'moderate' ? 'var(--amber)' : 'var(--red)';
-  const style = `background:conic-gradient(${color} 0 ${pct * 3.6}deg, var(--bg-panel-2) ${pct * 3.6}deg 360deg);`;
-  const shown = displayOverride !== undefined ? displayOverride : score;
-  return `
-    <div class="ir-gauge" style="${style}">
-      <div class="ir-gauge-hole"><div class="n">${shown ?? '-'}</div><div class="l">/100</div></div>
-    </div>`;
-}
-
-function irExecutiveSummaryTab(ir){
-  const fh = ir.financial_health;
-  const s = ir.snapshot;
-  const highlights = [];
-  ir.strengths.forEach(t => highlights.push({icon: '✅', text: t}));
-  ir.opportunities.forEach(o => highlights.push({icon: '💡', text: o.title}));
-  ir.risks.forEach(r => highlights.push({icon: r.severity === 'High' ? '🔴' : '🟠', text: `${r.title} — ${r.metric}`}));
-
-  const kpis = [
-    {label: 'Revenue', value: fmtAmount(s.revenue), delta: s.revenue_yoy, color: 'blue', icon: '💰'},
-    {label: 'Net Profit', value: fmtAmount(s.net_income), delta: s.net_income_yoy, color: 'green', icon: '💵'},
-    {label: 'ROE', value: s.roe !== null ? fmt(s.roe) + '%' : '-', delta: s.roe_delta, deltaSuffix: 'pp', color: 'purple', icon: '📊'},
-    {label: 'Total Assets', value: fmtAmount(s.total_assets), delta: s.total_assets_yoy, color: 'blue', icon: '🏦'},
-    {label: 'Net Profit Margin', value: s.net_margin !== null ? fmt(s.net_margin) + '%' : '-', delta: s.net_margin_delta, deltaSuffix: 'pp', color: 'amber', icon: '📈'},
-    {label: 'Financial Health Score', value: fh.score !== null ? `${fh.score}/100` : '-', color: 'green', icon: '🛡️'},
-  ];
-  const kpiCards = kpis.map(k => statCard(k.color, k.icon, k.value,
-    k.label, k.delta !== undefined && k.delta !== null ? `<div class="stat-trend">${deltaSpan(k.delta, {suffix: k.deltaSuffix || '%'})} vs prior period</div>` : '')).join('');
-
-  // Financial Position Snapshot: only real, filed-data-derived ratios -
-  // current ratio, debt/equity, interest coverage, net debt/EBITDA. Each
-  // renders "Not available" (not a bar) when the underlying line items
-  // weren't captured, rather than defaulting to a misleading 0.
-  const posRows = [
-    {label: 'Current Ratio', value: s.current_ratio, max: 3, good: v => v >= 1.2, fmtV: v => fmt(v, 2) + 'x'},
-    {label: 'Debt to Equity', value: s.debt_equity, max: 2, good: v => v <= 1, invert: true, fmtV: v => fmt(v, 2) + 'x'},
-    {label: 'Interest Coverage', value: s.interest_coverage, max: 20, good: v => v >= 5, fmtV: v => fmt(v, 1) + 'x'},
-    {label: 'Net Debt to EBITDA', value: s.net_debt_to_ebitda, max: 3, good: v => v <= 1.5, invert: true, fmtV: v => fmt(v, 2) + 'x'},
-  ];
-
-  return `
-    <div class="stat-grid" style="margin-bottom:16px;">${kpiCards}</div>
-
-    <div class="row row-3" style="grid-template-columns:1fr 1.1fr 1.3fr;align-items:start;">
-      <div class="panel">
-        <div class="ir-panel-title">Financial Health Score</div>
-        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;">
-          ${irGauge(fh.score, fh.band)}
-          <div class="ir-band-pill ${fh.band}">${(fh.band || '').toUpperCase()}</div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Assessment</div>
-        <div class="ir-kv-list">
-          <div class="ir-kv-row"><span class="k">Assessment</span><span class="ir-kv-pill ${(fh.band||'').toLowerCase()}">${fh.assessment.toUpperCase()}</span></div>
-          <div class="ir-kv-row"><span class="k">Outlook</span><span class="ir-kv-pill ${fh.outlook.toLowerCase()}">${fh.outlook.toUpperCase()}</span></div>
-          <div class="ir-kv-row"><span class="k">Market Position</span><span class="ir-kv-pill ${fh.market_position ? fh.market_position.toLowerCase() : 'neutral'}">${(fh.market_position || 'Not enough peer data').toUpperCase()}</span></div>
-          <div class="ir-kv-row"><span class="k">Confidence</span><span class="ir-kv-pill ${fh.confidence.toLowerCase()}">${fh.confidence.toUpperCase()} (${fh.confidence === 'High' ? '3+' : fh.confidence === 'Medium' ? '2' : '1'} periods)</span></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Key Highlights</div>
-        ${highlights.length ? highlights.map(h => `<div class="ir-highlight-item"><span class="ic">${h.icon}</span><span>${escapeHtml(h.text)}</span></div>`).join('')
-          : `<div class="empty">No standout signals vs the prior period on record.</div>`}
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="ir-panel-title">Financial Position Snapshot — ${escapeHtml(ir.period)}</div>
-      <div class="ir-kv-list">
-        ${posRows.map(r => {
-          if (r.value === null || r.value === undefined) {
-            return `<div class="ir-kv-row"><span class="k">${r.label}</span>${naSpan()}</div>`;
-          }
-          const pct = Math.max(0, Math.min(100, (r.value / r.max) * 100));
-          const isGood = r.good(r.value);
-          const color = isGood ? 'var(--green)' : 'var(--amber)';
-          return `
-            <div class="ir-kv-row" style="flex-direction:column;align-items:stretch;gap:4px;">
-              <div style="display:flex;justify-content:space-between;"><span class="k">${r.label}</span><span style="font-weight:700;">${r.fmtV(r.value)}</span></div>
-              <div style="height:6px;background:var(--bg-panel-2);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${color};border-radius:3px;"></div></div>
-            </div>`;
-        }).join('')}
-      </div>
-    </div>
-  `;
-}
-
-function irFinancialAnalysisTab(ir){
-  const s = ir.snapshot;
-  const eps = ir.key_ratios.find(r => r.metric === 'EPS');
-  const roe = ir.key_ratios.find(r => r.metric === 'ROE');
-  const topCards = [
-    {label: 'Total Revenue', value: fmtAmount(s.revenue), delta: s.revenue_yoy, color: 'blue', icon: '📈'},
-    {label: 'Gross Profit', value: s.gross_profit != null ? fmtAmount(s.gross_profit) : naSpan(), delta: null, color: 'green', icon: '💰'},
-    {label: 'Operating Profit', value: fmtAmount(s.operating_profit), delta: s.operating_profit_yoy, color: 'purple', icon: '💼'},
-    {label: 'Net Profit', value: fmtAmount(s.net_income), delta: s.net_income_yoy, color: 'green', icon: '💵'},
-    {label: 'EPS', value: eps && eps.current !== null ? fmt(eps.current, 2) : naSpan(), delta: eps ? eps.change : null, deltaSuffix: '', color: 'amber', icon: '🧮'},
-    {label: 'ROE', value: roe && roe.current !== null ? fmt(roe.current) + '%' : naSpan(), delta: roe ? roe.change : null, deltaSuffix: 'pp', color: 'blue', icon: '📊'},
-  ];
-  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label,
-    (k.delta !== undefined && k.delta !== null) ? `<div class="stat-trend">${deltaSpan(k.delta, {suffix: k.deltaSuffix !== undefined ? k.deltaSuffix : '%'})} vs prior period</div>` : '')).join('');
-
-  const incomeRows = (ir.income_statement_rows || []).map(r => `
-    <tr>
-      <td>${escapeHtml(r.label)}</td>
-      <td class="amount">${fmtAmount(r.values[0])}</td>
-      <td class="amount">${fmtAmount(r.values[1])}</td>
-      <td class="amount">${r.yoy_change_pct !== null ? deltaSpan(r.yoy_change_pct) : '-'}</td>
-    </tr>`).join('');
-
-  const cashFlowRows = (ir.cash_flow_rows || []).map(r => `
-    <tr>
-      <td>${escapeHtml(r.label)}</td>
-      <td class="amount">${fmtAmount(r.values[0])}</td>
-      <td class="amount">${fmtAmount(r.values[1])}</td>
-      <td class="amount">${r.yoy_change_pct !== null ? deltaSpan(r.yoy_change_pct) : '-'}</td>
-    </tr>`).join('');
-
-  const ratioRows = ir.key_ratios.map(r => `
-    <tr>
-      <td>${escapeHtml(r.metric)}</td>
-      <td class="amount">${r.current !== null ? fmt(r.current, r.suffix === '%' ? 1 : 2) + r.suffix : naSpan()}</td>
-      <td class="amount">${r.prior !== null ? fmt(r.prior, r.suffix === '%' ? 1 : 2) + r.suffix : '-'}</td>
-      <td class="amount">${r.change !== null ? deltaSpan(r.change, {suffix: r.suffix === '%' ? 'pp' : '', decimals: r.suffix === '%' ? 1 : 2}) : '-'}</td>
-    </tr>`).join('');
-
-  return `
-    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
-
-    <div class="row" style="grid-template-columns:1.4fr 1fr;align-items:start;">
-      <div class="panel">
-        <div class="ir-panel-title">Income Statement — ${escapeHtml(ir.period)} vs prior period (${escapeHtml(ir.currency)})</div>
-        ${incomeRows ? `
-        <table>
-          <thead><tr><th>Line Item</th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">YoY %</th></tr></thead>
-          <tbody>${incomeRows}</tbody>
-        </table>` : `<div class="empty">No income statement line items recorded for this period.</div>`}
-      </div>
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Revenue &amp; Profit Trend (${escapeHtml(ir.currency)})</h3></div>
-        <div class="chart-wrap" style="height:280px;"><canvas id="ir-chart-1"></canvas></div>
-      </div>
-    </div>
-
-    <div class="row" style="grid-template-columns:1fr 1fr;align-items:start;margin-top:16px;">
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Margin Analysis (%)</h3></div>
-        <div class="chart-wrap" style="height:220px;"><canvas id="ir-chart-2"></canvas></div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Cash Flow Summary — ${escapeHtml(ir.period)} vs prior period (${escapeHtml(ir.currency)})</div>
-        ${cashFlowRows ? `
-        <table>
-          <thead><tr><th></th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">YoY %</th></tr></thead>
-          <tbody>${cashFlowRows}</tbody>
-        </table>` : `<div class="empty">No cash flow statement line items recorded for this period.</div>`}
-      </div>
-    </div>
-
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Profitability Ratios — ${escapeHtml(ir.period)} vs prior period</div>
-      <table>
-        <thead><tr><th>Metric</th><th class="amount">${escapeHtml(ir.period)}</th><th class="amount">Prior</th><th class="amount">Change</th></tr></thead>
-        <tbody>${ratioRows}</tbody>
-      </table>
-      <div style="font-size:10.5px;color:var(--text-faint);margin-top:12px;line-height:1.5;">
-        Any metric marked "Not available" means this company's filing didn't report the underlying line item needed to compute it — never estimated in place of a real figure.
-      </div>
-    </div>
-  `;
-}
-
-function irMountFinancialCharts(ir){
-  const labels = ir.trend.map(t => t.period);
-  if (irChart1) irChart1.destroy();
-  if (irChart2) irChart2.destroy();
-  const chartOpts = {
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { labels: { color: '#aab4cc' } } },
-    scales: {
-      x: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
-      y: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
-    },
-  };
-  const c1 = document.getElementById('ir-chart-1');
-  if (c1) irChart1 = new Chart(c1, {
-    type: 'bar',
-    data: { labels, datasets: [
-      { label: 'Revenue', data: ir.trend.map(t => t.revenue), backgroundColor: '#5b9bff' },
-      { label: 'Net Profit', data: ir.trend.map(t => t.net_income), backgroundColor: '#3ddc84' },
-    ]},
-    options: chartOpts,
-  });
-  const c2 = document.getElementById('ir-chart-2');
-  if (c2) irChart2 = new Chart(c2, {
-    type: 'line',
-    data: { labels, datasets: [
-      { label: 'Gross Margin %', data: ir.trend.map(t => t.gross_margin), borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.1)', tension: .3, spanGaps: true },
-      { label: 'Operating Margin %', data: ir.trend.map(t => t.operating_margin), borderColor: '#3ddc84', backgroundColor: 'rgba(61,220,132,.1)', tension: .3, spanGaps: true },
-      { label: 'Net Margin %', data: ir.trend.map(t => t.net_margin), borderColor: '#ffb020', backgroundColor: 'rgba(255,176,32,.1)', tension: .3, spanGaps: true },
-    ]},
-    options: chartOpts,
-  });
-}
-
-function irPerformanceTrendsTab(ir){
-  const s = ir.snapshot;
-  const fy = ir.five_year_summary || {};
-  const topCards = [
-    {label: 'Revenue', value: fmtAmount(s.revenue), delta: s.revenue_yoy, color: 'blue', icon: '📈'},
-    {label: 'Net Profit', value: fmtAmount(s.net_income), delta: s.net_income_yoy, color: 'green', icon: '💵'},
-    {label: 'Operating Profit', value: fmtAmount(s.operating_profit), delta: s.operating_profit_yoy, color: 'purple', icon: '💼'},
-    {label: 'ROE', value: s.roe !== null ? fmt(s.roe) + '%' : naSpan(), delta: s.roe_delta, deltaSuffix: 'pp', color: 'blue', icon: '📊'},
-    {label: 'Net Profit Margin', value: s.net_margin !== null ? fmt(s.net_margin) + '%' : naSpan(), delta: s.net_margin_delta, deltaSuffix: 'pp', color: 'amber', icon: '🧮'},
-    {label: 'EPS', value: s.eps !== null ? fmt(s.eps, 2) : naSpan(), delta: s.eps_yoy, color: 'green', icon: '💠'},
-  ];
-  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label,
-    (k.delta !== undefined && k.delta !== null) ? `<div class="stat-trend">${deltaSpan(k.delta, {suffix: k.deltaSuffix || '%'})} vs prior period</div>` : '')).join('');
-
-  const summaryRows = [
-    {label: 'Revenue', key: 'revenue', cagr: fy.revenue_cagr},
-    {label: 'Operating Profit', key: 'operating_profit', cagr: fy.operating_profit_cagr},
-    {label: 'Net Profit', key: 'net_income', cagr: fy.net_income_cagr},
-    {label: 'EPS', key: 'eps', cagr: fy.eps_cagr},
-    {label: 'Net Profit Margin (%)', key: 'net_margin', cagr: null},
-    {label: 'ROE (%)', key: 'roe', cagr: null},
-  ];
-
-  return `
-    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
-
-    <div class="row" style="grid-template-columns:1fr 1fr 1fr;align-items:start;">
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Revenue Trend (${escapeHtml(ir.currency)})</h3></div>
-        <div class="chart-wrap" style="height:220px;"><canvas id="ir-pt-chart-1"></canvas></div>
-      </div>
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Net Profit Trend (${escapeHtml(ir.currency)})</h3></div>
-        <div class="chart-wrap" style="height:220px;"><canvas id="ir-pt-chart-2"></canvas></div>
-      </div>
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Operating Profit Trend (${escapeHtml(ir.currency)})</h3></div>
-        <div class="chart-wrap" style="height:220px;"><canvas id="ir-pt-chart-3"></canvas></div>
-      </div>
-    </div>
-
-    <div class="row" style="grid-template-columns:1fr 1fr;align-items:start;margin-top:16px;">
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Key Ratio Trends (%)</h3></div>
-        <div class="chart-wrap" style="height:240px;"><canvas id="ir-pt-chart-4"></canvas></div>
-      </div>
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Return Trends — ROE / ROA / ROIC (%)</h3></div>
-        <div class="chart-wrap" style="height:240px;"><canvas id="ir-pt-chart-5"></canvas></div>
-      </div>
-    </div>
-
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">${fy.years_on_record || ir.trend.length}-Year Performance Summary (${escapeHtml(ir.currency)})</div>
-      <table>
-        <thead><tr><th>Metric</th>${ir.trend.map(t => `<th class="amount">${escapeHtml(t.period)}</th>`).join('')}<th class="amount">CAGR</th></tr></thead>
-        <tbody>
-          ${summaryRows.map(r => `
-            <tr>
-              <td>${r.label}</td>
-              ${ir.trend.map(t => `<td class="amount">${t[r.key] !== null && t[r.key] !== undefined ? (r.label.includes('%') ? fmt(t[r.key]) + '%' : fmtAmount(t[r.key])) : '-'}</td>`).join('')}
-              <td class="amount">${r.cagr !== null && r.cagr !== undefined ? fmt(r.cagr) + '%' : (r.cagr === null && r.key !== 'net_margin' && r.key !== 'roe' ? naSpan() : '-')}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-    ${ir.trend.length < 3 ? `<div class="empty" style="margin-top:12px;">Only ${ir.trend.length} period(s) on record — add more financial years on the Company page for a fuller trend.</div>` : ''}
-  `;
-}
-function irMountTrendCharts(ir){
-  const labels = ir.trend.map(t => t.period);
-  [irPtChart1, irPtChart2, irPtChart3, irPtChart4, irPtChart5].forEach(c => c && c.destroy());
-  const chartOpts = {
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { labels: { color: '#aab4cc' } } },
-    scales: {
-      x: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
-      y: { ticks: { color: '#7986a3' }, grid: { color: 'rgba(255,255,255,.05)' } },
-    },
-  };
-  const mk = (id, cfg) => { const el = document.getElementById(id); return el ? new Chart(el, cfg) : null; };
-  irPtChart1 = mk('ir-pt-chart-1', { type: 'line', data: { labels, datasets: [
-    { label: 'Revenue', data: ir.trend.map(t => t.revenue), borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.12)', tension: .3, fill: true, spanGaps: true },
-  ]}, options: chartOpts });
-  irPtChart2 = mk('ir-pt-chart-2', { type: 'line', data: { labels, datasets: [
-    { label: 'Net Profit', data: ir.trend.map(t => t.net_income), borderColor: '#3ddc84', backgroundColor: 'rgba(61,220,132,.12)', tension: .3, fill: true, spanGaps: true },
-  ]}, options: chartOpts });
-  irPtChart3 = mk('ir-pt-chart-3', { type: 'line', data: { labels, datasets: [
-    { label: 'Operating Profit', data: ir.trend.map(t => t.operating_profit), borderColor: '#b06bff', backgroundColor: 'rgba(176,107,255,.12)', tension: .3, fill: true, spanGaps: true },
-  ]}, options: chartOpts });
-  irPtChart4 = mk('ir-pt-chart-4', { type: 'line', data: { labels, datasets: [
-    { label: 'Gross Margin', data: ir.trend.map(t => t.gross_margin), borderColor: '#5b9bff', tension: .3, spanGaps: true },
-    { label: 'Operating Margin', data: ir.trend.map(t => t.operating_margin), borderColor: '#3ddc84', tension: .3, spanGaps: true },
-    { label: 'Net Margin', data: ir.trend.map(t => t.net_margin), borderColor: '#ffb020', tension: .3, spanGaps: true },
-  ]}, options: chartOpts });
-  irPtChart5 = mk('ir-pt-chart-5', { type: 'line', data: { labels, datasets: [
-    { label: 'ROE', data: ir.trend.map(t => t.roe), borderColor: '#5b9bff', tension: .3, spanGaps: true },
-    { label: 'ROA', data: ir.trend.map(t => t.roa), borderColor: '#3ddc84', tension: .3, spanGaps: true },
-    { label: 'ROIC', data: ir.trend.map(t => t.roic), borderColor: '#b06bff', tension: .3, spanGaps: true },
-  ]}, options: chartOpts });
-}
-
-function irPeerComparisonTab(ir){
-  const pc = ir.peer_comparison;
-  if (!pc.sector || pc.peer_count <= 1) {
-    return `<div class="panel"><div class="empty">${pc.sector ? `No other tracked companies in the ${escapeHtml(pc.sector)} sector yet.` : 'This company has no sector assigned, so peer comparison is unavailable.'}</div></div>`;
-  }
-  const scoreM = pc.metrics.find(m => m.label === 'Financial Health Score');
-  const marginM = pc.metrics.find(m => m.label === 'Net Profit Margin');
-  const roeM = pc.metrics.find(m => m.label === 'ROE');
-  const deM = pc.metrics.find(m => m.label === 'Debt to Equity');
-  const topCards = [
-    {label: 'Financial Health Score', value: scoreM && scoreM.company !== null ? `${fmt(scoreM.company,0)} / 100` : naSpan(), sub: scoreM && scoreM.rank ? `Rank ${scoreM.rank} / ${pc.peer_count}` : ''},
-    {label: 'Net Profit Margin', value: marginM && marginM.company !== null ? fmt(marginM.company) + '%' : naSpan(), sub: marginM && marginM.rank ? `Rank ${marginM.rank} / ${pc.peer_count}` : ''},
-    {label: 'ROE', value: roeM && roeM.company !== null ? fmt(roeM.company) + '%' : naSpan(), sub: roeM && roeM.rank ? `Rank ${roeM.rank} / ${pc.peer_count}` : ''},
-    {label: 'Debt to Equity', value: deM && deM.company !== null ? fmt(deM.company, 2) + 'x' : naSpan(), sub: deM && deM.rank ? `Rank ${deM.rank} / ${pc.peer_count}` : ''},
-  ];
-
-  const rows = pc.metrics.map(m => `
-    <tr>
-      <td>${escapeHtml(m.label)}</td>
-      <td class="amount">${m.company !== null ? (m.suffix === '%' ? fmt(m.company) + '%' : m.suffix === '' && m.label.includes('Revenue') ? fmtAmount(m.company) : fmt(m.company, 2)) : naSpan()}</td>
-      <td class="amount">${m.sector_avg !== null ? (m.suffix === '%' ? fmt(m.sector_avg) + '%' : m.label.includes('Revenue') ? fmtAmount(m.sector_avg) : fmt(m.sector_avg, 2)) : '-'}</td>
-      <td class="amount">${m.top !== null ? (m.suffix === '%' ? fmt(m.top) + '%' : m.label.includes('Revenue') ? fmtAmount(m.top) : fmt(m.top, 2)) : '-'}</td>
-      <td>${m.top_name ? escapeHtml(m.top_name) : '-'}</td>
-      <td class="amount">${m.rank ? `<span class="ir-peer-badge ${m.rank === 1 ? 'rank1' : ''}">${m.rank} / ${pc.peer_count}</span>` : '-'}</td>
-    </tr>`).join('');
-
-  const peerRows = (pc.peers_table || []).map(p => `
-    <tr${p.id === irCache.company.id ? ' style="background:var(--bg-hover);"' : ''}>
-      <td>${escapeHtml(p.name)}${p.id === irCache.company.id ? ' <span style="color:var(--text-faint);font-size:10px;">(this company)</span>' : ''}</td>
-      <td class="amount">${p.net_margin !== null ? fmt(p.net_margin) + '%' : '-'}</td>
-      <td class="amount">${p.roe !== null ? fmt(p.roe) + '%' : '-'}</td>
-      <td class="amount">${p.debt_equity !== null ? fmt(p.debt_equity, 2) + 'x' : '-'}</td>
-      <td class="amount">${p.eps !== null ? fmt(p.eps, 2) : naSpan()}</td>
-      <td class="amount">${p.financial_score !== null ? fmt(p.financial_score, 0) : '-'}</td>
-    </tr>`).join('');
-
-  return `
-    <div class="stat-grid" style="margin-bottom:16px;">
-      ${topCards.map(c => `
-        <div class="stat-card"><div class="stat-card-body">
-          <div class="stat-label">${escapeHtml(c.label)}</div>
-          <div class="stat-value">${c.value}</div>
-          ${c.sub ? `<div class="stat-trend">${escapeHtml(c.sub)}</div>` : ''}
-        </div></div>`).join('')}
-    </div>
-
-    <div class="row" style="grid-template-columns:1fr 1fr;align-items:start;">
-      <div class="panel">
-        <div class="ir-panel-title">Key Financial Metrics Comparison — ${escapeHtml(pc.sector)}</div>
-        <table>
-          <thead><tr><th>Metric</th><th class="amount">${escapeHtml(irCache.company.name)}</th><th class="amount">Sector Avg</th><th class="amount">Top</th><th>Top Performer</th><th class="amount">Rank</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-        <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">Dividend Yield/TSR aren't part of this sector comparison table since peer companies' own share-price data isn't captured for all of them yet — see this company's own figures below.</div>
-      </div>
-      <div class="chart-panel">
-        <div class="chart-head"><h3>Performance Snapshot</h3></div>
-        <div class="chart-wrap" style="height:280px;"><canvas id="ir-peer-radar"></canvas></div>
-      </div>
-    </div>
-
-    ${ir.market_data && (ir.market_data.dividend_yield !== null || ir.market_data.total_shareholder_return !== null || ir.market_data.dividend_per_share !== null) ? `
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">${escapeHtml(irCache.company.name)} — Own Market Data, as filed</div>
-      <div class="stat-grid">
-        ${ir.market_data.dividend_yield !== null ? statCard('purple', '💧', fmt(ir.market_data.dividend_yield,1) + '%', 'Dividend Yield', '') : ''}
-        ${ir.market_data.dividend_per_share !== null ? statCard('amber', '💰', fmtAmount(ir.market_data.dividend_per_share), 'Dividend Per Share', '') : ''}
-        ${ir.market_data.total_shareholder_return !== null ? statCard('green', '📈', fmt(ir.market_data.total_shareholder_return,1) + '%', 'Total Shareholder Return', '') : ''}
-        ${ir.market_data.market_cap !== null ? statCard('blue', '🏦', fmtAmount(ir.market_data.market_cap), 'Market Capitalization', '') : ''}
-      </div>
-      <div style="font-size:10px;color:var(--text-faint);margin-top:10px;">Source: filing's own Investor Information section, page ${ir.market_data.page || '—'}. Not part of the sector comparison above since it isn't captured for every peer yet.</div>
-    </div>` : ''}
-
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Peer Comparison Table — ${escapeHtml(pc.sector)} (${pc.peer_count} companies)</div>
-      <table>
-        <thead><tr><th>Company</th><th class="amount">Net Profit Margin</th><th class="amount">ROE</th><th class="amount">Debt to Equity</th><th class="amount">EPS</th><th class="amount">Financial Health Score</th></tr></thead>
-        <tbody>${peerRows}</tbody>
-      </table>
-    </div>`;
-}
-let irPeerRadarChart = null;
-function irMountPeerChart(ir){
-  const pc = ir.peer_comparison;
-  if (irPeerRadarChart) irPeerRadarChart.destroy();
-  const el = document.getElementById('ir-peer-radar');
-  if (!el || !pc.sector || pc.peer_count <= 1) return;
-  const marginM = pc.metrics.find(m => m.label === 'Net Profit Margin');
-  const roeM = pc.metrics.find(m => m.label === 'ROE');
-  const scoreM = pc.metrics.find(m => m.label === 'Financial Health Score');
-  // Normalize each axis to 0-100 against the sector's own top value so the
-  // radar is readable regardless of each metric's native scale - this is
-  // a display transform only, not a fabricated figure (the underlying
-  // company/sector_avg values are the real ones already shown in the
-  // table alongside it).
-  const axes = [
-    {label: 'Profitability', m: marginM},
-    {label: 'Returns (ROE)', m: roeM},
-    {label: 'Financial Strength', m: scoreM},
-  ].filter(a => a.m && a.m.top);
-  if (!axes.length) return;
-  const norm = (m) => m.company !== null ? Math.max(0, Math.min(100, (m.company / m.top) * 100)) : 0;
-  const normAvg = (m) => m.sector_avg !== null ? Math.max(0, Math.min(100, (m.sector_avg / m.top) * 100)) : 0;
-  irPeerRadarChart = new Chart(el, {
-    type: 'radar',
-    data: {
-      labels: axes.map(a => a.label),
-      datasets: [
-        { label: irCache.company.name, data: axes.map(a => norm(a.m)), borderColor: '#5b9bff', backgroundColor: 'rgba(91,155,255,.2)' },
-        { label: 'Sector Average', data: axes.map(a => normAvg(a.m)), borderColor: '#7986a3', backgroundColor: 'rgba(121,134,163,.1)' },
-      ],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#aab4cc' } } },
-      scales: { r: { angleLines: { color: 'rgba(255,255,255,.08)' }, grid: { color: 'rgba(255,255,255,.08)' }, pointLabels: { color: '#aab4cc' }, ticks: { display: false } } },
-    },
-  });
-}
-
-function irRiskAnalysisTab(ir){
-  const overallScore = ir.overall_risk_score;
-  const overallBand = ir.overall_risk_band;
-  const cats = ir.risk_categories || [];
-  const qualitativeCats = cats.filter(c => c.qualitative);
-  const scoredCats = cats.filter(c => !c.qualitative);
-
-  return `
-    <div class="row row-3" style="grid-template-columns:1fr 1.4fr;align-items:start;">
-      <div class="panel">
-        <div class="ir-panel-title">Overall Risk Score</div>
-        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;">
-          ${overallScore !== null ? irGauge(100 - overallScore, overallBand === 'Very Low Risk' || overallBand === 'Low Risk' ? 'strong' : (overallBand === 'Moderate Risk' ? 'moderate' : 'weak'), overallScore) : `<div style="padding:24px 0;">${naSpan('No debt/equity, current ratio, or interest coverage data captured for this period')}</div>`}
-          ${overallScore !== null ? `<div class="ir-band-pill ${overallBand === 'Very Low Risk' || overallBand === 'Low Risk' ? 'strong' : (overallBand === 'Moderate Risk' ? 'moderate' : 'weak')}">${overallBand.toUpperCase()}</div>` : ''}
-        </div>
-        <div style="font-size:10.5px;color:var(--text-faint);margin-top:12px;line-height:1.5;text-align:center;">
-          Built only from the Financial risk category (the one this app can score numerically from filed statements). The
-          ${qualitativeCats.length || 'other'} qualitative categories below are real disclosed risks, not blended into this score,
-          since the filing itself never scores them numerically.
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Scored Risk Categories</div>
-        <table>
-          <thead><tr><th>Category</th><th class="amount">Risk Score</th><th>Basis</th></tr></thead>
-          <tbody>
-            ${scoredCats.map(c => `
-              <tr>
-                <td>${escapeHtml(c.label)}</td>
-                <td class="amount">${c.score !== null ? `${fmt(c.score,0)} / 100` : naSpan()}</td>
-                <td style="font-size:11px;color:var(--text-faint);">${c.basis ? escapeHtml(c.basis) : 'No basis available for this period'}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Principal Risks — as disclosed in the filing</div>
-      ${qualitativeCats.length ? `
-        <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
-          These ${qualitativeCats.length} categories and their descriptions/mitigations come directly from the company's own
-          "Management of Principal Risks" section. None are numerically scored here — the filing itself doesn't score them,
-          so showing a 0–100 number would be invented, not extracted.
-        </div>
-        <div class="ir-risk-cat-grid">
-          ${qualitativeCats.map(c => `
-            <div class="ir-risk-cat-card">
-              <div class="ir-risk-cat-title">${escapeHtml(c.label)}</div>
-              ${c.qualitative.description ? `<div class="ir-risk-cat-desc">${escapeHtml(c.qualitative.description)}</div>` : ''}
-              ${c.qualitative.mitigation ? `<div class="ir-risk-cat-mitigation"><b>Our Mitigations:</b> ${escapeHtml(c.qualitative.mitigation)}</div>` : ''}
-              ${c.qualitative.page ? `<div class="ir-risk-cat-page">Source: filing, page ${c.qualitative.page}</div>` : ''}
-            </div>`).join('')}
-        </div>` : `<div class="empty">No "Management of Principal Risks" section was extracted from this company's uploaded filing for this period — either the filing wasn't uploaded, or it uses a layout this app's parser doesn't yet recognize.</div>`}
-    </div>
-
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Top Risk Exposures</div>
-      ${(ir.risk_exposures && ir.risk_exposures.length) ? `
-        <table>
-          <thead><tr><th>Risk</th><th>Description</th></tr></thead>
-          <tbody>
-            ${ir.risk_exposures.map(r => `<tr><td><b>${escapeHtml(r.risk)}</b></td><td>${escapeHtml(r.description)}</td></tr>`).join('')}
-          </tbody>
-        </table>` : `<div class="empty">No leverage, liquidity, coverage, or margin-compression flags for this period based on filed figures.</div>`}
-    </div>
-
-    <div class="ir-sro-grid" style="margin-top:16px;">
-      <div class="ir-sro-col strengths">
-        <h3>✅ Strengths</h3>
-        ${ir.strengths.length ? ir.strengths.map(t => `<div class="ir-highlight-item"><span class="ic">✅</span><span>${escapeHtml(t)}</span></div>`).join('') : `<div class="empty">None identified this period.</div>`}
-      </div>
-      <div class="ir-sro-col risks">
-        <h3>⚠️ Risks</h3>
-        ${ir.risks.length ? ir.risks.map(r => `<div class="ir-highlight-item"><span class="ic">${r.severity === 'High' ? '🔴' : '🟠'}</span><span><b>${escapeHtml(r.title)}</b> — ${escapeHtml(r.metric)}</span></div>`).join('') : `<div class="empty">No risk flags this period.</div>`}
-      </div>
-      <div class="ir-sro-col opportunities">
-        <h3>💡 Opportunities</h3>
-        ${ir.opportunities.length ? ir.opportunities.map(o => `<div class="ir-highlight-item"><span class="ic">💡</span><span>${escapeHtml(o.title)}</span></div>`).join('') : `<div class="empty">No standout positive signals this period.</div>`}
-      </div>
-    </div>
-    <div style="font-size:11px;color:var(--text-faint);margin-top:16px;">
-      Risk and opportunity flags come from the same rules used on the Alerts page — high debt/equity, falling profit, revenue decline, or strong revenue growth vs the prior period. Consistent everywhere, never company-specific guesswork.
-    </div>
-  `;
-}
-
-async function irRemunerationTab(ir){
-  const el = document.getElementById('ir-tab-body');
-  if (irTab !== 'remuneration') return;
-  const res = await fetch(`/api/companies/${currentCompanyId}/remuneration`);
-  const data = await safeJson(res, {own_remuneration: [], director_rows_by_period: {}});
-  if (irTab !== 'remuneration') return; // user may have switched tabs while this loaded
-
-  const byPeriod = data.director_rows_by_period || {};
-  const periods = Object.keys(byPeriod);
-  const ownRows = (data.own_remuneration || []);
-
-  if (!periods.length) {
-    el.innerHTML = ownRows.length ? `
-      <div class="panel">
-        <div class="ir-panel-title">Total Director Remuneration — as filed (${escapeHtml(irCache.company.name)})</div>
-        <table>
-          <thead><tr><th>Period</th><th class="amount">Total</th></tr></thead>
-          <tbody>${ownRows.map(r => `<tr><td>${escapeHtml(r.period_label)}</td><td class="amount">${fmtAmount(r.total)}${r.unit ? ' ' + escapeHtml(r.unit) : ''}</td></tr>`).join('')}</tbody>
-        </table>
-        <div style="font-size:10.5px;color:var(--text-faint);margin-top:10px;">
-          From this company's own Directors' Remuneration Report, as printed in its filing — a single filed total per
-          period, not a per-director breakdown and not computed/summed by this app.
-        </div>
-      </div>` : `
-      <div class="panel">
-        <div class="ir-panel-title">Directors' Remuneration Report</div>
-        <div class="empty">No Directors' Remuneration Report found in this company's uploaded filings yet.</div>
-      </div>`;
-    return;
-  }
-
-  // Every filer prints a different set of tables and columns (see
-  // extract_director_remuneration_detail's docstring in pdf_parse.py) -
-  // this renders whatever table_kinds and component columns that
-  // specific filing's own upload actually produced, never a fixed
-  // schema. table_kind groups rows within a period; KIND_ORDER just
-  // controls display order when more than one kind is present.
-  const KIND_LABEL = {
-    executive: "Executive Directors' Remuneration",
-    non_executive: "Non-Executive Directors' Fees",
-    ned_named_totals: 'Non-Executive Directors — Amounts Paid to Individual Board Members',
-    fee_schedule: "Non-Executive Directors' Fee Schedule",
-    ltip: 'Long-Term Incentive Plans',
-    unknown: "Directors' Remuneration",
-  };
-  const KIND_ORDER = ['executive', 'non_executive', 'ned_named_totals', 'fee_schedule', 'ltip', 'unknown'];
-
-  // Every value in DirectorRemunerationRow (components and total alike)
-  // is stored exactly as the filing prints it, which for this section
-  // is always Ksh '000 (see CONDENSED_FORMAT_SPEC.md's note on
-  // ===DIRECTOR_REMUNERATION===) - regardless of the unit the rest of
-  // the filing's statements use. Multiplying by 1000 here shows the
-  // reader the actual full-value figure instead of relying on a "in
-  // '000s" caption next to smaller numbers.
-  const fmtRemAmount = (val) => (val === null || val === undefined) ? '–' : fmtAmount(Number(val) * 1000);
-
-  const renderKindTable = (rows) => {
-    const cols = [];
-    rows.forEach(r => {
-      if (!r.components) return;
-      Object.keys(r.components).forEach(k => { if (!cols.includes(k)) cols.push(k); });
-    });
-    const totalIdx = cols.indexOf('Total');
-    if (totalIdx > -1) { cols.splice(totalIdx, 1); }
-    // r.total is the filing's own rightmost "Total" figure - it's a
-    // separate field on the row (see DirectorRemunerationRow.total),
-    // never one of the component columns, so it has to be added here
-    // explicitly rather than picked up from r.components above.
-    const hasTotalCol = rows.some(r => r.total !== null && r.total !== undefined);
-    return `
-      <table>
-        <thead><tr><th>Director</th>${cols.map(c => `<th class="amount">${escapeHtml(c)}</th>`).join('')}${hasTotalCol ? '<th class="amount">Total</th>' : ''}</tr></thead>
-        <tbody>
-          ${rows.map(r => {
-            const bold = r.is_grand_total || r.is_total_row;
-            const wrap = (html) => bold ? `<b>${html}</b>` : html;
-            const totalCell = (r.total === null || r.total === undefined) ? '–' : fmtRemAmount(r.total);
-            return `<tr><td>${wrap(escapeHtml(r.director_name))}</td>${cols.map(c => {
-              const v = r.components ? r.components[c] : null;
-              const cell = (v === null || v === undefined) ? '–' : fmtRemAmount(v);
-              return `<td class="amount">${wrap(cell)}</td>`;
-            }).join('')}${hasTotalCol ? `<td class="amount">${wrap(totalCell)}</td>` : ''}</tr>`;
-          }).join('')}
-        </tbody>
-      </table>`;
-  };
-
-  const periodPanels = periods.map(period => {
-    const rows = byPeriod[period];
-    const byKind = {};
-    rows.forEach(r => { const k = r.table_kind || 'unknown'; (byKind[k] = byKind[k] || []).push(r); });
-    const kindsPresent = KIND_ORDER.filter(k => byKind[k] && byKind[k].length);
-    return `
-      <div class="panel">
-        <div class="ir-panel-title">${escapeHtml(period)} — Directors' Remuneration Report</div>
-        ${kindsPresent.map(k => `
-          <div style="margin-bottom:16px;">
-            <div style="font-weight:700;font-size:12px;margin-bottom:6px;color:var(--text-dim);">${KIND_LABEL[k] || k}</div>
-            ${renderKindTable(byKind[k])}
-          </div>`).join('')}
-      </div>`;
-  }).join('');
-
-  // Combined board cost: the Non-Executive Directors' own printed
-  // GRAND TOTAL (or, for a fee-schedule-style filer with no component
-  // breakdown, its own named-totals table's total row) plus each named
-  // Executive Director's own printed Total. A separate Long-Term
-  // Incentive Plans table, where a filing prints one, is deliberately
-  // NOT folded in here — its own headline figure (e.g. "Total
-  // Emoluments") already overlaps with the executive table's own total
-  // for the same person, so combining them would double-count; it's
-  // shown on its own above instead.
-  const combinedRows = periods.map(period => {
-    const rows = byPeriod[period];
-    const nedGrand = rows.find(r => r.table_kind === 'non_executive' && r.is_grand_total);
-    const nedNamedGrand = rows.find(r => r.table_kind === 'ned_named_totals' && (r.is_grand_total || r.is_total_row));
-    const nedTotal = nedGrand ? nedGrand.total : (nedNamedGrand ? nedNamedGrand.total : null);
-    const execRows = rows.filter(r => r.table_kind === 'executive' && !r.is_grand_total && !r.is_total_row);
-    if (nedTotal === null && !execRows.length) return null;
-    const execSum = execRows.reduce((s, r) => s + (r.total || 0), 0);
-    return {period, nedTotal, execSum, combined: (nedTotal || 0) + execSum};
-  }).filter(Boolean);
-
-  const combinedPanel = combinedRows.length ? `
-    <div class="panel">
-      <div class="ir-panel-title">Total Board Cost — as filed</div>
-      <table>
-        <thead><tr><th>Period</th><th class="amount">Non-Executive Directors</th><th class="amount">Executive Directors</th><th class="amount">Combined</th></tr></thead>
-        <tbody>
-          ${combinedRows.map(c => `<tr><td>${escapeHtml(c.period)}</td><td class="amount">${c.nedTotal !== null ? fmtRemAmount(c.nedTotal) : '–'}</td><td class="amount">${fmtRemAmount(c.execSum)}</td><td class="amount"><b>${fmtRemAmount(c.combined)}</b></td></tr>`).join('')}
-        </tbody>
-      </table>
-      <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">
-        Sum of the filing's own printed totals only — never re-derived from individual line items.
-      </div>
-    </div>` : '';
-
-  // Year-over-year per named director, wherever the same name appears
-  // across more than one uploaded period (grand-total/subtotal rows
-  // are skipped here - they aren't a "director").
-  let yoyPanel = '';
-  if (periods.length >= 2) {
-    const byName = {};
-    periods.forEach(period => {
-      byPeriod[period].forEach(r => {
-        if (r.is_grand_total || r.is_total_row) return;
-        (byName[r.director_name] = byName[r.director_name] || {})[period] = r.total;
-      });
-    });
-    const names = Object.keys(byName).filter(n => Object.values(byName[n]).filter(v => v !== undefined && v !== null).length >= 2);
-    if (names.length) {
-      yoyPanel = `
-        <div class="panel">
-          <div class="ir-panel-title">Year-over-Year — per director</div>
-          <table>
-            <thead><tr><th>Director</th>${periods.map(p => `<th class="amount">${escapeHtml(p)}</th>`).join('')}<th class="amount">Change</th></tr></thead>
-            <tbody>
-              ${names.map(n => {
-                const vals = periods.map(p => byName[n][p]);
-                const present = vals.filter(v => v !== undefined && v !== null);
-                const first = present[0], last = present[present.length - 1];
-                const pct = (first && last && first !== 0 && first !== last) ? ((last - first) / first * 100) : (first === last ? 0 : null);
-                return `<tr><td>${escapeHtml(n)}</td>${vals.map(v => `<td class="amount">${(v === undefined || v === null) ? '–' : fmtRemAmount(v)}</td>`).join('')}<td class="amount">${pct !== null ? (pct >= 0 ? '+' : '') + fmt(pct) + '%' : '–'}</td></tr>`;
-              }).join('')}
-            </tbody>
-          </table>
-        </div>`;
-    }
-  }
-
-  el.innerHTML = periodPanels + combinedPanel + yoyPanel;
-}
-
-function irOutlookTab(ir){
-  const fh = ir.financial_health;
-  const s = ir.snapshot;
-  const topCards = [
-    {label: 'Overall Outlook', value: fh.outlook, color: fh.outlook === 'Positive' ? 'green' : (fh.outlook === 'Negative' ? 'red' : 'amber'), icon: '🧭'},
-    {label: 'Revenue Trend', value: s.revenue_yoy !== null ? (s.revenue_yoy >= 0 ? '↑' : '↓') + ' ' + fmt(Math.abs(s.revenue_yoy)) + '%' : naSpan(), color: 'blue', icon: '📈'},
-    {label: 'Net Profit Trend', value: s.net_income_yoy !== null ? (s.net_income_yoy >= 0 ? '↑' : '↓') + ' ' + fmt(Math.abs(s.net_income_yoy)) + '%' : naSpan(), color: 'green', icon: '💵'},
-    {label: 'Confidence', value: fh.confidence, color: fh.confidence === 'High' ? 'green' : (fh.confidence === 'Medium' ? 'amber' : 'red'), icon: '🎯'},
-  ];
-  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label, '')).join('');
-
-  return `
-    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
-
-    <div class="ir-outlook-banner ${fh.outlook}">
-      <div class="ob-label">${fh.outlook} Outlook</div>
-      <div class="ob-sub">Based on ${ir.outlook_drivers.length} year-over-year signal(s) vs ${ir.available_periods[1] || 'the prior period on record'} — not a forecast, a read of the trend already in the data.</div>
-    </div>
-    <div class="row" style="grid-template-columns:1.4fr 1fr;align-items:start;">
-      <div class="panel">
-        <div class="ir-panel-title">What's Driving This</div>
-        ${ir.outlook_drivers.length ? ir.outlook_drivers.map(d => `<div class="ir-highlight-item"><span class="ic">→</span><span>${escapeHtml(d)}</span></div>`).join('') : `<div class="empty">Not enough period-over-period data yet to identify drivers.</div>`}
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Confidence</div>
-        <div style="font-size:12.5px;color:var(--text-dim);line-height:1.6;">
-          Rated <b>${fh.confidence}</b> — based on ${ir.available_periods.length} recorded period(s) for this company.
-          ${fh.confidence !== 'High' ? ' Add more historical financial years on the Company page for a more reliable read.' : ''}
-        </div>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="ir-panel-title">Scenario Analysis (${ir.scenario_analysis && ir.scenario_analysis.length ? escapeHtml(ir.scenario_analysis[0].guidance_period_label || 'Next FY') : 'Next FY'})</div>
-      ${(ir.scenario_analysis && ir.scenario_analysis.length) ? `
-        <div style="font-size:11px;color:var(--text-faint);margin-bottom:12px;">
-          Bear/Base/Bull are the low end, midpoint, and high end of management's own printed guidance range for next year —
-          not a modeled forecast. Current is this period's actual result for comparison.
-        </div>
-        <table>
-          <thead><tr><th>Metric</th><th class="amount">Current</th><th class="amount">Bear Case</th><th class="amount">Base Case</th><th class="amount">Bull Case</th><th>Commentary</th></tr></thead>
-          <tbody>
-            ${ir.scenario_analysis.map(g => `
-              <tr>
-                <td>${escapeHtml(g.metric_name)}</td>
-                <td class="amount">${g.current_value !== null ? fmt(g.current_value,1) + '%' : naSpan()}</td>
-                <td class="amount">${g.bear_case !== null ? fmt(g.bear_case,1) + '%' : naSpan()}</td>
-                <td class="amount"><b>${g.base_case !== null ? fmt(g.base_case,1) + '%' : naSpan()}</b></td>
-                <td class="amount">${g.bull_case !== null ? fmt(g.bull_case,1) + '%' : naSpan()}</td>
-                <td style="font-size:11px;color:var(--text-faint);">${g.commentary ? escapeHtml(g.commentary) : ''}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
-        <div style="font-size:10px;color:var(--text-faint);margin-top:10px;">
-          Source: filing, page ${ir.scenario_analysis[0].page || '—'}. A numeric sensitivity/elasticity analysis and a composite
-          "confidence" score aren't shown here since the filing doesn't publish either — inventing one would look precise
-          while being fiction.
-        </div>` : `<div class="empty">${naSpan("No management guidance table was extracted from this company's uploaded filing for this period")}</div>`}
-    </div>
-    ${ir.market_data ? `
-    <div class="panel" style="margin-top:16px;">
-      <div class="ir-panel-title">Market &amp; Shareholder Outlook — as filed</div>
-      <div class="stat-grid">
-        ${statCard('blue', '💹', ir.market_data.share_price !== null ? fmtAmount(ir.market_data.share_price) : naSpan(), 'Share Price (period end)', ir.market_data.prior_share_price !== null ? `vs ${fmtAmount(ir.market_data.prior_share_price)} prior` : '')}
-        ${statCard('green', '🏦', ir.market_data.market_cap !== null ? fmtAmount(ir.market_data.market_cap) : naSpan(), 'Market Capitalization', '')}
-        ${statCard('amber', '💰', ir.market_data.dividend_per_share !== null ? fmtAmount(ir.market_data.dividend_per_share) : naSpan(), 'Dividend Per Share', '')}
-        ${statCard('purple', '📊', ir.market_data.total_shareholder_return !== null ? fmt(ir.market_data.total_shareholder_return,1) + '%' : naSpan(), 'Total Shareholder Return', '')}
-      </div>
-      <div style="font-size:10px;color:var(--text-faint);margin-top:10px;">Source: filing's own Investor Information section, page ${ir.market_data.page || '—'}.</div>
-    </div>` : ''}
-  `;
-}
-
-function irSourceEvidenceTab(ir){
-  const docs = ir.source_documents || [];
-  const jobs = ir.import_jobs || [];
-  // Backend ImportJob.status is only ever 'pending', 'parsed',
-  // 'reviewed', 'saved', or 'failed' (models.py) - checking for
-  // 'success'/'completed' here matched nothing, so this always showed 0
-  // even with every import genuinely saved.
-  const successJobs = jobs.filter(j => j.status === 'saved').length;
-  const topCards = [
-    {label: 'Source Documents', value: String(docs.length), color: 'blue', icon: '📄'},
-    {label: 'Periods on Record', value: String((ir.available_periods || []).length), color: 'green', icon: '📅'},
-    {label: 'Successful Imports', value: String(successJobs), color: 'green', icon: '✅'},
-    {label: 'Total Import Jobs', value: String(jobs.length), color: 'amber', icon: '⚙️'},
-  ];
-  const statCardsHtml = topCards.map(k => statCard(k.color, k.icon, k.value, k.label, '')).join('');
-
-  return `
-    <div class="stat-grid" style="margin-bottom:16px;">${statCardsHtml}</div>
-    <div class="panel">
-      <div class="ir-panel-title">Source Documents</div>
-      ${docs.length ? docs.map(d => `
-        <div class="ir-source-row">
-          <div class="ir-source-icon">📄</div>
-          <div class="ir-source-meta">
-            <div class="sm-name">${escapeHtml(d.filename || d.url || 'Filing')}${d.period_label ? ` · ${escapeHtml(d.period_label)}` : ''}</div>
-            <div class="sm-date">${d.uploaded_at ? 'Uploaded ' + new Date(d.uploaded_at).toLocaleDateString() : ''}${d.page_count ? ` · ${d.page_count} pages` : ''}${canEdit() ? ` · ${extractionScoreBadge(d)}` : ''}</div>
-          </div>
-          ${d.url ? `<button class="secondary" onclick="window.open('${escapeHtml(d.url)}','_blank')">View ↗</button>` : ''}
-        </div>`).join('') : `<div class="empty">No parsed source PDFs on file for this company yet. Figures for ${escapeHtml(ir.period)} were entered as: <b>${escapeHtml(ir.legacy_source || 'manual')}</b>.</div>`}
-    </div>
-    <div class="panel">
-      <div class="ir-panel-title">Import Activity</div>
-      ${jobs.length ? `
-        <table>
-          <thead><tr><th>Status</th><th>Source</th><th>Started</th><th>Error</th></tr></thead>
-          <tbody>
-            ${jobs.map(j => `<tr>
-              <td><span class="status-badge status-${escapeHtml(j.status)}">${escapeHtml(j.status)}</span></td>
-              <td>${j.source_url ? `<a href="${escapeHtml(j.source_url)}" target="_blank" rel="noopener">Source PDF</a>` : '-'}</td>
-              <td>${j.started_at ? new Date(j.started_at).toLocaleString() : '-'}</td>
-              <td>${j.error_message ? `<span style="color:var(--red);">${escapeHtml(j.error_message)}</span>` : '-'}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>` : `<div class="empty">No import jobs recorded for this company.</div>`}
-    </div>
-    <div style="font-size:10.5px;color:var(--text-faint);margin-top:4px;">
-      A per-data-point confidence percentage isn't shown — this app doesn't score individual extractions that granularly, so a number there would be invented rather than measured.
-    </div>
-  `;
-}
-
-async function renderFullStatementsPanel(companyId){
-  // Every period's full statement breakdown (balance sheet, cash flow,
-  // equity - not just income statement, which the /detail-view panel
-  // above already covers) - every statement, every line item, at every
-  // depth, so nothing sits behind a click-through a real filing review
-  // wouldn't need.
-  const detailFetches = currentPeriodsCache.map(p =>
-    fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(p.period_label)}`).then(r => r.ok ? r.json() : null)
-  );
-  const allPeriodDetails = (await Promise.all(detailFetches)).filter(Boolean);
-
-  const jumpNav = allPeriodDetails.length ? `
-    <div class="period-jump-nav">
-      ${allPeriodDetails.map(p => `<a href="#period-${escapeHtml(p.period_label)}">${escapeHtml(p.period_label)}</a>`).join('')}
-    </div>` : '';
-
-  const periodSections = allPeriodDetails.length
-    ? allPeriodDetails.map(p => renderFullPeriodSection(p, companyId)).join('')
-    : `<div class="empty">No report data yet for this company. Add one via "Add / Edit Data" above, or import from NSE on the Companies page.</div>`;
-
-  return `
-    <div class="panel">
-      <div class="panel-head"><h2>Full Financial Report</h2></div>
-      ${jumpNav}
-      <div id="report-panel-body">${periodSections}</div>
-    </div>`;
-}
-
-async function irRawDataTab(companyId){
-  // Raw Data tab: every statement type (income statement/balance sheet/
-  // cash flow/equity), every line item, at every depth, for every period
-  // on record - reuses the same per-period fetch + renderFullPeriodSection/
-  // renderLineItemRows the Company Detail page's "Full Financial Report"
-  // panel already uses, so the two never disagree about what a filing
-  // actually contained. Fetches its own period list independently (rather
-  // than relying on currentPeriodsCache) since the Intelligence Report can
-  // be reached straight from the nav without ever visiting the Company
-  // Detail page first, in which case that cache would still be empty.
-  const el = document.getElementById('ir-tab-body');
-  const periodsRes = await fetch(`/api/companies/${companyId}/periods`);
-  const periods = await safeJson(periodsRes, []);
-
-  if (!periods.length) {
-    el.innerHTML = `<div class="panel"><div class="empty">No financial statements recorded yet for this company.</div></div>`;
-    return;
-  }
-
-  const detailFetches = periods.map(p =>
-    fetch(`/api/companies/${companyId}/periods/${encodeURIComponent(p.period_label)}`).then(r => r.ok ? r.json() : null)
-  );
-  const allPeriodDetails = (await Promise.all(detailFetches)).filter(Boolean);
-
-  const jumpNav = allPeriodDetails.length ? `
-    <div class="period-jump-nav">
-      ${allPeriodDetails.map(p => `<a href="#period-${escapeHtml(p.period_label)}">${escapeHtml(p.period_label)}</a>`).join('')}
-    </div>` : '';
-
-  el.innerHTML = `
-    <div class="panel">
-      <div class="panel-head">
-        <h2>Raw Financial Statements</h2>
-        <button class="secondary" style="margin:0;" onclick="window.location.href='/api/companies/${companyId}/export/raw.csv'">🗂️ Export Raw (.csv)</button>
-      </div>
-      <div style="font-size:10.5px;color:var(--text-faint);margin-bottom:12px;">
-        Every line item exactly as captured from the underlying filing, unrounded and unadjusted - this is the source data behind every ratio and chart elsewhere in this report.
-      </div>
-      ${jumpNav}
-      <div id="ir-raw-data-body">${allPeriodDetails.map(p => renderFullPeriodSection(p, companyId)).join('')}</div>
-    </div>`;
-}
-
-function toggleEditDataPanel(){
-  const el = document.getElementById('edit-data-panel');
-  if (!el) return;
-  const opening = el.style.display === 'none';
-  el.style.display = opening ? '' : 'none';
-  if (opening) el.scrollIntoView({behavior:'smooth', block:'start'});
-}
-
-function renderEditDataPanel(){
-  return `
-    <div class="panel" id="edit-data-panel" style="display:none;">
-      <div class="panel-head"><h2>Add / Edit Period Report</h2></div>
-      <div style="font-size:12px;color:var(--text-faint);margin-bottom:12px;">
-        Enter one or more line items per statement - as many or as few as you have (revenue, costs, assets, whatever the report gives you). Not limited to five fixed numbers.
-      </div>
-      ${renderReportBuilder()}
-    </div>`;
-}
-
-async function renderCompanyDetailLegacyBody(companyId){
-  return `
-    ${await renderFullStatementsPanel(companyId)}
-    ${renderEditDataPanel()}
-  `;
-}
-
-function renderFullPeriodSection(period, companyId){
-  const present = Object.keys(STATEMENT_LABELS).filter(t => period.statements[t]);
-  const statementBlocks = present.length
-    ? present.map(t => {
-        const stmt = period.statements[t];
-        const rows = renderLineItemRows(stmt.line_items, 0);
-        return `
-          <div class="subhead">${STATEMENT_LABELS[t]}</div>
-          <table>
-            <thead><tr><th>Line Item</th><th class="amount">Amount (${escapeHtml(period.currency || 'KES')})</th><th>Page</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>`;
-      }).join('')
-    : `<div class="empty">No statement line items recorded for ${escapeHtml(period.period_label)} yet.</div>`;
-
-  const reportBtn = present.length
-    ? `<div style="display:flex;gap:6px;">
-        <button class="secondary" style="margin:0;" onclick="window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(period.period_label)}/report.docx'">📄 Generate Report (.docx)</button>
-        <button class="secondary" style="margin:0;" title="Executive Summary and Key Findings drafted by AI from the same verified figures - falls back to the plain version automatically if that's unavailable" onclick="window.location.href='/api/companies/${companyId}/periods/${encodeURIComponent(period.period_label)}/report.docx?narrative=ai'">✨ with AI summary</button>
-      </div>`
-    : `<button class="secondary" style="margin:0;opacity:.5;" disabled title="Add at least one statement line item first">📄 Generate Report (.docx)</button>`;
-
-  return `
-    <div id="period-${escapeHtml(period.period_label)}" class="period-section">
-      <div class="period-section-head">
-        <span>${escapeHtml(period.period_label)}</span>
-        ${reportBtn}
-      </div>
-      ${renderCalculatedMetrics(period.calculated_metrics)}
-      ${statementBlocks}
-      ${period.segments && period.segments.length ? renderSegments(period.segments) : ''}
-      ${period.operational_metrics && period.operational_metrics.length ? renderOperationalMetrics(period.operational_metrics) : ''}
-      ${period.notes && period.notes.length ? renderNotes(period.notes) : ''}
-    </div>
-  `;
-}
-
-let _liRowCounter = 0;
-
-function renderLineItemRows(items, depth, parentKey){
-  return items.map(li => {
-    const key = `li${_liRowCounter++}`;
-    const indent = 10 + depth * 20;
-    const hasChildren = !!(li.children && li.children.length);
-    const toggle = hasChildren
-      ? `<span class="li-toggle" onclick="event.stopPropagation();toggleLineItemRow('${key}')">▸</span>`
-      : `<span class="li-toggle-spacer"></span>`;
-    let row = `
-      <tr ${parentKey ? `class="li-child" data-parent-key="${parentKey}" style="display:none;"` : ''} data-li-key="${key}">
-        <td style="padding-left:${indent}px">${toggle}<span class="li-row-label">${escapeHtml(li.label)}</span>${li.normalized_name ? `<span class="badge li-normalized">${escapeHtml(li.normalized_name)}</span>` : ''}</td>
-        <td class="amount">${fmtAmount(li.amount)}</td>
-        <td>${li.page ? `<span class="badge">p.${li.page}</span>` : '-'}</td>
-      </tr>`;
-    if (hasChildren) row += renderLineItemRows(li.children, depth + 1, key);
-    return row;
-  }).join('');
-}
-
-function toggleLineItemRow(key){
-  const row = document.querySelector(`tr[data-li-key="${key}"]`);
-  const arrow = row ? row.querySelector('.li-toggle') : null;
-  const opening = arrow && arrow.textContent === '▸';
-
-  document.querySelectorAll(`tr[data-parent-key="${key}"]`).forEach(tr => {
-    tr.style.display = opening ? '' : 'none';
-  });
-  if (arrow) arrow.textContent = opening ? '▾' : '▸';
-
-  // Collapsing a parent also resets and hides any expanded grandchildren,
-  // so re-opening it later always starts from a clean collapsed state
-  // rather than remembering whatever was expanded before.
-  if (!opening) _collapseDescendants(key);
-}
-
-function _collapseDescendants(key){
-  document.querySelectorAll(`tr[data-parent-key="${key}"]`).forEach(tr => {
-    const childKey = tr.getAttribute('data-li-key');
-    tr.style.display = 'none';
-    const childArrow = tr.querySelector('.li-toggle');
-    if (childArrow) childArrow.textContent = '▸';
-    _collapseDescendants(childKey);
-  });
-}
 
 function renderCalculatedMetrics(metrics){
   if (!metrics || !Object.keys(metrics).length) return '';
@@ -7975,7 +6216,6 @@ function escapeHtml(str){
   updateUserBadge();
   renderNav();
   render();
-  refreshNotifBadge();
 })();
 
 // ---- live updates (SSE) ----
