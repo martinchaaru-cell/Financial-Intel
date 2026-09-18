@@ -2097,6 +2097,11 @@ def upload_documents_batch():
                 saved += 1
                 periods_saved.append(prior_period_label)
 
+            # The main statement save is complete. The following optional
+            # filing-section extractors each scan the PDF for their own
+            # tables, so expose that work separately from the final score.
+            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'enriching'})
+
             # Director remuneration total (see extract_director_remuneration's
             # docstring for scope: only the filing's OWN printed grand total,
             # never a computed/summed one) - belongs to the CURRENT period
@@ -3815,6 +3820,12 @@ def import_jobs():
         row['company_name'] = company.name if company else None
         row['source_url'] = doc.url if doc else None
         row['period_label'] = doc.period_label if doc else None
+        # The dashboard may show a safe attention count to guests without
+        # exposing the underlying numeric extraction score.
+        row['needs_attention'] = bool(
+            doc and doc.extraction_score is not None
+            and doc.extraction_score < LOW_EXTRACTION_SCORE_THRESHOLD
+        )
         if current_role() == 'admin' and doc:
             row['extraction_score'] = doc.extraction_score
             row['extraction_score_low'] = (

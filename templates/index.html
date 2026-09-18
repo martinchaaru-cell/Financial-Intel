@@ -395,6 +395,8 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .modal-overlay.open{display:flex;}
 .modal-box{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);
   padding:22px;width:100%;max-width:420px;}
+.modal-box.upload-activity-only{max-width:680px;}
+.modal-box.upload-activity-only #uploadBackendLog{min-height:240px;max-height:430px;}
 .modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
 .modal-head h2{font-size:15px;}
 .modal-close{cursor:pointer;color:var(--text-faint);font-size:16px;}
@@ -1223,13 +1225,15 @@ async function renderOverview(){
   // there is no real "analyst" identity to assign work to or measure;
   // building that would mean inventing a user model and auth flow
   // that isn't a data-mapping fix, it's a separate feature decision.
-  const [companiesRes, surveyCompaniesRes, dataQualityRes, activityRes] = await Promise.all([
-    fetch('/api/companies'), fetch('/api/survey/companies'), fetch('/api/survey/data-quality'), fetch('/api/survey/activity?limit=6')
+  const [companiesRes, surveyCompaniesRes, dataQualityRes, activityRes, importJobsRes] = await Promise.all([
+    fetch('/api/companies'), fetch('/api/survey/companies'), fetch('/api/survey/data-quality'),
+    fetch('/api/survey/activity?limit=6'), fetch('/api/import-jobs')
   ]);
   const companies = await safeJson(companiesRes, []);
   const surveyCompanies = await safeJson(surveyCompaniesRes, []);
   const dataQuality = await safeJson(dataQualityRes, {has_data: false});
   const recentActivity = await safeJson(activityRes, []);
+  const importJobs = await safeJson(importJobsRes, []);
   const app = document.getElementById('app');
 
   const sub = document.getElementById('pageSub');
@@ -1275,6 +1279,43 @@ async function renderOverview(){
   // are derived from field_review_status vs field_confidence. ----
   const surveyByCompanyId = {};
   surveyCompanies.forEach(sc => { surveyByCompanyId[sc.company_id] = sc; });
+
+  // The KPI cards combine the two real workflow sources in this app:
+  // field-level survey review state and the import-job audit trail. A
+  // company with no SurveyCompanyData row is still counted as pending data,
+  // while a failed import or low extraction score is surfaced as attention
+  // rather than silently disappearing from the dashboard.
+  const latestImportByCompanyId = {};
+  importJobs.forEach(job => {
+    if (job.company_id && !latestImportByCompanyId[job.company_id]) {
+      latestImportByCompanyId[job.company_id] = job;
+    }
+  });
+  const statusCounts = {completed: 0, inProgress: 0, pending: 0, attention: 0};
+  companies.forEach(company => {
+    const survey = surveyByCompanyId[company.id];
+    const latestImport = latestImportByCompanyId[company.id];
+    const lowScore = latestImport && (
+      latestImport.needs_attention === true ||
+      latestImport.extraction_score_low === true ||
+      (typeof latestImport.extraction_score === 'number' && latestImport.extraction_score < 70)
+    );
+    if (latestImport && (latestImport.status === 'failed' || lowScore)) {
+      statusCounts.attention++;
+    } else if (survey && survey.review_status === 'completed') {
+      statusCounts.completed++;
+    } else if (
+      (survey && survey.review_status === 'in-progress') ||
+      (latestImport && ['pending', 'parsed', 'reviewed'].includes(latestImport.status))
+    ) {
+      statusCounts.inProgress++;
+    } else {
+      // This includes companies with no survey row yet and rows that have
+      // extracted fields waiting for someone to review them.
+      statusCounts.pending++;
+    }
+  });
+
   const companyRows = companies.slice(0, 8).map(c => {
     const sc = surveyByCompanyId[c.id];
     if (!sc) {
@@ -1352,27 +1393,27 @@ async function renderOverview(){
       </div>
       <div class="ov-stat-card">
         <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--green-soft);color:var(--green);">✅</div><div class="ov-stat-label">Completed Surveys</div></div>
-        <div class="ov-stat-value">${surveyCompanies.length}</div>
-        <div class="ov-stat-sub">${totalCompanies ? Math.round(surveyCompanies.length/totalCompanies*100) : 0}% completion rate</div>
-        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(surveyCompanies.length/totalCompanies*100) : 0}%;background:var(--green);"></div></div>
+        <div class="ov-stat-value">${statusCounts.completed}</div>
+        <div class="ov-stat-sub">${totalCompanies ? Math.round(statusCounts.completed/totalCompanies*100) : 0}% completion rate</div>
+        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.completed/totalCompanies*100) : 0}%;background:var(--green);"></div></div>
       </div>
       <div class="ov-stat-card">
         <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--amber-soft);color:var(--amber);">⏱️</div><div class="ov-stat-label">In Progress</div></div>
-        <div class="ov-stat-value">-</div>
-        <div class="ov-stat-sub">Not available yet</div>
-        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:0%;background:var(--amber);"></div></div>
+        <div class="ov-stat-value">${statusCounts.inProgress}</div>
+        <div class="ov-stat-sub">Active import or review</div>
+        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.inProgress/totalCompanies*100) : 0}%;background:var(--amber);"></div></div>
       </div>
       <div class="ov-stat-card">
         <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--red-soft);color:var(--red);">❗</div><div class="ov-stat-label">Pending Review</div></div>
-        <div class="ov-stat-value">-</div>
-        <div class="ov-stat-sub">Not available yet</div>
-        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:0%;background:var(--red);"></div></div>
+        <div class="ov-stat-value">${statusCounts.pending}</div>
+        <div class="ov-stat-sub">Awaiting survey data or review</div>
+        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.pending/totalCompanies*100) : 0}%;background:var(--red);"></div></div>
       </div>
       <div class="ov-stat-card">
         <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--purple-soft);color:var(--purple);">✖️</div><div class="ov-stat-label">Failed / Needs Attention</div></div>
-        <div class="ov-stat-value">-</div>
-        <div class="ov-stat-sub">Not available yet</div>
-        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:0%;background:var(--purple);"></div></div>
+        <div class="ov-stat-value">${statusCounts.attention}</div>
+        <div class="ov-stat-sub">Failed imports or low scores</div>
+        <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.attention/totalCompanies*100) : 0}%;background:var(--purple);"></div></div>
       </div>
     </div>
 
@@ -1540,8 +1581,17 @@ function openUploadReportsModal(companyId, companyName){
   uploadReportsFiles = [];
   uploadReportsCompanyId = companyId || null;
   uploadReportsCompanyName = companyName || null;
+  document.querySelector('#uploadReportsModal .modal-box').classList.remove('upload-activity-only');
+  ['uploadReportsDesc', 'uploadReportsInput', 'uploadReportsFileList',
+   'uploadReportsSubmitBtn', 'uploadReportsProgressWrap',
+   'uploadReportsStatus', 'uploadReportsResults'].forEach(id => {
+    document.getElementById(id).style.display = '';
+  });
+  document.getElementById('uploadBackendLogWrap').style.display = 'none';
   document.getElementById('uploadReportsInput').value = '';
   document.getElementById('uploadReportsFileList').innerHTML = '';
+  document.getElementById('uploadBackendLog').innerHTML = '';
+  document.getElementById('uploadBackendTimer').textContent = '0.0s';
   document.getElementById('uploadReportsStatus').textContent = '';
   document.getElementById('uploadReportsResults').innerHTML = '';
   document.getElementById('uploadReportsSubmitBtn').disabled = true;
@@ -1610,6 +1660,18 @@ function _formatEta(seconds){
   return `${Math.floor(seconds/60)}m ${Math.round(seconds%60)}s left`;
 }
 
+function collapseUploadPromptToActivity(){
+  const modalBox = document.querySelector('#uploadReportsModal .modal-box');
+  modalBox.classList.add('upload-activity-only');
+  document.getElementById('uploadReportsTitle').textContent = 'Backend activity';
+  ['uploadReportsDesc', 'uploadReportsInput', 'uploadReportsFileList',
+   'uploadReportsSubmitBtn', 'uploadReportsProgressWrap',
+   'uploadReportsStatus', 'uploadReportsResults'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  document.getElementById('uploadBackendLogWrap').style.display = 'block';
+}
+
 async function submitUploadReports(){
   if (!uploadReportsFiles.length) return;
   const statusEl = document.getElementById('uploadReportsStatus');
@@ -1656,7 +1718,9 @@ async function submitUploadReports(){
   const STAGE_LABELS = {
     reading: 'Reading file', detecting_format: 'Detecting format',
     parsing: 'Parsing document', matching_company: 'Matching company',
-    saving: 'Saving to database', scoring: 'Scoring extraction quality',
+    saving: 'Saving to database',
+    enriching: 'Extracting supplementary filing sections',
+    scoring: 'Scoring extraction quality',
   };
   let timerHandle = null;
   const logLine = (html) => {
@@ -1696,7 +1760,10 @@ async function submitUploadReports(){
   const finish = (ok, message) => {
     btn.disabled = false;
     btn.textContent = 'Upload & Save';
-    if (!ok) statusEl.textContent = message;
+    if (!ok) {
+      statusEl.style.display = 'block';
+      statusEl.textContent = message;
+    }
     clearInterval(timerHandle);
     es.close();
   };
@@ -1732,6 +1799,7 @@ async function submitUploadReports(){
         progPct.textContent = '100%';
         progSpeed.textContent = '';
         progEta.textContent = '';
+        collapseUploadPromptToActivity();
         statusEl.textContent = `Upload complete — parsing and saving ${uploadReportsFiles.length} file(s) ` +
           `now. Large reports (100+ pages) can take a minute or more.`;
       };
