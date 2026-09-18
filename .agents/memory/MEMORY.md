@@ -1,1 +1,0 @@
-- [SQLAlchemy schema drift](sqlalchemy-schema-drift.md) — `db.create_all()` does not alter existing tables; compare live columns before adding model fields.
