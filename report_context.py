@@ -15,7 +15,7 @@ not here - this module never decides how something should read, only
 what is or isn't in the database.
 """
 
-from models import FinancialPeriod, FinancialStatement, CalculatedMetric
+from models import FinancialPeriod, FinancialStatement
 
 
 def _flatten_line_items(line_items, depth=0):

@@ -40,7 +40,7 @@ already set):
 import re
 import sys
 
-from app import app, db, SourceDocument, FinancialPeriod, FinancialStatement, Company
+from app import app, db, SourceDocument, FinancialStatement, Company
 from company_directory import match_company, NSE_COMPANIES
 
 

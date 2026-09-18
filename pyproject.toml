@@ -1,0 +1,10 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Starter set — catches real bugs (syntax errors, undefined names, unused
+# imports) without failing CI on pre-existing style across a large,
+# already-written codebase. Widen this over time (e.g. add "E", "W") once
+# the codebase itself is gradually brought into line, rather than fixing
+# thousands of pre-existing lines in one pass just to turn CI green.
+select = ["E9", "F"]

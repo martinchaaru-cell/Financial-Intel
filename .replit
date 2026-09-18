@@ -12,7 +12,7 @@ localPort = 5000
 externalPort = 80
 
 [nix]
-packages = ["freetype", "glibcLocales", "mailutils"]
+packages = ["freetype", "glibcLocales", "gumbo", "harfbuzz", "jbig2dec", "libjpeg_turbo", "mailutils", "mupdf", "openjpeg", "swig", "xcbuild"]
 channel = "stable-25_05"
 
 [workflows]

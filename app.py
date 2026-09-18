@@ -12,7 +12,6 @@ from functools import wraps
 from flask import Flask, render_template, request, jsonify, send_file, session, Response
 from datetime import datetime
 import openpyxl
-import pdfplumber
 
 from models import (
     db, Company, FinancialPeriod, FinancialStatement, FinancialLineItem,
@@ -29,7 +28,7 @@ from survey_report_pdf import build_survey_pdf
 from ratios import calculate_ratios
 from company_directory import match_company
 from pdf_parse import (
-    match_canonical_label, parse_financials_pdf, extract_pdf_document,
+    match_canonical_label, extract_pdf_document,
     detect_period_label, detect_prior_period_label, detect_company_name,
     extract_director_remuneration,
     extract_market_data, extract_management_guidance, extract_principal_risks,
@@ -2221,7 +2220,7 @@ def upload_documents_batch():
                     if period_row:
                         DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
                         for row in rem_rows:
-                            fiscal_year = row.pop('fiscal_year', None)  # already implied by period_id; not its own column
+                            row.pop('fiscal_year', None)  # already implied by period_id; not its own column
                             components = row.pop('components', None)
                             db.session.add(DirectorRemunerationRow(
                                 period_id=period_row.id,
@@ -3489,7 +3488,7 @@ def company_intelligence_report(company_id):
         vals = [(t['period'], t[series_key]) for t in trend if t.get(series_key) is not None]
         if len(vals) < 2:
             return None
-        (p0, v0), (p1, v1) = vals[0], vals[-1]
+        (_, v0), (_, v1) = vals[0], vals[-1]
         years = len(vals) - 1
         if v0 in (None, 0) or v0 < 0 or years <= 0:
             return None
@@ -3765,7 +3764,7 @@ def company_remuneration(company_id):
     DirectorRemunerationRow. This is company-own-filing data only - for
     the cross-company market benchmark, see the Survey page
     (/api/survey/overview), which is a separate feature entirely."""
-    c = Company.query.get_or_404(company_id)
+    Company.query.get_or_404(company_id)  # 404s early if the company doesn't exist
 
     own_remuneration = []
     periods = _ordered_periods(company_id)

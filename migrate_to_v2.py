@@ -20,7 +20,7 @@ has a FinancialPeriod (see the UniqueConstraint in models.py).
 """
 
 from models import (
-    db, Company, FinancialPeriod, FinancialStatement, FinancialLineItem,
+    db, FinancialPeriod, FinancialStatement, FinancialLineItem,
 )
 
 # Map each of the five old flat fields to (statement_type, label, normalized_name)

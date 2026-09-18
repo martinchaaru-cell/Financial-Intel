@@ -1,0 +1,42 @@
+# Local dev/staging stack: the app + a real Postgres, matching
+# production (Replit's provisioned Postgres) instead of the SQLite
+# fallback app.py uses when DATABASE_URL is unset.
+#
+# Run:      docker compose up --build
+# Migrate:  docker compose exec app python -c "from app import app, db; \
+#             app.app_context().push(); db.create_all()"
+# Stop:     docker compose down            (add -v to also wipe the db volume)
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: findev
+      POSTGRES_PASSWORD: findev
+      POSTGRES_DB: financial_intelligence
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U findev -d financial_intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://findev:findev@db:5432/financial_intelligence
+      SESSION_SECRET: local-dev-secret-change-me
+      PORT: "5000"
+    ports:
+      - "5000:5000"
+
+volumes:
+  db_data:

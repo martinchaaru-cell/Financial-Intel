@@ -12,7 +12,7 @@ parser starts extracting the additional line items (gross profit, EBITDA,
 current assets/liabilities, etc.) that the richer ratios need.
 """
 
-from models import db, FinancialPeriod, FinancialLineItem, CalculatedMetric
+from models import db, FinancialPeriod, CalculatedMetric
 
 
 def _find_amount(period, normalized_name):

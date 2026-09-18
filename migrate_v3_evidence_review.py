@@ -35,7 +35,7 @@ Postgres's information_schema.
 
 from sqlalchemy import text
 from models import db
-from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict
+from models_survey import RemunerationPolicy, GovernancePolicy, EvidenceConflict
 
 # (column_name, Postgres column type) - matches the db.Column
 # definitions in models_survey.py exactly. Kept as a plain list here

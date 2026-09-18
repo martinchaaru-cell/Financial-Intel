@@ -18,7 +18,6 @@ that's surfaced to the user (Source Evidence).
 
 import re
 import io
-import json
 import pdfplumber
 
 try:

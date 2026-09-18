@@ -1,0 +1,1248 @@
+{
+  "file": "attached_assets/EGH-PLC-2023-Integrated-Report-and-Financial-Statements_1789705029140.pdf",
+  "main_statements": {
+    "income_statement": {
+      "line_items": [
+        {
+          "label": "Interest income",
+          "normalized_name": null,
+          "amount": 164214.0,
+          "prior_amount": 128528.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 1
+        },
+        {
+          "label": "Interest expense",
+          "normalized_name": "interest_expense",
+          "amount": 51191.0,
+          "prior_amount": 33635.0,
+          "page": 127,
+          "confidence": 0.9,
+          "order_index": 2
+        },
+        {
+          "label": "Net interest income",
+          "normalized_name": null,
+          "amount": 113023.0,
+          "prior_amount": 94893.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 3
+        },
+        {
+          "label": "Fee and commission income",
+          "normalized_name": null,
+          "amount": 40821.0,
+          "prior_amount": 28127.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 4
+        },
+        {
+          "label": "Fee and commission expense",
+          "normalized_name": null,
+          "amount": 11876.0,
+          "prior_amount": 8477.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 5
+        },
+        {
+          "label": "Net fee and commission income",
+          "normalized_name": null,
+          "amount": 28945.0,
+          "prior_amount": 19650.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 6
+        },
+        {
+          "label": "Insurance revenue",
+          "normalized_name": null,
+          "amount": 1657.0,
+          "prior_amount": 569.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 7
+        },
+        {
+          "label": "Insurance service expense",
+          "normalized_name": null,
+          "amount": 1134.0,
+          "prior_amount": 288.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 8
+        },
+        {
+          "label": "Insurance service result",
+          "normalized_name": null,
+          "amount": 281.0,
+          "prior_amount": null,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 9
+        },
+        {
+          "label": "Net foreign exchange income",
+          "normalized_name": null,
+          "amount": 17356.0,
+          "prior_amount": 12970.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 10
+        },
+        {
+          "label": "Other operating income",
+          "normalized_name": null,
+          "amount": 8347.0,
+          "prior_amount": 6951.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 11
+        },
+        {
+          "label": "Total net income",
+          "normalized_name": "revenue",
+          "amount": 168194.0,
+          "prior_amount": 134745.0,
+          "page": 127,
+          "confidence": 0.9,
+          "order_index": 12
+        },
+        {
+          "label": "Fair value loss on loan notes at FVTPL",
+          "normalized_name": null,
+          "amount": 783.0,
+          "prior_amount": 385.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 13
+        },
+        {
+          "label": "Credit impairment losses",
+          "normalized_name": null,
+          "amount": 32954.0,
+          "prior_amount": 13352.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 14
+        },
+        {
+          "label": "Net operating income",
+          "normalized_name": null,
+          "amount": 134457.0,
+          "prior_amount": 121008.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 15
+        },
+        {
+          "label": "Employee benefits",
+          "normalized_name": null,
+          "amount": 32011.0,
+          "prior_amount": 24777.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 16
+        },
+        {
+          "label": "Depreciation and amortisation",
+          "normalized_name": "depreciation",
+          "amount": 7321.0,
+          "prior_amount": 7371.0,
+          "page": 127,
+          "confidence": 0.9,
+          "order_index": 17
+        },
+        {
+          "label": "General and administrative expenses",
+          "normalized_name": null,
+          "amount": 43246.0,
+          "prior_amount": 29767.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 18
+        },
+        {
+          "label": "Gain on net monetary position",
+          "normalized_name": null,
+          "amount": 751.0,
+          "prior_amount": null,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 19
+        },
+        {
+          "label": "Operating expenses",
+          "normalized_name": null,
+          "amount": 82578.0,
+          "prior_amount": 61164.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 20
+        },
+        {
+          "label": "Profit before income tax",
+          "normalized_name": "profit_before_tax",
+          "amount": 51879.0,
+          "prior_amount": 59844.0,
+          "page": 127,
+          "confidence": 0.9,
+          "order_index": 21
+        },
+        {
+          "label": "Income tax expense",
+          "normalized_name": "tax_expense",
+          "amount": 8142.0,
+          "prior_amount": 13741.0,
+          "page": 127,
+          "confidence": 0.9,
+          "order_index": 22
+        },
+        {
+          "label": "Profit for the year",
+          "normalized_name": "net_income",
+          "amount": 43737.0,
+          "prior_amount": 46103.0,
+          "page": 127,
+          "confidence": 0.9,
+          "order_index": 23
+        },
+        {
+          "label": "Ordinary shareholders",
+          "normalized_name": null,
+          "amount": 41977.0,
+          "prior_amount": 44894.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 24
+        },
+        {
+          "label": "Non-controlling interest",
+          "normalized_name": null,
+          "amount": 1760.0,
+          "prior_amount": 1209.0,
+          "page": 127,
+          "confidence": 0.5,
+          "order_index": 25
+        },
+        {
+          "label": "Earnings per share (basic and diluted) (Shs)",
+          "normalized_name": "eps",
+          "amount": 11.12,
+          "prior_amount": 11.9,
+          "page": 127,
+          "confidence": 0.9,
+          "order_index": 26
+        },
+        {
+          "label": "Fair value losses on investments in financial instruments measured at FVOCI",
+          "normalized_name": null,
+          "amount": 14553.0,
+          "prior_amount": 41545.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 27
+        },
+        {
+          "label": "Income tax relating to these items",
+          "normalized_name": null,
+          "amount": 4366.0,
+          "prior_amount": 12526.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 28
+        },
+        {
+          "label": "Exchange differences on translation of foreign operations",
+          "normalized_name": null,
+          "amount": 17547.0,
+          "prior_amount": 2936.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 29
+        },
+        {
+          "label": "Re-measurement of defined benefit obligation",
+          "normalized_name": null,
+          "amount": 185.0,
+          "prior_amount": 797.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 30
+        },
+        {
+          "label": "Income tax relating to these items",
+          "normalized_name": null,
+          "amount": 56.0,
+          "prior_amount": 224.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 31
+        },
+        {
+          "label": "Total comprehensive income for the year, net of tax",
+          "normalized_name": null,
+          "amount": 50968.0,
+          "prior_amount": 19447.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 32
+        },
+        {
+          "label": "Owners of the parent",
+          "normalized_name": null,
+          "amount": 46693.0,
+          "prior_amount": 19040.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 33
+        },
+        {
+          "label": "Non-controlling interest",
+          "normalized_name": null,
+          "amount": 4275.0,
+          "prior_amount": 407.0,
+          "page": 128,
+          "confidence": 0.5,
+          "order_index": 34
+        },
+        {
+          "label": "Interest income",
+          "normalized_name": null,
+          "amount": 782.0,
+          "prior_amount": 702.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 35
+        },
+        {
+          "label": "Net Interest income",
+          "normalized_name": null,
+          "amount": 645.0,
+          "prior_amount": 112.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 36
+        },
+        {
+          "label": "Dividend income",
+          "normalized_name": null,
+          "amount": 16465.0,
+          "prior_amount": 22140.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 37
+        },
+        {
+          "label": "Other operating expenses",
+          "normalized_name": null,
+          "amount": 2908.0,
+          "prior_amount": 549.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 38
+        },
+        {
+          "label": "Operating income",
+          "normalized_name": null,
+          "amount": 12912.0,
+          "prior_amount": 21479.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 39
+        },
+        {
+          "label": "Employee benefits",
+          "normalized_name": null,
+          "amount": 26.0,
+          "prior_amount": 93.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 40
+        },
+        {
+          "label": "General and administrative expenses",
+          "normalized_name": null,
+          "amount": 923.0,
+          "prior_amount": 313.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 41
+        },
+        {
+          "label": "Operating expenses",
+          "normalized_name": null,
+          "amount": 951.0,
+          "prior_amount": 408.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 42
+        },
+        {
+          "label": "Income tax credit",
+          "normalized_name": null,
+          "amount": 583.0,
+          "prior_amount": 206.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 43
+        },
+        {
+          "label": "Total comprehensive income for the year",
+          "normalized_name": null,
+          "amount": 12544.0,
+          "prior_amount": 21277.0,
+          "page": 129,
+          "confidence": 0.5,
+          "order_index": 44
+        }
+      ]
+    },
+    "balance_sheet": {
+      "line_items": [
+        {
+          "label": "Cash, deposits, and balances due from financial institutions",
+          "normalized_name": null,
+          "amount": 289253.0,
+          "prior_amount": 232369.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 1
+        },
+        {
+          "label": "Derivative financial assets",
+          "normalized_name": null,
+          "amount": 96.0,
+          "prior_amount": 873.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 2
+        },
+        {
+          "label": "Investment securities",
+          "normalized_name": null,
+          "amount": 500542.0,
+          "prior_amount": 393984.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 3
+        },
+        {
+          "label": "Due from related parties",
+          "normalized_name": null,
+          "amount": 141.0,
+          "prior_amount": 101.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 4
+        },
+        {
+          "label": "Current income tax",
+          "normalized_name": null,
+          "amount": 1088.0,
+          "prior_amount": 1728.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 5
+        },
+        {
+          "label": "Loans and advances to customers",
+          "normalized_name": null,
+          "amount": 887380.0,
+          "prior_amount": 706588.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 6
+        },
+        {
+          "label": "Other assets",
+          "normalized_name": null,
+          "amount": 38233.0,
+          "prior_amount": 34710.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 7
+        },
+        {
+          "label": "Reinsurance contract assets",
+          "normalized_name": null,
+          "amount": 1623.0,
+          "prior_amount": 1485.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 8
+        },
+        {
+          "label": "Investment properties",
+          "normalized_name": null,
+          "amount": 7497.0,
+          "prior_amount": 6115.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 9
+        },
+        {
+          "label": "Property and equipment",
+          "normalized_name": null,
+          "amount": 26138.0,
+          "prior_amount": 18899.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 10
+        },
+        {
+          "label": "Right-of-use assets",
+          "normalized_name": null,
+          "amount": 8446.0,
+          "prior_amount": 8173.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 11
+        },
+        {
+          "label": "Intangible assets",
+          "normalized_name": null,
+          "amount": 19168.0,
+          "prior_amount": 14741.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 12
+        },
+        {
+          "label": "Deferred income tax",
+          "normalized_name": null,
+          "amount": 41830.0,
+          "prior_amount": 27244.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 13
+        },
+        {
+          "label": "Total assets",
+          "normalized_name": "total_assets",
+          "amount": 1821435.0,
+          "prior_amount": 1447010.0,
+          "page": 130,
+          "confidence": 0.9,
+          "order_index": 14
+        },
+        {
+          "label": "Deposits from customers",
+          "normalized_name": null,
+          "amount": 1358228.0,
+          "prior_amount": 1052162.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 15
+        },
+        {
+          "label": "Borrowed funds",
+          "normalized_name": null,
+          "amount": 150595.0,
+          "prior_amount": 157542.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 16
+        },
+        {
+          "label": "Other liabilities",
+          "normalized_name": null,
+          "amount": 57857.0,
+          "prior_amount": 37705.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 17
+        },
+        {
+          "label": "Employee benefit obligations",
+          "normalized_name": null,
+          "amount": 2262.0,
+          "prior_amount": 1856.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 18
+        },
+        {
+          "label": "Lease liabilities",
+          "normalized_name": null,
+          "amount": 9591.0,
+          "prior_amount": 9127.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 19
+        },
+        {
+          "label": "Insurance contract liabilities",
+          "normalized_name": null,
+          "amount": 16903.0,
+          "prior_amount": 2935.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 20
+        },
+        {
+          "label": "Current income tax",
+          "normalized_name": null,
+          "amount": 5036.0,
+          "prior_amount": 1830.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 21
+        },
+        {
+          "label": "Deferred income tax",
+          "normalized_name": null,
+          "amount": 2828.0,
+          "prior_amount": 1642.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 22
+        },
+        {
+          "label": "Total liabilities",
+          "normalized_name": "total_liabilities",
+          "amount": 1603300.0,
+          "prior_amount": 1264799.0,
+          "page": 130,
+          "confidence": 0.9,
+          "order_index": 23
+        },
+        {
+          "label": "Share capital",
+          "normalized_name": "share_capital",
+          "amount": 1887.0,
+          "prior_amount": 1887.0,
+          "page": 130,
+          "confidence": 0.9,
+          "order_index": 24
+        },
+        {
+          "label": "Share premium",
+          "normalized_name": null,
+          "amount": 15325.0,
+          "prior_amount": 15325.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 25
+        },
+        {
+          "label": "Retained earnings",
+          "normalized_name": "retained_earnings",
+          "amount": 216393.0,
+          "prior_amount": 189573.0,
+          "page": 130,
+          "confidence": 0.9,
+          "order_index": 26
+        },
+        {
+          "label": "FVOCI reserve",
+          "normalized_name": null,
+          "amount": 40220.0,
+          "prior_amount": 30033.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 27
+        },
+        {
+          "label": "Statutory reserve",
+          "normalized_name": null,
+          "amount": 1644.0,
+          "prior_amount": 1582.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 28
+        },
+        {
+          "label": "Foreign currency translation reserve",
+          "normalized_name": null,
+          "amount": 12712.0,
+          "prior_amount": 2191.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 29
+        },
+        {
+          "label": "Other reserves",
+          "normalized_name": null,
+          "amount": 52.0,
+          "prior_amount": null,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 30
+        },
+        {
+          "label": "Equity attributable to owners of the Company",
+          "normalized_name": null,
+          "amount": 207793.0,
+          "prior_amount": 176195.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 31
+        },
+        {
+          "label": "Non-controlling interests",
+          "normalized_name": null,
+          "amount": 10342.0,
+          "prior_amount": 6016.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 32
+        },
+        {
+          "label": "Total equity",
+          "normalized_name": "total_equity",
+          "amount": 218135.0,
+          "prior_amount": 182211.0,
+          "page": 130,
+          "confidence": 0.9,
+          "order_index": 33
+        },
+        {
+          "label": "The financial statements on pages",
+          "normalized_name": null,
+          "amount": 242.0,
+          "prior_amount": 27.0,
+          "page": 130,
+          "confidence": 0.5,
+          "order_index": 34
+        },
+        {
+          "label": "Cash, deposits and balances due from financial institutions",
+          "normalized_name": null,
+          "amount": 20335.0,
+          "prior_amount": 14410.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 35
+        },
+        {
+          "label": "Due from related parties",
+          "normalized_name": null,
+          "amount": 905.0,
+          "prior_amount": 3.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 36
+        },
+        {
+          "label": "Other assets",
+          "normalized_name": null,
+          "amount": 1502.0,
+          "prior_amount": 1724.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 37
+        },
+        {
+          "label": "Current income tax",
+          "normalized_name": null,
+          "amount": 197.0,
+          "prior_amount": 147.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 38
+        },
+        {
+          "label": "Property and equipment",
+          "normalized_name": null,
+          "amount": 8.0,
+          "prior_amount": 9.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 39
+        },
+        {
+          "label": "Investments in subsidiary companies",
+          "normalized_name": null,
+          "amount": 100586.0,
+          "prior_amount": 93433.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 40
+        },
+        {
+          "label": "Deferred income tax",
+          "normalized_name": null,
+          "amount": 964.0,
+          "prior_amount": 319.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 41
+        },
+        {
+          "label": "Due to related parties",
+          "normalized_name": null,
+          "amount": 13986.0,
+          "prior_amount": 547.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 42
+        },
+        {
+          "label": "Borrowed funds",
+          "normalized_name": null,
+          "amount": 16111.0,
+          "prior_amount": 12629.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 43
+        },
+        {
+          "label": "Other liabilities",
+          "normalized_name": null,
+          "amount": 96.0,
+          "prior_amount": 14.0,
+          "page": 131,
+          "confidence": 0.5,
+          "order_index": 44
+        }
+      ]
+    },
+    "cash_flow": {
+      "line_items": [
+        {
+          "label": "Cash generated from operations",
+          "normalized_name": null,
+          "amount": 238263.0,
+          "prior_amount": 12981.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 1
+        },
+        {
+          "label": "Income taxes paid",
+          "normalized_name": null,
+          "amount": 9631.0,
+          "prior_amount": 12692.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 2
+        },
+        {
+          "label": "Net cash flows from operating activities",
+          "normalized_name": "operating_cash_flow",
+          "amount": 228632.0,
+          "prior_amount": 289.0,
+          "page": 135,
+          "confidence": 0.9,
+          "order_index": 3
+        },
+        {
+          "label": "Purchase of property and equipment",
+          "normalized_name": "capex",
+          "amount": 7254.0,
+          "prior_amount": 5704.0,
+          "page": 135,
+          "confidence": 0.9,
+          "order_index": 4
+        },
+        {
+          "label": "Proceeds from sale of property and equipment",
+          "normalized_name": null,
+          "amount": 48.0,
+          "prior_amount": null,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 5
+        },
+        {
+          "label": "Purchase of investment properties",
+          "normalized_name": null,
+          "amount": 37.0,
+          "prior_amount": 210.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 6
+        },
+        {
+          "label": "Purchase of intangible assets",
+          "normalized_name": null,
+          "amount": 3814.0,
+          "prior_amount": 3814.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 7
+        },
+        {
+          "label": "Purchase of investment securities",
+          "normalized_name": null,
+          "amount": 308817.0,
+          "prior_amount": 244318.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 8
+        },
+        {
+          "label": "Proceeds from sale / maturity of investment securities",
+          "normalized_name": null,
+          "amount": 199038.0,
+          "prior_amount": 207730.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 9
+        },
+        {
+          "label": "Net cash flows used in investing activities",
+          "normalized_name": "investing_cash_flow",
+          "amount": -119949.0,
+          "prior_amount": -46268.0,
+          "page": 135,
+          "confidence": 0.9,
+          "order_index": 10
+        },
+        {
+          "label": "Dividends paid to ordinary shareholders",
+          "normalized_name": null,
+          "amount": 15095.0,
+          "prior_amount": 11321.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 11
+        },
+        {
+          "label": "Proceeds from borrowed funds",
+          "normalized_name": null,
+          "amount": 42011.0,
+          "prior_amount": 68617.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 12
+        },
+        {
+          "label": "Repayment of borrowed funds",
+          "normalized_name": null,
+          "amount": 57137.0,
+          "prior_amount": 42282.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 13
+        },
+        {
+          "label": "Interest paid on borrowed funds",
+          "normalized_name": null,
+          "amount": 28403.0,
+          "prior_amount": 6833.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 14
+        },
+        {
+          "label": "Interest paid on leases",
+          "normalized_name": null,
+          "amount": 602.0,
+          "prior_amount": 1016.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 15
+        },
+        {
+          "label": "Principal elements of lease payments",
+          "normalized_name": null,
+          "amount": 2327.0,
+          "prior_amount": 1560.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 16
+        },
+        {
+          "label": "Net cash flows (used in)/ from financing activities",
+          "normalized_name": null,
+          "amount": 61553.0,
+          "prior_amount": 5605.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 17
+        },
+        {
+          "label": "Net increase in cash and cash equivalents",
+          "normalized_name": null,
+          "amount": 47130.0,
+          "prior_amount": 40374.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 18
+        },
+        {
+          "label": "Cash and cash equivalents at start of year",
+          "normalized_name": null,
+          "amount": 147802.0,
+          "prior_amount": 190365.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 19
+        },
+        {
+          "label": "Effects of foreign exchange differences",
+          "normalized_name": null,
+          "amount": 1194.0,
+          "prior_amount": 2189.0,
+          "page": 135,
+          "confidence": 0.5,
+          "order_index": 20
+        },
+        {
+          "label": "Cash and cash equivalents at end of year",
+          "normalized_name": "cash_end_of_period",
+          "amount": 193738.0,
+          "prior_amount": 147802.0,
+          "page": 135,
+          "confidence": 0.9,
+          "order_index": 21
+        },
+        {
+          "label": "Profit before income tax",
+          "normalized_name": null,
+          "amount": 11961.0,
+          "prior_amount": 21071.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 22
+        },
+        {
+          "label": "Depreciation on property and equipment",
+          "normalized_name": null,
+          "amount": 2.0,
+          "prior_amount": 2.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 23
+        },
+        {
+          "label": "Interest expense on term borrowings",
+          "normalized_name": null,
+          "amount": 1427.0,
+          "prior_amount": 814.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 24
+        },
+        {
+          "label": "Dividends income",
+          "normalized_name": null,
+          "amount": 16465.0,
+          "prior_amount": 22140.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 25
+        },
+        {
+          "label": "Foreign exchange differences on borrowings",
+          "normalized_name": null,
+          "amount": 3355.0,
+          "prior_amount": 1044.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 26
+        },
+        {
+          "label": "Operating loss before changes in operating assets and liabilities",
+          "normalized_name": null,
+          "amount": 791.0,
+          "prior_amount": null,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 27
+        },
+        {
+          "label": "Other assets",
+          "normalized_name": null,
+          "amount": 5381.0,
+          "prior_amount": null,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 28
+        },
+        {
+          "label": "Due from related parties",
+          "normalized_name": null,
+          "amount": 902.0,
+          "prior_amount": 200.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 29
+        },
+        {
+          "label": "Due to related parties",
+          "normalized_name": null,
+          "amount": 13439.0,
+          "prior_amount": 797.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 30
+        },
+        {
+          "label": "Other liabilities",
+          "normalized_name": null,
+          "amount": 12.0,
+          "prior_amount": null,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 31
+        },
+        {
+          "label": "Cash generated from operations",
+          "normalized_name": null,
+          "amount": 13121.0,
+          "prior_amount": 5587.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 32
+        },
+        {
+          "label": "Income taxes paid",
+          "normalized_name": null,
+          "amount": 112.0,
+          "prior_amount": 210.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 33
+        },
+        {
+          "label": "Investment in subsidiaries",
+          "normalized_name": null,
+          "amount": 7153.0,
+          "prior_amount": 12198.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 34
+        },
+        {
+          "label": "Dividends received",
+          "normalized_name": null,
+          "amount": 16465.0,
+          "prior_amount": 22140.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 35
+        },
+        {
+          "label": "Interest paid on borrowed funds",
+          "normalized_name": null,
+          "amount": 1300.0,
+          "prior_amount": 690.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 36
+        },
+        {
+          "label": "Dividends paid",
+          "normalized_name": null,
+          "amount": 15095.0,
+          "prior_amount": 11321.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 37
+        },
+        {
+          "label": "Net cash flows used in financing activities",
+          "normalized_name": "financing_cash_flow",
+          "amount": -16395.0,
+          "prior_amount": -12011.0,
+          "page": 136,
+          "confidence": 0.9,
+          "order_index": 38
+        },
+        {
+          "label": "Net increase in cash and cash equivalents",
+          "normalized_name": null,
+          "amount": 5925.0,
+          "prior_amount": 3307.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 39
+        },
+        {
+          "label": "Cash and cash equivalents at start of year",
+          "normalized_name": null,
+          "amount": 14410.0,
+          "prior_amount": 11103.0,
+          "page": 136,
+          "confidence": 0.5,
+          "order_index": 40
+        }
+      ]
+    },
+    "equity": {
+      "line_items": [
+        {
+          "label": "Year ended",
+          "normalized_name": null,
+          "amount": 2023.0,
+          "prior_amount": null,
+          "page": 134,
+          "confidence": 0.5,
+          "order_index": 1
+        },
+        {
+          "label": "At start of year",
+          "normalized_name": null,
+          "amount": 1887.0,
+          "prior_amount": 15325.0,
+          "page": 134,
+          "confidence": 0.5,
+          "order_index": 2
+        },
+        {
+          "label": "Profit for the year - -",
+          "normalized_name": null,
+          "amount": 12544.0,
+          "prior_amount": 12544.0,
+          "page": 134,
+          "confidence": 0.5,
+          "order_index": 3
+        },
+        {
+          "label": "Dividends paid - -",
+          "normalized_name": "dividends_paid",
+          "amount": -15095.0,
+          "prior_amount": -15095.0,
+          "page": 134,
+          "confidence": 0.9,
+          "order_index": 4
+        },
+        {
+          "label": "At end of year",
+          "normalized_name": null,
+          "amount": 1887.0,
+          "prior_amount": 15325.0,
+          "page": 134,
+          "confidence": 0.5,
+          "order_index": 5
+        },
+        {
+          "label": "Year ended",
+          "normalized_name": null,
+          "amount": 2022.0,
+          "prior_amount": null,
+          "page": 134,
+          "confidence": 0.5,
+          "order_index": 6
+        },
+        {
+          "label": "Profit for the year - -",
+          "normalized_name": null,
+          "amount": 21277.0,
+          "prior_amount": 21277.0,
+          "page": 134,
+          "confidence": 0.5,
+          "order_index": 7
+        }
+      ]
+    }
+  },
+  "supplemental": {
+    "market_data": null,
+    "management_guidance": [],
+    "principal_risks": [],
+    "director_remuneration": {
+      "total": 319369.0,
+      "currency_hint": "KES",
+      "page": 120
+    },
+    "director_remuneration_detail": []
+  },
+  "timing_note": "Times are direct parser timings outside the Flask request."
+}

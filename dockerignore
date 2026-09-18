@@ -1,0 +1,13 @@
+.git
+.github
+.agents
+attached_assets
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+*.db
+.env
+.replit
+.replit.backup

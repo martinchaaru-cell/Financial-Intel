@@ -28,9 +28,8 @@ from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 )
-from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 # FinSight palette, adapted for print (white background, same accent hues
 # used on-screen in templates/index.html's :root custom properties)
@@ -135,7 +134,6 @@ def _kpi_table(items, styles):
 def _kv_panel(title, rows, styles, note=None):
     """A titled panel of label/value rows - the print equivalent of the
     on-screen .panel / .ir-kv-list."""
-    data = [[Paragraph(title, styles['PanelTitle']), '']]
     body_rows = []
     for label, value in rows:
         body_rows.append([Paragraph(label, styles['Body']), Paragraph(str(value), styles['Body'])])
