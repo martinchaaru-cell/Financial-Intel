@@ -3873,7 +3873,27 @@ def import_jobs():
     return jsonify(result)
 
 with app.app_context():
-    db.create_all()
+    # db.create_all() and the seed-admin insert below both run once per
+    # gunicorn WORKER PROCESS, not once total - the Dockerfile's gunicorn
+    # command has no --preload flag, so each of its 2 workers does its
+    # own separate import of this module, and both run this block at
+    # nearly the same instant on a cold boot. On SQLite that raced on
+    # create_all() itself ("table already exists" - confirmed on a real
+    # deploy); on Postgres create_all() runs fine but the seed-admin
+    # check-then-insert below isn't atomic, so both workers can see "no
+    # admin exists yet" before either has committed and both try to
+    # insert the same admin row, colliding on a uniqueness constraint
+    # (also confirmed on a real deploy). Wrapping each in try/except
+    # rather than adding gunicorn's --preload flag, since --preload runs
+    # this exact code before the fork instead of after, in the master
+    # process - fixing the race, but at the cost of every forked worker
+    # inheriting one shared pre-fork DB connection unless the pool is
+    # also explicitly disposed in a post_fork server hook, which is a
+    # second moving part this fix doesn't need.
+    try:
+        db.create_all()
+    except Exception:
+        db.session.rollback()
 
     # One-time seed admin, from env vars so no credential is hardcoded in
     # source. Only fires while zero admin accounts exist - after the
@@ -3890,7 +3910,13 @@ with app.app_context():
             _seed_user = User(name='Admin', email=_seed_email, role='admin')
             _seed_user.set_password(_seed_password)
             db.session.add(_seed_user)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception:
+            # Another worker's identical insert/update landed first -
+            # that's fine, the outcome (an admin account for this email
+            # exists) is the same either way.
+            db.session.rollback()
 
 if __name__ == '__main__':
     # threaded=True: the live upload-progress SSE stream (GET, held open)
