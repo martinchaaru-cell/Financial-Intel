@@ -42,5 +42,13 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # 2 workers is a reasonable default for a small deployment; raise with
 # --workers as load grows. --threads keeps the SSE upload-progress
 # endpoint responsive within a worker, same reasoning as threaded=True
-# in app.py's own dev-server invocation.
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "120", "app:app"]
+# in app.py's own dev-server invocation. --timeout 600: a multi-year
+# PDF import (parse + match + extract + score) genuinely took 97s on
+# Replit's dev container alone - confirmed on a real Equity Group
+# filing - and a slower/shared free-tier CPU plus cold-start overhead
+# pushed the same request past 300s on Render, so the previous 120s
+# was killing the worker mid-request before it could send its response
+# (surfaces to the client as a broken/non-JSON response, not a normal
+# error). 600s gives real headroom without masking a genuinely stuck
+# request forever.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "600", "app:app"]
