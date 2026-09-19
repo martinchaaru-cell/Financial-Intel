@@ -1483,12 +1483,36 @@ def _save_one_import(data):
     pdf_url = (data.get('pdf_url') or '').strip()
     upload_filename = (data.get('source_filename') or '').strip()
     if pdf_url or upload_filename:
-        doc = SourceDocument(
-            company_id=company_id, url=pdf_url or None, filename=upload_filename or None,
-            period_label=period_label, page_count=data.get('source_page_count'),
-            sha256=data.get('source_sha256'),
-        )
-        db.session.add(doc)
+        # Re-uploading the same file for the same period reuses the
+        # existing SourceDocument instead of stacking a new one each
+        # time (sha256 was always stored "to dedupe re-uploads" but
+        # nothing ever actually looked it up). Stale duplicate docs are
+        # what made the Evidence panel list the same filing repeatedly
+        # and let old bad-extraction docs keep feeding scores/renders.
+        # Same file under a DIFFERENT period_label still gets its own
+        # row on purpose, so the mis-tagged-year case stays visible.
+        doc = None
+        sha = data.get('source_sha256')
+        if sha:
+            doc = SourceDocument.query.filter_by(
+                company_id=company_id, sha256=sha, period_label=period_label
+            ).order_by(SourceDocument.id.desc()).first()
+        if doc is None and pdf_url:
+            # URL-sourced filings (NSE scan flow) carry no sha256
+            doc = SourceDocument.query.filter_by(
+                company_id=company_id, url=pdf_url, period_label=period_label
+            ).order_by(SourceDocument.id.desc()).first()
+        if doc is not None:
+            doc.uploaded_at = datetime.utcnow()
+            if data.get('source_page_count'):
+                doc.page_count = data.get('source_page_count')
+        else:
+            doc = SourceDocument(
+                company_id=company_id, url=pdf_url or None, filename=upload_filename or None,
+                period_label=period_label, page_count=data.get('source_page_count'),
+                sha256=sha,
+            )
+            db.session.add(doc)
         db.session.flush()
         source_doc_id = doc.id
 
@@ -1524,6 +1548,19 @@ def _save_one_import(data):
                 )
                 db.session.add(stmt)
                 db.session.flush()
+            else:
+                # Re-import of a period that already has this statement:
+                # REPLACE its line items. Previously every re-import
+                # appended a fresh copy on top of the old one (4 imports
+                # = every line item 4x), which inflated the rendered
+                # tables and skewed ratios. All callers save a whole
+                # document's statement at once, so replacing is safe.
+                FinancialLineItem.query.filter_by(statement_id=stmt.id).update(
+                    {FinancialLineItem.parent_id: None}, synchronize_session=False)
+                FinancialLineItem.query.filter_by(statement_id=stmt.id).delete(
+                    synchronize_session=False)
+                if source_doc_id:
+                    stmt.source_document_id = source_doc_id
 
             for idx, li in enumerate(line_items):
                 amount = li.get('amount')
@@ -1574,18 +1611,20 @@ def _save_one_import(data):
     # /api/overview and the pre-Phase-6 export routes keep working exactly
     # as before while those get upgraded to read from FinancialPeriod
     # directly.
-    f = Financials(
-        company_id=company_id,
-        period=period_label,
-        currency='KES',
-        revenue=flat.get('revenue', 0.0),
-        net_income=flat.get('net_income', 0.0),
-        total_assets=flat.get('total_assets', 0.0),
-        total_liabilities=flat.get('total_liabilities', 0.0),
-        total_equity=flat.get('total_equity', 0.0),
-        source='pdf_upload'
-    )
-    db.session.add(f)
+    # Upsert (not insert): one legacy row per company+period, so a
+    # re-import updates it instead of stacking duplicates.
+    f = Financials.query.filter_by(company_id=company_id, period=period_label).order_by(Financials.id.desc()).first()
+    if f is None:
+        f = Financials(company_id=company_id, period=period_label)
+        db.session.add(f)
+    f.currency = 'KES'
+    f.revenue = flat.get('revenue', 0.0)
+    f.net_income = flat.get('net_income', 0.0)
+    f.total_assets = flat.get('total_assets', 0.0)
+    f.total_liabilities = flat.get('total_liabilities', 0.0)
+    f.total_equity = flat.get('total_equity', 0.0)
+    f.source = 'pdf_upload'
+    f.updated_at = datetime.utcnow()
     db.session.commit()
 
     return {
@@ -1895,7 +1934,7 @@ def upload_documents_batch():
                             db.session.add(DirectorRemunerationRow(
                                 period_id=period_row.id,
                                 components=json.dumps(components) if components else None,
-                                **row,
+                                **{**row, 'source_document_id': result.get('source_document_id')},
                             ))
                         db.session.flush()  # surface any column/constraint error now, inside this try, instead of at the final commit where it would be harder to attribute to this specific step
                         director_remuneration_rows_saved = director_remuneration_rows_parsed
@@ -2225,7 +2264,7 @@ def upload_documents_batch():
                             db.session.add(DirectorRemunerationRow(
                                 period_id=period_row.id,
                                 components=json.dumps(components) if components else None,
-                                **row,
+                                **{**row, 'source_document_id': result.get('source_document_id')},
                             ))
                         db.session.commit()
             except Exception:

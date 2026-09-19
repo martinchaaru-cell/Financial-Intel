@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# Testing
+.pytest_cache/
+coverage/
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Generated outputs
+.agents/
+outputs/
+
+# Upload folders
+uploads/
+
+# Annual reports
+annual_reports/
+pdf_storage/
+
+# Parser outputs
+*_parser_output.json
+*_summary.json
+
+# Images generated during processing
+*.png
+
+# Documentation
+docs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.yml

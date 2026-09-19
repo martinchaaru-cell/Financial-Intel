@@ -18,7 +18,11 @@ that's surfaced to the user (Source Evidence).
 
 import re
 import io
+import hashlib
+import threading
+from collections import OrderedDict
 import pdfplumber
+import canonical_extended as _ext
 
 try:
     import pypdf
@@ -101,6 +105,21 @@ _SECTION_STOP_RES = [
 # alongside others that do use one ("2. Material accounting policies") -
 # both forms seen in practice, so the period is optional not required.
 _NUMBERED_NOTE_HEADING_RE = re.compile(r"^\s*\d{1,2}\.?\s+[A-Z]")
+
+
+# A column-header line such as "30 June 2025 30 June 2024 31 December 2024"
+# (interim reports) starts with a 1-2 digit number followed by a capital
+# letter, so it matched _NUMBERED_NOTE_HEADING_RE and ended the statement
+# right after its own heading - every line item below it was dropped
+# (Kakuzi H1 2025: balance sheet and cash flow both came back empty).
+# A date row is therefore ignored by parse_financials_text ONLY while the
+# section has no line items yet (the column-header zone right under the
+# heading). Later in a section it still ends it, as before - some
+# filings' statements only stop at such a row, and ignoring it there
+# lets the statement run on into the notes.
+_DATE_HEADER_RE = re.compile(
+    r"^\s*\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{2,4}",
+    re.IGNORECASE)
 
 
 def _is_numbered_note_heading(line: str) -> bool:
@@ -200,7 +219,7 @@ CANONICAL_LINE_ITEMS = {
         # or bullet character at most), so anchoring loses no real match.
         r"^[\s\-\u2022]*net\s+profit\b": 'net_income',
         r"^[\s\-\u2022]*net\s+income\b": 'net_income',
-        r"earnings\s+per\s+share": 'eps',
+        r"earnings\s+per\s+(ordinary\s+)?share": 'eps',
         # Weighted-average / basic shares outstanding - usually sits right
         # next to the EPS line in the P&L or its accompanying note, stated
         # as a share count rather than a currency amount. "Weighted
@@ -232,9 +251,16 @@ CANONICAL_LINE_ITEMS = {
         # flows from operating activities" rather than "Net cash generated
         # from operating activities"; both phrasings are common across
         # NSE filings and refer to the same cash flow statement subtotal.
-        r"net\s+cash\s+(flows\s+)?(generated\s+from|from|used\s+in)\s+operating": 'operating_cash_flow',
-        r"net\s+cash\s+(flows\s+)?(generated\s+from|from|used\s+in)\s+investing": 'investing_cash_flow',
-        r"net\s+cash\s+(flows\s+)?(generated\s+from|from|used\s+in)\s+financing": 'financing_cash_flow',
+        # Broadened: filings word the subtotal many ways - "Net cash
+        # generated/(utilized) by operating activities" (Kakuzi), "Net
+        # cash flows from/ (used in) operating activities" (KCB 2025, the
+        # slash-and-space variant never matched the old, narrower pattern
+        # so KCB's operating cash flow came back missing). Any "Net cash
+        # ... operating/investing/financing activities" line is that
+        # section's subtotal.
+        r"net\s+cash\b.*\boperating\b": 'operating_cash_flow',
+        r"net\s+cash\b.*\binvesting\b": 'investing_cash_flow',
+        r"net\s+cash\b.*\bfinancing\b": 'financing_cash_flow',
         r"cash\s+and\s+cash\s+equivalents\s+at\s+(the\s+)?end": 'cash_end_of_period',
         r"purchase\s+of\s+property": 'capex',
     },
@@ -396,7 +422,13 @@ def _looks_like_label(label: str) -> bool:
 # every number on every page after it - for however many pages until the
 # real heading is reached - gets vacuumed up as if it were that
 # statement's own line items.
-_HEADING_MAX_WORDS = 10
+# 13, not 10: interim reports print long combined headings such as
+# "Consolidated and separate statement of profit or loss and
+# comprehensive income" (11 words, seen on Kakuzi's H1 2025 filing) - at
+# 10 the income statement was silently never recognised. Longer headings
+# are still corroborated by _has_nearby_note_column() before they start
+# a statement section, so the wider limit doesn't reopen false positives.
+_HEADING_MAX_WORDS = 13
 
 # A heading never trails off on a dangling connector - a genuine title is
 # a complete noun phrase ("... Statement of Financial Position"), while a
@@ -496,6 +528,14 @@ def _looks_like_heading_line(line: str, was_doubled: bool = False) -> bool:
     text = re.sub(r'\(continued\)\s*$', '', line.strip(), flags=re.IGNORECASE).strip()
     words = text.split()
     if not words or len(words) > _HEADING_MAX_WORDS:
+        return False
+    # 11+ word lines are only trusted as headings when they read like a
+    # title: start with a capital and don't end like a sentence. Without
+    # this, a wrapped notes-prose line such as "income and statement of
+    # changes in equity are attributable to the following items:" (13
+    # words, lowercase start) re-opened the equity section deep inside
+    # the notes on a real filing and swept note tables in as line items.
+    if len(words) > 10 and (not words[0][:1].isupper() or text.rstrip()[-1:] in ':;,.'):
         return False
     last_word = re.sub(r'[^a-zA-Z]', '', words[-1]).lower()
     if last_word in _HEADING_BAD_ENDINGS:
@@ -947,6 +987,8 @@ def parse_financials_text(pages_text) -> dict:
     """
     statements = {stmt: [] for stmt in STATEMENT_HEADINGS}
     current_stmt = None
+    section_has_items = False
+    ext_name_counts = {stmt: {} for stmt in STATEMENT_HEADINGS}
     order_counters = {stmt: 0 for stmt in STATEMENT_HEADINGS}
     seen_normalized = {stmt: set() for stmt in STATEMENT_HEADINGS}
     seen_raw = {stmt: set() for stmt in STATEMENT_HEADINGS}
@@ -974,6 +1016,7 @@ def parse_financials_text(pages_text) -> dict:
                 if (heading_match in _HEADINGS_NOT_REQUIRING_CORROBORATION
                         or _has_nearby_note_column(page_lines, line_idx)):
                     current_stmt = heading_match
+                    section_has_items = False
                 continue
 
             if current_stmt is None:
@@ -987,14 +1030,30 @@ def parse_financials_text(pages_text) -> dict:
                 current_stmt = None
                 continue
             if _is_numbered_note_heading(line):
+                if _DATE_HEADER_RE.match(line) and not section_has_items:
+                    continue  # e.g. "30 June 2025 30 June 2024" column header under the heading
                 current_stmt = None
+                continue
+
+            # A "Notes Shs'000 Shs'000" style column-header row is not a
+            # line item ("000" was being read as an amount of 0).
+            if _NOTE_COLUMN_RE.match(line) and len(line.split()) <= 6:
                 continue
 
             label, numbers = _split_label_and_numbers(line)
             if not numbers or not _looks_like_label(label):
                 continue
 
+            # Running headers/footers and "as at"/"year ended" lines are not
+            # line items (see canonical_extended.is_page_furniture).
+            if _ext.is_page_furniture(label, numbers):
+                continue
+
             normalized = _match_canonical(current_stmt, label)
+            is_core = normalized is not None
+            ext_name = None
+            if not is_core:
+                ext_name = _ext.match_extended(current_stmt, label)
             amount = numbers[0]  # current-period column, by NSE convention
             prior_amount = numbers[1] if len(numbers) > 1 else None
 
@@ -1022,15 +1081,29 @@ def parse_financials_text(pages_text) -> dict:
                 if normalized in seen_normalized[current_stmt]:
                     continue
                 seen_normalized[current_stmt].add(normalized)
+                confidence = 0.9
+            elif ext_name:
+                # Extended vocabulary names may repeat inside a statement
+                # (a non-current AND a current "Lease obligations"), so a
+                # repeat gets a numeric suffix rather than being dropped -
+                # keeps normalized_name unique per statement, which
+                # report_context and the period-compare view rely on.
+                n_seen = ext_name_counts[current_stmt].get(ext_name, 0) + 1
+                ext_name_counts[current_stmt][ext_name] = n_seen
+                normalized = ext_name if n_seen == 1 else f'{ext_name}_{n_seen}'
+                confidence = 0.85
+            else:
+                confidence = _ext.structural_confidence(label, amount, prior_amount)
 
             order_counters[current_stmt] += 1
+            section_has_items = True
             statements[current_stmt].append({
                 'label': label,
                 'normalized_name': normalized,
                 'amount': amount,
                 'prior_amount': prior_amount,
                 'page': page_num,
-                'confidence': 0.9 if normalized else 0.5,
+                'confidence': confidence,
                 'order_index': order_counters[current_stmt],
             })
 
@@ -1073,6 +1146,52 @@ _MIN_CHARS_PER_PAGE_FOR_TEXT_LAYER = 20
 _MAX_PAGES = 600
 
 
+# One pypdf text pass per PDF, shared by everything that needs it.
+# A single full-report upload used to read every page's text with pypdf
+# SIX separate times (the statement prefilter below, then
+# extract_director_remuneration, extract_market_data,
+# extract_management_guidance, extract_principal_risks and
+# extract_director_remuneration_detail each started from scratch) - on a
+# ~130-page bank report that was ~50s of pure repeated work, and roughly
+# triple that on a ~300-page one. Results are identical (same pypdf
+# extract_text() per page); they're just computed once. Keyed by a hash of
+# the bytes, tiny LRU (2 PDFs) so concurrent uploads can't grow memory.
+_PAGE_TEXT_CACHE = OrderedDict()
+_PAGE_TEXT_CACHE_LOCK = threading.Lock()
+_PAGE_TEXT_CACHE_MAX = 2
+
+
+def _pypdf_page_texts_cached(pdf_bytes: bytes):
+    """[(page_num, text), ...] for every page via pypdf, computed once per
+    distinct PDF. None if pypdf isn't installed or can't open the file
+    (callers decide their own fallback)."""
+    if pypdf is None:
+        return None
+    key = (len(pdf_bytes), hashlib.blake2b(pdf_bytes, digest_size=16).hexdigest())
+    with _PAGE_TEXT_CACHE_LOCK:
+        hit = _PAGE_TEXT_CACHE.get(key)
+        if hit is not None:
+            _PAGE_TEXT_CACHE.move_to_end(key)
+            return hit
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        pages = list(reader.pages)
+    except Exception:
+        return None
+    out = []
+    for i, page in enumerate(pages):
+        try:
+            out.append((i + 1, page.extract_text() or ""))
+        except Exception:
+            # A single malformed page shouldn't sink the whole pass.
+            out.append((i + 1, ""))
+    with _PAGE_TEXT_CACHE_LOCK:
+        _PAGE_TEXT_CACHE[key] = out
+        while len(_PAGE_TEXT_CACHE) > _PAGE_TEXT_CACHE_MAX:
+            _PAGE_TEXT_CACHE.popitem(last=False)
+    return out
+
+
 def _fast_prefilter_pages(pdf_bytes: bytes, always_include: int = 5):
     """First pass with pypdf - much faster than pdfplumber's extract_text()
     but doesn't reliably reconstruct table rows (see the note on
@@ -1088,27 +1207,15 @@ def _fast_prefilter_pages(pdf_bytes: bytes, always_include: int = 5):
     has no statement heading of its own and would otherwise get dropped
     by the prefilter entirely.
     """
-    if pypdf is None:
+    texts = _pypdf_page_texts_cached(pdf_bytes)
+    if not texts:
         return None
-    try:
-        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-        num_pages = len(reader.pages)
-    except Exception:
-        return None
-    if num_pages == 0:
-        return None
+    num_pages = len(texts)
 
     candidates = set(range(1, min(always_include, num_pages) + 1))
-    for i in range(num_pages):
-        try:
-            text = reader.pages[i].extract_text() or ""
-        except Exception:
-            # A single malformed page shouldn't sink the whole prefilter -
-            # just treat it as having no heading and move on.
-            continue
+    for page_num, text in texts:
         for line in text.splitlines():
             if _classify_statement(line.strip()):
-                page_num = i + 1
                 # A statement's line items almost always run several pages
                 # past its own heading page (continuation pages, notes-free
                 # runs of numbers) - grab a generous window forward, plus
@@ -1505,27 +1612,9 @@ def extract_director_remuneration(pdf_bytes: bytes) -> dict | None:
     never fall back to summing rows themselves (see module note above
     for why).
     """
-    reader = None
-    if pypdf is not None:
-        try:
-            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-        except Exception:
-            reader = None
-
-    page_texts = []
-    if reader is not None:
-        for i, page in enumerate(reader.pages):
-            try:
-                page_texts.append((i + 1, page.extract_text() or ""))
-            except Exception:
-                page_texts.append((i + 1, ""))
-    else:
-        # Fallback path - only reached if pypdf isn't installed at all.
-        # Will NOT recover the reversed-text case described above, but
-        # still works for filings (like NSE's) with no such corruption.
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for i, page in enumerate(pdf.pages):
-                page_texts.append((i + 1, page.extract_text() or ""))
+    # Same pypdf-first / pdfplumber-fallback page text every other
+    # extractor uses, computed once per PDF (see _pypdf_page_texts_cached).
+    page_texts = _pypdf_or_pdfplumber_page_texts(pdf_bytes)
 
     heading_pages = []
     for pg, text in page_texts:
@@ -1695,22 +1784,12 @@ def parse_financials_pdf(pdf_bytes: bytes) -> dict:
 # standardized input format is settled on.
 
 def _pypdf_or_pdfplumber_page_texts(pdf_bytes: bytes):
-    """Shared page-text extraction, same fallback order as
-    extract_director_remuneration above."""
-    reader = None
-    if pypdf is not None:
-        try:
-            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-        except Exception:
-            reader = None
-    if reader is not None:
-        out = []
-        for i, page in enumerate(reader.pages):
-            try:
-                out.append((i + 1, page.extract_text() or ""))
-            except Exception:
-                out.append((i + 1, ""))
-        return out
+    """Shared page-text extraction: pypdf when it can open the file
+    (computed once per PDF and reused - see _pypdf_page_texts_cached),
+    else pdfplumber."""
+    texts = _pypdf_page_texts_cached(pdf_bytes)
+    if texts is not None:
+        return texts
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         return [(i + 1, p.extract_text() or "") for i, p in enumerate(pdf.pages)]
 
@@ -2075,6 +2154,36 @@ _REM_SECTION_HEADING_RE = re.compile(
 _REM_YEAR_RE = re.compile(r'(20\d{2})')
 _REM_STOP_LINE_RE = re.compile(r'^(notes?:|by order|date:|statement of directors)', re.I)
 
+# Some filings' Directors' Remuneration Report table (confirmed: Equity
+# Group Holdings, every year checked) defeats pdfplumber's word-position
+# extraction - _page_word_groups above ends up with names AND figures
+# with every character in mirror-reversed order ("latoT" for "Total",
+# "168,421" for "124,861"), because the table's own PDF content stream
+# draws this specific block through a transform pdfplumber's word
+# grouping doesn't handle. pypdf's extract_text() (used for
+# _pypdf_or_pdfplumber_page_texts below) reads the very same table
+# completely cleanly, plain names and numbers in the right order,
+# confirmed across all 3 fiscal years checked - so rather than trying to
+# repair pdfplumber's broken word list, the page-range AND the row
+# parsing both use that clean pypdf text directly for this table (see
+# _parse_remuneration_rows_from_plain_text below), skipping pdfplumber's
+# word extraction for it entirely.
+#
+# This same forward-word set also replaces the old, much looser
+# 'remuneration report' substring search for locating the section: that
+# search matches a Table of Contents entry, an AGM proxy resolution, or
+# an auditor's-report sentence that merely name-drops the report - all
+# of which can sit hundreds of pages from the real table and, taken via
+# min()/max(), were silently expanding the scan window to the ENTIRE
+# document on a real 286-page filing. Deliberately a narrow set of 5
+# column-header words (Salary, Fees, Pension, Bonus, Gratuity) - "Total"
+# and "Expense" alone are common enough to coincidentally appear
+# elsewhere (confirmed: a bank's own retail-loan-product page lists
+# "Salary" and "Bonus" advance loans; an unrelated insurance note uses
+# "Total" and "Expense" repeatedly) - requiring all 5 together, on one
+# page, is specific enough to only ever match the real table.
+_REM_REVERSED_HEADER_HINTS = {'salary', 'fees', 'pension', 'bonus', 'gratuity'}
+
 
 _REM_UNIT_ONLY_RE = re.compile(r"^k?shs?\.?\s*'?\u2018?\u2019?000\u2018?\u2019?'?$", re.I)
 
@@ -2388,6 +2497,74 @@ def _classify_remuneration_kind(heading_text: str) -> str:
     return 'unknown'
 
 
+_REM_NAME_LINE_RE = re.compile(
+    r"^(?P<name>(?:Mr|Mrs|Ms|Dr|Prof)\.?\s*[A-Za-z][A-Za-z.'\u2019\-]*(?:\s+[A-Za-z][A-Za-z.'\u2019\-]*){0,5}\*?)\s+"
+    r"(?P<values>(?:-|\(?\d[\d,]*\)?)(?:\s+(?:-|\(?\d[\d,]*\)?)){1,9})\s*$"
+)
+_REM_ANON_TOTAL_ROW_RE = re.compile(
+    r"^(?P<values>(?:-|\(?\d[\d,]*\)?)(?:\s+(?:-|\(?\d[\d,]*\)?)){2,9})\s*$"
+)
+_REM_YEAR_LINE_RE = re.compile(r'year\s+ended.{0,30}?(20\d{2})', re.I | re.DOTALL)
+
+
+def _parse_remuneration_rows_from_plain_text(text: str) -> list:
+    """Parses director remuneration rows straight from pypdf's plain
+    text, for a table whose pdfplumber word-position extraction is
+    broken (see _REM_REVERSED_HEADER_HINTS above) - deliberately NOT
+    reusing _parse_remuneration_table's word-position machinery, since
+    there are no usable word positions to reconstruct from here, only
+    plain text lines that already read correctly top to bottom.
+
+    Column order/wording varies by year (confirmed: 2025's header has
+    "...Gratuity Expense allowances Leave pay...", 2024/2022 have
+    "...Other allowances Gratuity Leave pay..." - Gratuity and the
+    "allowances" column swap places), so rather than assume one fixed
+    order, each row's own value tokens are kept positionally
+    (value_1, value_2, ...) with 'Total' aliased onto the last token -
+    Total is always the rightmost column and always printed, even on
+    a row that's one token short of the rest (confirmed on a real
+    filing - Prof. Isaac Macharia's own row), so this is never
+    ambiguous even without a full header mapping.
+
+    A bare numeric line (no name) this far down the table is the
+    filing's own printed grand-total row - confirmed on a real filing,
+    where the total row prints with no label at all, just the summed
+    columns - and is returned with is_total_row=True.
+
+    Returns a list of {'label', 'is_total_row', 'values', 'year'}
+    dicts; 'year' is the fiscal year taken from this page's own
+    "Year ended 31 December <YYYY>" line, since one page is sometimes
+    the prior-year comparative table on its own (confirmed: Equity
+    Group's 2024 filing prints FY2024 and FY2023 as two separate
+    full-page tables, not one table with two year columns)."""
+    year = None
+    year_m = _REM_YEAR_LINE_RE.search(text)
+    if year_m:
+        year = year_m.group(1)
+    rows = []
+    for raw_line in text.split('\n'):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r'^(Mr|Mrs|Ms|Dr|Prof)\s+\.\s*', r'\1. ', line)
+        m = _REM_NAME_LINE_RE.match(line)
+        if m:
+            name = m.group('name').strip()
+            tokens = m.group('values').split()
+            is_total_row = bool(re.match(r'^(total|grand total)\b', name, re.I))
+        else:
+            m2 = _REM_ANON_TOTAL_ROW_RE.match(line)
+            if not m2:
+                continue
+            name = 'Total'
+            tokens = m2.group('values').split()
+            is_total_row = True
+        values = {f'value_{i + 1}': t for i, t in enumerate(tokens)}
+        values['Total'] = tokens[-1]
+        rows.append({'label': name, 'is_total_row': is_total_row, 'values': values, 'year': year})
+    return rows
+
+
 def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: str | None = None) -> list:
     """Every named director/role's own remuneration row(s) from the
     filing's "Directors' Remuneration Report", reconstructed generically
@@ -2420,6 +2597,54 @@ def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: 
     Returns [] if no remuneration table is found on any page (e.g. an
     interim filing, or a layout this parser doesn't recognize)."""
     page_texts = _pypdf_or_pdfplumber_page_texts(pdf_bytes)
+
+    def _page_hint_count(text):
+        words = {w.strip(' .,()*\u2018\u2019').lower() for w in text.split()}
+        return len(words & _REM_REVERSED_HEADER_HINTS)
+
+    reversed_table_pages = [pg for pg, text in page_texts
+                             if _page_hint_count(text) == len(_REM_REVERSED_HEADER_HINTS)]
+    if reversed_table_pages:
+        # The real table's own signature was found directly on these
+        # exact pages - parse them straight from this same (already
+        # correct) plain text rather than routing through pdfplumber's
+        # word-position extraction, which is what's actually broken
+        # for this table (see _REM_REVERSED_HEADER_HINTS above and
+        # _parse_remuneration_rows_from_plain_text below). This also
+        # sidesteps the old substring search entirely, which is prone
+        # to false positives far from the real section (a Table of
+        # Contents entry, an AGM proxy resolution, a sentence in the
+        # auditor's report that merely name-drops "remuneration
+        # report") - confirmed on a real 286-page filing where
+        # trusting min()/max() over every such match expanded the
+        # scan window to the entire document.
+        results = []
+        order = 0
+        page_text_by_num = dict(page_texts)
+        for pg in reversed_table_pages:
+            for row in _parse_remuneration_rows_from_plain_text(page_text_by_num[pg]):
+                label = row['label']
+                year = row['year']
+                if target_period_label and year and f'FY{year}' != target_period_label:
+                    continue
+                is_exec_marked = bool(re.search(r'\*', label))
+                role = 'executive' if is_exec_marked else 'non_executive' if not row['is_total_row'] else 'unknown'
+                is_grand_total = row['is_total_row'] and bool(re.search(r'\btotal\b', label, re.I))
+                results.append({
+                    'director_name': label,
+                    'role': role,
+                    'table_kind': 'unknown',
+                    'is_grand_total': is_grand_total,
+                    'is_total_row': row['is_total_row'],
+                    'total': row['values'].get('Total'),
+                    'components': row['values'],
+                    'fiscal_year': year,
+                    'order_index': order,
+                    'page': pg,
+                })
+                order += 1
+        return results
+
     section_pages = [pg for pg, text in page_texts
                       if 'remuneration report' in text.lower()
                       and _REM_SECTION_HEADING_RE.search(text)]
