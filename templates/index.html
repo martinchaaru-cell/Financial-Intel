@@ -1677,6 +1677,53 @@ function collapseUploadPromptToActivity(){
   document.getElementById('uploadBackendLogWrap').style.display = 'block';
 }
 
+// Renders the same {results, saved, failed} shape whether it arrived via
+// the SSE 'batch_done' event or the /result polling fallback - the two
+// paths must agree on what the user sees, so this is the one place either
+// of them calls to finish the job.
+function renderUploadBatchResults(data){
+  const statusEl = document.getElementById('uploadReportsStatus');
+  const resultsEl = document.getElementById('uploadReportsResults');
+  statusEl.style.display = 'block';
+  statusEl.textContent = `Done: ${data.saved} saved, ${data.failed} failed.`;
+  resultsEl.innerHTML = (data.results || []).map(r => {
+    if (r.ok) {
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);">
+        ✅ <strong>${escapeHtml(r.filename)}</strong> → ${escapeHtml(r.company_name || 'Unknown')}
+        (${escapeHtml(r.period)})${r.created_company ? ' <span style="color:var(--amber,#b8860b);">— new company created</span>' : ''}
+        ${r.match_score !== undefined && r.match_score !== null && !uploadReportsCompanyId ? `<span style="color:var(--text-secondary,#666);"> · match ${(r.match_score*100).toFixed(0)}%</span>` : ''}
+      </div>`;
+    }
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);color:var(--red,#c0392b);">
+      ❌ <strong>${r.filename ? escapeHtml(r.filename) : 'Batch'}</strong> — ${escapeHtml(r.error || 'Unknown error')}
+    </div>`;
+  }).join('');
+  if (data.saved > 0 && currentPage === 'settings') {
+    renderSettingsCompaniesPanel();
+    renderSettingsActivityPanel();
+  }
+}
+
+// Fallback for when the SSE connection drops before 'batch_done' ever
+// arrives (flaky connection, a proxy that kills idle GETs, phone locks and
+// the browser suspends the tab, etc.) - without this, a dropped stream on
+// a many-minute batch would leave the user staring at a stalled log with
+// no way to ever learn whether the upload finished. Polls every 5s, up to
+// 40 minutes (10 files at ~3-4 min each, plus margin), then gives up with
+// an honest message rather than polling forever.
+async function pollBatchResultFallback(batchId, onDone){
+  const maxAttempts = 480; // 480 * 5s = 40 minutes
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const res = await fetch(`/api/import/upload-batch/${batchId}/result`);
+      const data = await res.json();
+      if (data.done) { onDone(data, null); return; }
+    } catch (e) { /* transient network hiccup - just try again next tick */ }
+  }
+  onDone(null, 'Lost track of this upload — it may still be running on the server. Check Import Activity in a few minutes.');
+}
+
 async function submitUploadReports(){
   if (!uploadReportsFiles.length) return;
   const statusEl = document.getElementById('uploadReportsStatus');
@@ -1728,6 +1775,7 @@ async function submitUploadReports(){
     scoring: 'Scoring extraction quality',
   };
   let timerHandle = null;
+  let settledByPoll = false; // true once the polling fallback has already resolved this batch, so a late SSE event (or vice versa) can't finish it twice
   const logLine = (html) => {
     const row = document.createElement('div');
     row.innerHTML = html;
@@ -1740,6 +1788,18 @@ async function submitUploadReports(){
   timerHandle = setInterval(() => {
     timerEl.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + 's';
   }, 100);
+
+  const finish = (ok, message) => {
+    btn.disabled = false;
+    btn.textContent = 'Upload & Save';
+    if (!ok) {
+      statusEl.style.display = 'block';
+      statusEl.textContent = message;
+    }
+    clearInterval(timerHandle);
+    es.close();
+  };
+
   es.onmessage = (evt) => {
     let e; try { e = JSON.parse(evt.data); } catch (err) { return; }
     const t = fmtTime(e.ts);
@@ -1755,26 +1815,38 @@ async function submitUploadReports(){
       logLine(`<span style="color:var(--text-faint);">[${t}]</span> ❌ <strong>${escapeHtml(e.filename)}</strong> — ${escapeHtml(e.error || 'failed')}`);
     } else if (e.type === 'batch_done') {
       logLine(`<span style="color:var(--text-faint);">[${t}]</span> <strong>Batch complete in ${e.elapsed_seconds}s</strong> — ${e.saved} saved, ${e.failed} failed`);
-      clearInterval(timerHandle);
-      timerEl.textContent = e.elapsed_seconds + 's (done)';
-      es.close();
+      if (!settledByPoll) {
+        settledByPoll = true;
+        renderUploadBatchResults({results: e.results || [], saved: e.saved, failed: e.failed});
+        finish(true);
+      }
+    } else if (e.type === 'batch_failed') {
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> <strong style="color:var(--red,#c0392b);">Batch stopped: ${escapeHtml(e.error || 'unknown error')}</strong> — ${e.saved} saved, ${e.failed} failed`);
+      if (!settledByPoll) {
+        settledByPoll = true;
+        finish(false, `Upload stopped early: ${e.error || 'unknown error'} (${e.saved} saved before this happened).`);
+      }
     }
   };
-  es.onerror = () => { /* connection drop mid-upload isn't fatal - the upload POST itself still completes and reports results normally */ };
-
-  const finish = (ok, message) => {
-    btn.disabled = false;
-    btn.textContent = 'Upload & Save';
-    if (!ok) {
-      statusEl.style.display = 'block';
-      statusEl.textContent = message;
-    }
-    clearInterval(timerHandle);
+  // A dropped SSE connection is NOT fatal anymore - the upload itself keeps
+  // running server-side regardless (it no longer lives inside the request
+  // this page holds open), so fall back to polling the /result endpoint
+  // until it reports done, instead of leaving the user with a stalled log
+  // and no way to find out what happened.
+  es.onerror = () => {
     es.close();
+    if (settledByPoll) return;
+    logLine(`<span style="color:var(--text-faint);">[${fmtTime(new Date().toISOString())}]</span> Live log connection dropped — still checking for a result in the background...`);
+    pollBatchResultFallback(batchId, (data, errMsg) => {
+      if (settledByPoll) return;
+      settledByPoll = true;
+      if (data) { renderUploadBatchResults(data); finish(true); }
+      else { finish(false, errMsg); }
+    });
   };
 
   try {
-    const data = await new Promise((resolve, reject) => {
+    const ack = await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/import/upload-batch');
 
@@ -1794,19 +1866,19 @@ async function submitUploadReports(){
         progEta.textContent = _formatEta(remainingSec);
       };
 
-      // Once every byte has left the browser, the server still has to
-      // parse and save each PDF - large reports can take tens of
-      // seconds there with no further upload-progress events possible
-      // (there's nothing more being "uploaded"), so switch the copy to
-      // make that wait legible instead of leaving the bar stuck at 99%.
+      // Once every byte has left the browser, the server hands back an
+      // immediate 202 accept (it no longer waits for parsing/saving to
+      // finish before responding - see app.py's upload_documents_batch),
+      // so this used to say "parsing now, could take a minute" - it no
+      // longer needs to, since the actual wait happens below via the live
+      // log / poll fallback instead of a held-open request.
       xhr.upload.onload = () => {
         progBar.style.width = '100%';
         progPct.textContent = '100%';
         progSpeed.textContent = '';
         progEta.textContent = '';
         collapseUploadPromptToActivity();
-        statusEl.textContent = `Upload complete — parsing and saving ${uploadReportsFiles.length} file(s) ` +
-          `now. Large reports (100+ pages) can take a minute or more.`;
+        statusEl.textContent = `Upload received — processing ${uploadReportsFiles.length} file(s) in the background now.`;
       };
 
       xhr.onload = () => {
@@ -1829,23 +1901,12 @@ async function submitUploadReports(){
       xhr.send(fd);
     });
 
-    statusEl.textContent = `Done: ${data.saved} saved, ${data.failed} failed.`;
-    resultsEl.innerHTML = (data.results || []).map(r => {
-      if (r.ok) {
-        return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);">
-          ✅ <strong>${escapeHtml(r.filename)}</strong> → ${escapeHtml(r.company_name || 'Unknown')}
-          (${escapeHtml(r.period)})${r.created_company ? ' <span style="color:var(--amber,#b8860b);">— new company created</span>' : ''}
-          ${r.match_score !== undefined && r.match_score !== null && !uploadReportsCompanyId ? `<span style="color:var(--text-secondary,#666);"> · match ${(r.match_score*100).toFixed(0)}%</span>` : ''}
-        </div>`;
-      }
-      return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);color:var(--red,#c0392b);">
-        ❌ <strong>${escapeHtml(r.filename)}</strong> — ${escapeHtml(r.error || 'Unknown error')}
-      </div>`;
-    }).join('');
-    finish(true);
-    if (data.saved > 0 && currentPage === 'settings') {
-      await renderSettingsCompaniesPanel();
-      await renderSettingsActivityPanel();
+    // ack is just {accepted, batch_id, file_count} now - the real result
+    // arrives later via the SSE 'batch_done'/'batch_failed' handler above
+    // (or the poll fallback if that connection drops), not here. Nothing
+    // else to do with this response.
+    if (!ack || !ack.accepted) {
+      throw new Error((ack && ack.error) || 'Upload was not accepted.');
     }
   } catch (e) {
     finish(false, 'Upload failed: ' + e.message);
@@ -2356,6 +2417,7 @@ const SR_TABS = [
 ];
 let srTab = 'company-overview';
 let srCompanyId = null;
+let srFiscalYear = null; // null = let the backend pick this company's own latest survey year
 let srDataCache = null;
 let srSelectedDirectorIdx = 0;
 let srSurveyAvgCache = null; // portfolio-wide averages from /api/survey/overview, for "vs market" comparisons - fetched lazily, once, the first time a tab needs it
@@ -2375,12 +2437,18 @@ async function renderSurveyReportPage(){
     return;
   }
 
-  const data = await safeJson(await fetch(`/api/companies/${srCompanyId}/survey-report`), null);
+  const yearQuery = srFiscalYear ? `?fiscal_year=${encodeURIComponent(srFiscalYear)}` : '';
+  const data = await safeJson(await fetch(`/api/companies/${srCompanyId}/survey-report${yearQuery}`), null);
   srDataCache = data;
   if (!data) {
     app.innerHTML = `<div class="panel"><div class="empty">Could not load this company's survey report.</div></div>`;
     return;
   }
+  // The endpoint defaults to this company's own most recent survey year when
+  // no fiscal_year is passed - adopt whatever it actually returned as the
+  // picker's selected value, so the dropdown reflects reality on first load
+  // (and after switching companies) instead of staying blank.
+  if (!srFiscalYear && data.survey) srFiscalYear = data.survey.fiscal_year;
 
   const allCompanies = await safeJson(await fetch('/api/companies'), []);
 
@@ -2393,11 +2461,16 @@ async function renderSurveyReportPage(){
   const c = data.company;
   const s = data.survey;
 
+  const availableYears = data.available_survey_years || [];
   app.innerHTML = `
-    <div style="margin-bottom:10px;font-size:11.5px;">
+    <div style="margin-bottom:10px;font-size:11.5px;display:flex;gap:8px;flex-wrap:wrap;">
       <select id="srCompanyPicker" onchange="srSwitchCompany(this.value)" style="max-width:280px;">
         ${allCompanies.map(co => `<option value="${co.id}" ${co.id === srCompanyId ? 'selected' : ''}>${escapeHtml(co.name)}</option>`).join('')}
       </select>
+      ${availableYears.length > 1 ? `
+      <select id="srYearPicker" onchange="srSwitchYear(this.value)" style="max-width:160px;">
+        ${availableYears.map(y => `<option value="${escapeHtml(y)}" ${y === srFiscalYear ? 'selected' : ''}>${escapeHtml(y)}</option>`).join('')}
+      </select>` : ''}
     </div>
     <div class="sr-company-card">
       <div class="sr-company-left">
@@ -2423,8 +2496,17 @@ async function renderSurveyReportPage(){
 function srKpi(icon, value, label){
   return `<div class="sr-kpi"><div class="sr-kpi-icon">${icon}</div><div><div class="sr-kpi-value">${value}</div><div class="sr-kpi-label">${escapeHtml(label)}</div></div></div>`;
 }
+function srSwitchYear(fiscalYear){
+  srFiscalYear = fiscalYear;
+  srSelectedDirectorIdx = 0;
+  renderSurveyReportPage();
+}
 function srSwitchCompany(companyId){
   srCompanyId = Number(companyId);
+  // Reset to null (not carried over from the previous company) so the new
+  // company opens on its OWN latest year, rather than possibly requesting
+  // a fiscal year it doesn't have data for.
+  srFiscalYear = null;
   srSelectedDirectorIdx = 0;
   srEditableCommittees = null;
   srCommitteesEditMode = false;
@@ -2480,7 +2562,7 @@ function srTabIsEmpty(tabId, data){
   if (tabId === 'directors-register') return !(data.survey_director_rows || []).length;
   if (tabId === 'remuneration') return !(data.director_rows || []).length;
   if (tabId === 'committees') return !(data.committees || []).length;
-  if (tabId === 'benefits') return !(s.ned_benefits && Object.keys(s.ned_benefits).length) && !(data.survey_director_benefits || []).length;
+  if (tabId === 'benefits') return !(s.ned_benefits && Object.keys(s.ned_benefits).length) && !(data.survey_director_benefits || []).length && !(data.benefit_categories || []).length;
   return false;
 }
 function srEmptyBanner(tabId, data){
@@ -3197,6 +3279,7 @@ function srBenefitsTab(data){
   const benefits = (s && s.ned_benefits) || null;
   const directorRows = (data.director_rows || []).filter(r => !r.is_grand_total && !r.is_total_row);
   const surveyBenefits = data.survey_director_benefits || [];
+  const categories = data.benefit_categories || [];
 
   return `
     <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:14px;">
@@ -3206,7 +3289,7 @@ function srBenefitsTab(data){
           ${t.label}
         </button>`).join('')}
     </div>
-    ${srBenefitsSubtab === 'per_director' ? srBenefitsPerDirectorView(directorRows, surveyBenefits) : srBenefitsRoleView(srBenefitsSubtab, benefits, directorRows)}`;
+    ${srBenefitsSubtab === 'per_director' ? srBenefitsPerDirectorView(directorRows, surveyBenefits, categories) : srBenefitsRoleView(srBenefitsSubtab, benefits, directorRows)}`;
 }
 
 function srBenefitsRoleView(role, benefits, directorRows){
@@ -3267,9 +3350,10 @@ function srBenefitColumnCells(allRoleRows, r){
 // sources aren't guaranteed to agree or even both exist for the same
 // director - see SurveyDirectorBenefit's own docstring for why they're
 // matched by name, not merged into one row at write time.
-function srBenefitsPerDirectorView(directorRows, surveyBenefits){
+function srBenefitsPerDirectorView(directorRows, surveyBenefits, categories){
   const withComponents = directorRows.filter(r => r.components && Object.keys(r.components).some(k => BENEFIT_KEY_PATTERN.test(k)));
   return `
+    ${srBenefitCategoriesPanel(categories || [])}
     ${srSurveyDirectorBenefitsPanel(surveyBenefits)}
     <div class="panel">
       <div class="sa-panel-title">Benefit Components in Filed Director Remuneration Tables</div>
@@ -3284,6 +3368,73 @@ function srBenefitsPerDirectorView(directorRows, surveyBenefits){
         </tbody></table>`;
       })() : `<div class="empty">${naSpan('No director\u2019s filed remuneration table includes a benefits-related column for this company')}</div>`}
     </div>`;
+}
+// SurveyBenefitCategory rows: an ITEMIZED breakdown (Housing, Vehicle,
+// Medical, Travel, Pension, Other, ...) - see that model's docstring for
+// why this is hand-entered rather than auto-extracted (real filings almost
+// always describe these in prose, not a clean amount-per-category table).
+// Split into company-level rows (director_name is null) and per-director
+// rows, since a filing can state either shape.
+let srAddingBenefitCategory = false;
+function srBenefitCategoriesPanel(categories){
+  const companyLevel = categories.filter(c => !c.director_name);
+  const perDirector = categories.filter(c => c.director_name);
+  const row = (c) => `<tr>
+      <td>${c.director_name ? escapeHtml(c.director_name) : '<span style="color:var(--text-faint);">Company-wide</span>'}</td>
+      <td>${escapeHtml(c.category)}</td>
+      <td style="font-weight:700;">${fmtAmount(c.amount)}</td>
+      <td style="font-size:11.5px;">${c.description ? escapeHtml(c.description) : naSpan('\u2014')}</td>
+      ${canEdit() ? `<td><button class="secondary" style="color:var(--red);padding:2px 8px;font-size:11px;" onclick="srDeleteBenefitCategory(${c.id})">Delete</button></td>` : ''}
+    </tr>`;
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="ov-panel-head"><div class="sa-panel-title" style="margin:0;">Itemized Benefits Breakdown (as filed)</div>
+        ${canEdit() ? `<button class="btn" onclick="srAddingBenefitCategory = !srAddingBenefitCategory; renderSRTabBody();">${srAddingBenefitCategory ? 'Cancel' : '+ Add Category'}</button>` : ''}
+      </div>
+      ${srAddingBenefitCategory ? srBenefitCategoryForm() : ''}
+      ${categories.length ? `<table><thead><tr><th>Director</th><th>Category</th><th>Amount</th><th>Detail</th>${canEdit() ? '<th></th>' : ''}</tr></thead><tbody>
+        ${companyLevel.map(row).join('')}${perDirector.map(row).join('')}
+      </tbody></table>` : `<div class="empty">${naSpan('No itemized benefits breakdown filed for this company/year yet \u2014 most filings only give a single lump total (see the sections below); add one by hand here if the filing itself breaks it out by category (Housing, Vehicle, Medical, Travel, Pension, etc.)')}</div>`}
+    </div>`;
+}
+function srBenefitCategoryForm(){
+  return `
+    <div class="panel" style="margin-bottom:14px;background:var(--bg-subtle,rgba(0,0,0,0.02));">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="font-size:11px;">Director (optional)<br><input id="bcDirectorName" type="text" placeholder="leave blank for company-wide" style="width:180px;"></label>
+        <label style="font-size:11px;">Category<br><input id="bcCategory" type="text" placeholder="e.g. Housing Allowance" style="width:160px;"></label>
+        <label style="font-size:11px;">Amount<br><input id="bcAmount" type="number" step="any" style="width:120px;"></label>
+        <label style="font-size:11px;">Detail (optional)<br><input id="bcDescription" type="text" placeholder="e.g. mortgage support" style="width:200px;"></label>
+        <button class="btn primary" onclick="srSaveBenefitCategory()">Save</button>
+      </div>
+      <div id="bcFormError" style="color:var(--red);font-size:11px;margin-top:6px;"></div>
+    </div>`;
+}
+async function srSaveBenefitCategory(){
+  const fiscalYear = srDataCache && srDataCache.survey ? srDataCache.survey.fiscal_year : srFiscalYear;
+  const errEl = document.getElementById('bcFormError');
+  if (!fiscalYear) { errEl.textContent = 'This company has no survey fiscal year on file yet - upload survey data first.'; return; }
+  const body = {
+    fiscal_year: fiscalYear,
+    director_name: document.getElementById('bcDirectorName').value.trim() || null,
+    category: document.getElementById('bcCategory').value.trim(),
+    amount: document.getElementById('bcAmount').value,
+    description: document.getElementById('bcDescription').value.trim() || null,
+  };
+  if (!body.category) { errEl.textContent = 'Category is required.'; return; }
+  if (body.amount === '' || isNaN(Number(body.amount))) { errEl.textContent = 'Amount must be a number.'; return; }
+  const res = await fetch(`/api/companies/${srCompanyId}/benefit-categories`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  const d = await res.json();
+  if (!res.ok) { errEl.textContent = d.error || 'Could not save.'; return; }
+  srAddingBenefitCategory = false;
+  await renderSurveyReportPage();
+}
+async function srDeleteBenefitCategory(id){
+  if (!confirm('Remove this benefit category row?')) return;
+  await fetch(`/api/benefit-categories/${id}`, {method: 'DELETE'});
+  await renderSurveyReportPage();
 }
 // SurveyDirectorBenefit rows: a real, separately-run extractor that
 // reads a filing's own "non-cash benefits" column directly, rather
@@ -6031,6 +6182,25 @@ async function aiViewItem(id){
   document.getElementById('aiDetail').scrollIntoView({behavior:'smooth'});
 }
 
+// Settings used to stack Database/Companies/Users/Import Activity as four
+// panels on one long scroll - reworked into tabs (same ir-tabbar/ir-tab-btn
+// styling the Survey Report and Intelligence Report pages already use) so
+// each data category gets its own screen. "Overview" (the database/health
+// numbers - what you'd check first) is the default/first tab.
+const SETTINGS_TABS = [
+  {id:'overview', label:'Overview'},
+  {id:'companies', label:'Companies'},
+  {id:'users', label:'Users'},
+  {id:'activity', label:'Import Activity'},
+];
+let settingsTab = 'overview';
+let settingsStatusCache = null;
+
+function switchSettingsTab(tabId){
+  settingsTab = tabId;
+  renderSettingsTabBody();
+}
+
 async function renderSettingsPage(){
   const app = document.getElementById('app');
   if (window.currentUser.role !== 'admin') {
@@ -6038,41 +6208,68 @@ async function renderSettingsPage(){
     return;
   }
   const res = await fetch('/api/system/status');
-  const status = await res.json();
-
-  const banner = status.persistent
-    ? `<div class="status-banner ok">✓ Connected to ${escapeHtml(status.database_engine)} — a persistent database. Saved data will survive restarts and redeploys.</div>`
-    : `<div class="status-banner warn">⚠ Connected to ${escapeHtml(status.database_engine)}. ${escapeHtml(status.warning || '')}</div>`;
+  settingsStatusCache = await res.json();
 
   app.innerHTML = `
-    <div class="panel">
-      <div class="panel-head"><h2>Database</h2></div>
-      ${banner}
-      <div class="stat-grid">
-        ${statCard('blue', '🏢', status.counts.companies, 'Companies')}
-        ${statCard('purple', '📅', status.counts.periods, 'Financial Periods')}
-        ${statCard('green', '📄', status.counts.source_documents, 'Source Documents')}
-        ${statCard('amber', '📥', status.counts.import_jobs, 'Import Jobs')}
-      </div>
-    </div>
-    <div class="panel" id="settingsCompaniesPanel">
-      <div class="panel-head"><h2>Companies</h2>
-        <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
-      </div>
-      <div id="settingsCompaniesBody"><div class="empty">Loading...</div></div>
-    </div>
-    <div class="panel" id="userManagementPanel">
-      <div class="panel-head"><h2>User Management</h2></div>
-      <div id="userManagementBody"><div class="empty">Loading...</div></div>
-    </div>
-    <div class="panel" id="settingsActivityPanel">
-      <div class="panel-head"><h2>Import Activity</h2></div>
-      <div id="settingsActivityBody"><div class="empty">Loading...</div></div>
-    </div>
+    <div class="ir-tabbar">${SETTINGS_TABS.map(t =>
+      `<button class="ir-tab-btn ${settingsTab === t.id ? 'active' : ''}" onclick="switchSettingsTab('${t.id}')">${escapeHtml(t.label)}</button>`).join('')}</div>
+    <div id="settingsTabBody"></div>
   `;
-  await renderUserManagementPanel();
-  await renderSettingsCompaniesPanel();
-  await renderSettingsActivityPanel();
+  renderSettingsTabBody();
+}
+
+function renderSettingsTabBody(){
+  const body = document.getElementById('settingsTabBody');
+  if (!body) return;
+  const status = settingsStatusCache || {counts: {}};
+  const banner = status.persistent
+    ? `<div class="status-banner ok">✓ Connected to ${escapeHtml(status.database_engine)} — a persistent database. Saved data will survive restarts and redeploys.</div>`
+    : `<div class="status-banner warn">⚠ Connected to ${escapeHtml(status.database_engine || '')}. ${escapeHtml(status.warning || '')}</div>`;
+
+  // Highlight the active tab button (the shell above was already drawn
+  // once by renderSettingsPage - switching tabs only re-renders the body,
+  // not the whole page, so the tab bar's own active class needs updating
+  // here too).
+  document.querySelectorAll('.ir-tabbar .ir-tab-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', SETTINGS_TABS[i].id === settingsTab);
+  });
+
+  if (settingsTab === 'overview') {
+    body.innerHTML = `
+      <div class="panel">
+        <div class="panel-head"><h2>Database</h2></div>
+        ${banner}
+        <div class="stat-grid">
+          ${statCard('blue', '🏢', status.counts.companies, 'Companies')}
+          ${statCard('purple', '📅', status.counts.periods, 'Financial Periods')}
+          ${statCard('green', '📄', status.counts.source_documents, 'Source Documents')}
+          ${statCard('amber', '📥', status.counts.import_jobs, 'Import Jobs')}
+        </div>
+      </div>`;
+  } else if (settingsTab === 'companies') {
+    body.innerHTML = `
+      <div class="panel" id="settingsCompaniesPanel">
+        <div class="panel-head"><h2>Companies</h2>
+          <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
+        </div>
+        <div id="settingsCompaniesBody"><div class="empty">Loading...</div></div>
+      </div>`;
+    renderSettingsCompaniesPanel();
+  } else if (settingsTab === 'users') {
+    body.innerHTML = `
+      <div class="panel" id="userManagementPanel">
+        <div class="panel-head"><h2>User Management</h2></div>
+        <div id="userManagementBody"><div class="empty">Loading...</div></div>
+      </div>`;
+    renderUserManagementPanel();
+  } else if (settingsTab === 'activity') {
+    body.innerHTML = `
+      <div class="panel" id="settingsActivityPanel">
+        <div class="panel-head"><h2>Import Activity</h2></div>
+        <div id="settingsActivityBody"><div class="empty">Loading...</div></div>
+      </div>`;
+    renderSettingsActivityPanel();
+  }
 }
 
 // Companies now only manage from here (the standalone Companies page
@@ -6085,6 +6282,7 @@ async function renderSettingsPage(){
 // Report's own company picker.
 async function renderSettingsCompaniesPanel(){
   const body = document.getElementById('settingsCompaniesBody');
+  if (!body) return; // Companies tab isn't the active Settings tab right now - nothing to refresh
   const res = await fetch('/api/companies');
   const companies = await res.json();
   if (!companies.length) {
@@ -6106,6 +6304,7 @@ async function renderSettingsCompaniesPanel(){
 // admin-only extraction-score column.
 async function renderSettingsActivityPanel(){
   const body = document.getElementById('settingsActivityBody');
+  if (!body) return; // Import Activity tab isn't the active Settings tab right now - nothing to refresh
   const res = await fetch('/api/import-jobs');
   const jobs = await res.json();
   if (!jobs.length) {

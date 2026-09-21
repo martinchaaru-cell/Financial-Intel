@@ -1768,9 +1768,15 @@ def upload_progress_stream(batch_id):
     def gen():
         try:
             while True:
-                event = q.get(timeout=120)  # upload can't legitimately hang longer than this
+                # NOTE: this is a per-EVENT timeout, not a total-batch timeout - as
+                # long as some stage event (reading/parsing/saving/...) arrives at
+                # least once every 120s the stream stays open indefinitely, which is
+                # why a single slow file was never actually the SSE stream's problem
+                # (see _batch_results / upload_documents_batch below for the real
+                # cause of the old timeout: the POST itself, not this GET).
+                event = q.get(timeout=120)
                 yield f"data: {json.dumps(event)}\n\n"
-                if event.get('type') == 'batch_done':
+                if event.get('type') in ('batch_done', 'batch_failed'):
                     break
         except queue.Empty:
             yield f"data: {json.dumps({'type': 'timeout', 'ts': datetime.utcnow().isoformat()})}\n\n"
@@ -1780,6 +1786,52 @@ def upload_progress_stream(batch_id):
     return Response(gen(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
     })
+
+
+# ---------- Batch upload results store ----------
+# The POST that kicks off a batch upload now returns almost immediately (see
+# upload_documents_batch below) - the actual parsing/saving runs on a
+# background thread, and its FINAL result (the same {'results':...,
+# 'saved':..., 'failed':...} shape the old synchronous endpoint used to
+# return directly) is stashed here, keyed by batch_id, for:
+#   1) the 'batch_done'/'batch_failed' SSE event, which carries the result
+#      inline so the frontend normally never needs a second request, and
+#   2) GET /api/import/upload-batch/<batch_id>/result, a fallback the
+#      frontend polls if its SSE connection drops before batch_done arrives
+#      (flaky wifi, a proxy that buffers/kills idle GETs, etc.) - without
+#      this, a dropped SSE connection on a 10-file/30-minute batch would
+#      leave the user with no way to ever see whether it finished.
+# Entries are small (JSON-serializable dicts) and each is only read once or
+# twice, so a plain dict is fine - no external cache needed for this scale.
+_batch_results = {}
+_batch_results_lock = threading.Lock()
+_BATCH_RESULT_TTL_SECONDS = 3600  # stale entries are swept lazily on write, below
+
+def _store_batch_result(batch_id, result):
+    now = datetime.utcnow()
+    with _batch_results_lock:
+        _batch_results[batch_id] = (now, result)
+        # Lazy sweep: drop any entry older than the TTL so a long-running server
+        # doesn't accumulate one dict per upload ever made.
+        stale = [bid for bid, (ts, _) in _batch_results.items()
+                 if (now - ts).total_seconds() > _BATCH_RESULT_TTL_SECONDS]
+        for bid in stale:
+            _batch_results.pop(bid, None)
+
+@app.route('/api/import/upload-batch/<batch_id>/result')
+@require_role('admin')
+def upload_batch_result(batch_id):
+    """Poll-based fallback for a batch upload's final result, for a client
+    whose SSE connection to /api/upload-progress/<batch_id> dropped before
+    the 'batch_done' event arrived. {'done': false} while still running or
+    unknown; once done, the same {'results', 'saved', 'failed'} shape the
+    POST itself used to return synchronously."""
+    with _batch_results_lock:
+        entry = _batch_results.get(batch_id)
+    if entry is None:
+        return jsonify({'done': False}), 202
+    _, result = entry
+    return jsonify({'done': True, **result}), 200
 
 
 def _sync_survey_headline_from_financials(company_id, fiscal_year, source_filename, comparative=False,
@@ -2574,7 +2626,21 @@ def upload_documents_batch():
         so 'what got auto-saved and when' is always reconstructable and
         reversible after the fact.
 
-    Returns one result per uploaded file:
+    THIS ROUTE ITSELF NOW RETURNS ALMOST IMMEDIATELY (202, see below) - the
+    actual per-file work described above happens on a background thread
+    (_run_upload_batch_job) so a slow multi-file batch (a 300-page report can
+    take a minute or more each) can never hold this POST open long enough for
+    a reverse proxy / gateway to kill it and hand the browser a non-JSON
+    timeout page (that was the old failure mode: 10 files x ~1-3 min each
+    could keep the connection open for 30 minutes, far past any proxy's
+    timeout). Progress and the final result are delivered the same way they
+    already were surfaced live - via the /api/upload-progress/<batch_id> SSE
+    stream - plus a polling fallback at
+    GET /api/import/upload-batch/<batch_id>/result for a client whose SSE
+    connection drops before the 'batch_done' event.
+
+    Immediate response: {"accepted": true, "batch_id":..., "file_count":...}
+    Final result (via SSE 'batch_done'/'batch_failed' or the /result poll):
         {"results": [
             {"filename":..., "ok": true, "company_id":..., "company_name":...,
              "period":..., "match_score":..., "created_company": bool, ...}
@@ -2591,8 +2657,9 @@ def upload_documents_batch():
     # Client-generated id for the matching GET /api/upload-progress/<batch_id>
     # SSE stream, opened by the frontend right before this POST. Optional -
     # an old client (or a direct API call) that doesn't send one just
-    # doesn't get live progress; the upload itself works exactly the same.
-    batch_id = request.form.get('batch_id')
+    # doesn't get live progress; the upload itself works exactly the same,
+    # falling back to the /result poll below.
+    batch_id = request.form.get('batch_id') or uuid.uuid4().hex
     batch_started = datetime.utcnow()
     _progress_emit(batch_id, {'type': 'batch_start', 'file_count': len(files)})
 
@@ -2603,563 +2670,611 @@ def upload_documents_batch():
     # skipped entirely, so a report with an unusual cover page (or one
     # for a subsidiary sharing a similar name) can never get attributed
     # to the wrong company. Only the fiscal year still needs detecting
-    # per file.
+    # per file. Only the id is passed to the background thread - an ORM
+    # instance is tied to this request's session and isn't safe to touch
+    # from another thread/session.
     forced_company_id = request.form.get('company_id', type=int)
-    forced_company = None
-    if forced_company_id:
-        forced_company = Company.query.get(forced_company_id)
-        if forced_company is None:
-            return jsonify({'error': f'company_id {forced_company_id} not found'}), 404
+    if forced_company_id and Company.query.get(forced_company_id) is None:
+        return jsonify({'error': f'company_id {forced_company_id} not found'}), 404
 
-    existing_by_name = {c.name.strip().lower(): c.id for c in Company.query.all()}
-    existing_by_ticker = {c.ticker.strip().lower(): c.id for c in Company.query.all() if c.ticker}
-
-    results = []
-    saved = 0
-    for file in files:
-        filename = file.filename or 'unnamed.pdf'
-        file_started = datetime.utcnow()
-        _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'reading'})
+    # Read every file into memory NOW, while we still have the real upload
+    # objects - this is just a bytes copy (fast, no parsing), so it can't
+    # itself cause a timeout even for a large batch. The background thread
+    # gets plain (filename, bytes) tuples instead, since Werkzeug's FileStorage
+    # objects aren't usable once this request ends.
+    file_payloads = []
+    for f in files:
+        filename = f.filename or 'unnamed.pdf'
         try:
-            pdf_bytes = file.read()
+            file_payloads.append((filename, f.read()))
         except Exception as e:
-            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not read upload: {e}'})
-            results.append({'filename': filename, 'ok': False, 'error': f'Could not read upload: {e}'})
-            continue
+            file_payloads.append((filename, None))
+            app.logger.exception(f'Could not read upload {filename}')
 
-        # Standard condensed filing (see condensed_format/SPEC.md) - a
-        # plain-text alternative to a raw PDF that sidesteps every
-        # layout quirk the PDF extractors below have to work around.
-        # Detected by content (a "===COMPANY===" marker), not by file
-        # extension, so a .txt OR a .pdf containing this format both
-        # work - only decoded as UTF-8 text once that marker is found,
-        # so a real PDF's binary bytes are never treated as this format.
-        is_condensed = False
-        is_survey_data = False
+    threading.Thread(
+        target=_run_upload_batch_job,
+        args=(app, file_payloads, batch_id, forced_company_id, batch_started),
+        daemon=True,
+    ).start()
+
+    return jsonify({'accepted': True, 'batch_id': batch_id, 'file_count': len(files)}), 202
+
+
+def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id, batch_started):
+    """Background-thread body of upload_documents_batch (see that route's
+    docstring for why this runs off-request). Pushes its own app context
+    since it runs outside the request that spawned it, and ALWAYS resolves
+    _batch_results[batch_id] / emits a terminal SSE event in its finally
+    block - even an unhandled exception here must not leave the frontend
+    waiting forever with no result and no error."""
+    with flask_app.app_context():
+        results = []
+        saved = 0
+        failed_count = 0
         try:
-            sniff_text = pdf_bytes[:4096].decode('utf-8', errors='ignore')
-            is_condensed = is_condensed_format(sniff_text)
-            is_survey_data = is_survey_data_format(sniff_text)
-        except Exception:
-            pass
-        _progress_emit(batch_id, {
-            'type': 'stage', 'filename': filename, 'stage': 'detecting_format',
-            'format': 'condensed' if is_condensed else ('survey_data' if is_survey_data else 'pdf'),
-        })
+            forced_company = Company.query.get(forced_company_id) if forced_company_id else None
 
-        if is_survey_data:
-            results.append({'filename': filename, 'ok': False,
-                             'error': 'This is a Survey Data file (board/remuneration benchmark), not an '
-                                      'annual report. Upload it from the Survey page instead.'})
-            continue
+            existing_by_name = {c.name.strip().lower(): c.id for c in Company.query.all()}
+            existing_by_ticker = {c.ticker.strip().lower(): c.id for c in Company.query.all() if c.ticker}
 
-        if is_condensed:
-            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'parsing'})
-            try:
-                condensed_text = pdf_bytes.decode('utf-8')
-                condensed = parse_condensed_filing(condensed_text)
-            except (ValueError, UnicodeDecodeError) as e:
-                results.append({'filename': filename, 'ok': False, 'error': f'Malformed condensed file: {e}'})
-                continue
+            for filename, pdf_bytes in file_payloads:
+                file_started = datetime.utcnow()
+                _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'reading'})
+                if pdf_bytes is None:
+                    _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': 'Could not read upload.'})
+                    results.append({'filename': filename, 'ok': False, 'error': 'Could not read upload.'})
+                    continue
 
-            period_label = condensed['period']['label']
-            company_info = condensed['company']
-
-            if forced_company:
-                company_id = forced_company.id
-                created_company = False
-            else:
-                company_id = (existing_by_ticker.get((company_info.get('ticker') or '').lower())
-                               or existing_by_name.get((company_info.get('name') or '').strip().lower()))
-                created_company = company_id is None
-
-            if not condensed['statements']:
-                results.append({
-                    'filename': filename, 'ok': False,
-                    'error': 'No recognized financial statement fields found in this condensed file '
-                             '(check field labels against condensed_format/SPEC.md).',
+                # Standard condensed filing (see condensed_format/SPEC.md) - a
+                # plain-text alternative to a raw PDF that sidesteps every
+                # layout quirk the PDF extractors below have to work around.
+                # Detected by content (a "===COMPANY===" marker), not by file
+                # extension, so a .txt OR a .pdf containing this format both
+                # work - only decoded as UTF-8 text once that marker is found,
+                # so a real PDF's binary bytes are never treated as this format.
+                is_condensed = False
+                is_survey_data = False
+                try:
+                    sniff_text = pdf_bytes[:4096].decode('utf-8', errors='ignore')
+                    is_condensed = is_condensed_format(sniff_text)
+                    is_survey_data = is_survey_data_format(sniff_text)
+                except Exception:
+                    pass
+                _progress_emit(batch_id, {
+                    'type': 'stage', 'filename': filename, 'stage': 'detecting_format',
+                    'format': 'condensed' if is_condensed else ('survey_data' if is_survey_data else 'pdf'),
                 })
-                continue
 
-            save_payload = {
-                'source_filename': filename,
-                'source_page_count': None,
-                'source_sha256': hashlib.sha256(pdf_bytes).hexdigest(),
-            }
-            if company_id:
-                save_payload['company_id'] = company_id
-            else:
-                save_payload['company_name'] = company_info.get('name')
-                save_payload['ticker'] = company_info.get('ticker')
-                save_payload['sector'] = company_info.get('sector')
+                if is_survey_data:
+                    results.append({'filename': filename, 'ok': False,
+                                     'error': 'This is a Survey Data file (board/remuneration benchmark), not an '
+                                              'annual report. Upload it from the Survey page instead.'})
+                    continue
 
-            # A condensed file describes exactly one period per file (no
-            # "detect the prior period from a comparative column" step
-            # needed - each year gets its own file) - but its statement
-            # lines still carry a prior_amount for the SAME comparative
-            # convention a PDF upload uses, so the current-period save
-            # picks those up as this period's own YoY comparison the
-            # same way. No second FinancialPeriod row is created for a
-            # condensed file's own comparative column - the person is
-            # expected to upload that prior year's own condensed file
-            # separately for a full period row of its own, same
-            # expectation as this whole feature already sets in
-            # condensed_format/SPEC.md.
-            try:
-                _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'saving'})
-                result, status = _save_one_import({**save_payload, 'period': period_label, 'statements': condensed['statements']})
-            except Exception as e:
-                db.session.rollback()
-                app.logger.exception(f'Unexpected error saving condensed file {filename}')
-                _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not save: {e}'})
-                results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
-                continue
-
-            if status != 201:
-                _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': result.get('error', 'Save failed.')})
-                results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Save failed.')})
-                continue
-
-            saved += 1
-            if result.get('company_id'):
-                existing_by_name[(company_info.get('name') or '').strip().lower()] = result['company_id']
-                if company_info.get('ticker'):
-                    existing_by_ticker[company_info['ticker'].lower()] = result['company_id']
-
-            period_row = FinancialPeriod.query.filter_by(
-                company_id=result['company_id'], period_label=period_label
-            ).first()
-            director_remuneration_rows_parsed = len(condensed['director_remuneration'])
-            director_remuneration_rows_saved = 0
-            director_remuneration_save_error = None
-            if period_row:
-                if condensed['market_data']:
-                    existing_md = MarketDataSnapshot.query.filter_by(period_id=period_row.id).first()
-                    if existing_md is None:
-                        existing_md = MarketDataSnapshot(period_id=period_row.id)
-                        db.session.add(existing_md)
-                    for field, value in condensed['market_data'].items():
-                        setattr(existing_md, field, value)
-                if condensed['management_guidance']:
-                    ManagementGuidance.query.filter_by(period_id=period_row.id).delete()
-                    for row in condensed['management_guidance']:
-                        db.session.add(ManagementGuidance(period_id=period_row.id, **row))
-                if condensed['principal_risks']:
-                    PrincipalRisk.query.filter_by(period_id=period_row.id).delete()
-                    for row in condensed['principal_risks']:
-                        db.session.add(PrincipalRisk(period_id=period_row.id, **row))
-                if condensed['director_remuneration']:
+                if is_condensed:
+                    _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'parsing'})
                     try:
-                        DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
-                        for row in condensed['director_remuneration']:
-                            components = row.pop('components', None)
-                            db.session.add(DirectorRemunerationRow(
-                                period_id=period_row.id,
-                                components=json.dumps(components) if components else None,
-                                **{**row, 'source_document_id': result.get('source_document_id')},
-                            ))
-                        db.session.flush()  # surface any column/constraint error now, inside this try, instead of at the final commit where it would be harder to attribute to this specific step
-                        director_remuneration_rows_saved = director_remuneration_rows_parsed
+                        condensed_text = pdf_bytes.decode('utf-8')
+                        condensed = parse_condensed_filing(condensed_text)
+                    except (ValueError, UnicodeDecodeError) as e:
+                        results.append({'filename': filename, 'ok': False, 'error': f'Malformed condensed file: {e}'})
+                        continue
+
+                    period_label = condensed['period']['label']
+                    company_info = condensed['company']
+
+                    if forced_company:
+                        company_id = forced_company.id
+                        created_company = False
+                    else:
+                        company_id = (existing_by_ticker.get((company_info.get('ticker') or '').lower())
+                                       or existing_by_name.get((company_info.get('name') or '').strip().lower()))
+                        created_company = company_id is None
+
+                    if not condensed['statements']:
+                        results.append({
+                            'filename': filename, 'ok': False,
+                            'error': 'No recognized financial statement fields found in this condensed file '
+                                     '(check field labels against condensed_format/SPEC.md).',
+                        })
+                        continue
+
+                    save_payload = {
+                        'source_filename': filename,
+                        'source_page_count': None,
+                        'source_sha256': hashlib.sha256(pdf_bytes).hexdigest(),
+                    }
+                    if company_id:
+                        save_payload['company_id'] = company_id
+                    else:
+                        save_payload['company_name'] = company_info.get('name')
+                        save_payload['ticker'] = company_info.get('ticker')
+                        save_payload['sector'] = company_info.get('sector')
+
+                    # A condensed file describes exactly one period per file (no
+                    # "detect the prior period from a comparative column" step
+                    # needed - each year gets its own file) - but its statement
+                    # lines still carry a prior_amount for the SAME comparative
+                    # convention a PDF upload uses, so the current-period save
+                    # picks those up as this period's own YoY comparison the
+                    # same way. No second FinancialPeriod row is created for a
+                    # condensed file's own comparative column - the person is
+                    # expected to upload that prior year's own condensed file
+                    # separately for a full period row of its own, same
+                    # expectation as this whole feature already sets in
+                    # condensed_format/SPEC.md.
+                    try:
+                        _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'saving'})
+                        result, status = _save_one_import({**save_payload, 'period': period_label, 'statements': condensed['statements']})
                     except Exception as e:
                         db.session.rollback()
-                        app.logger.exception(f'Director remuneration save failed for {filename}')
-                        director_remuneration_save_error = str(e)
-                    # Also populate the single-figure "Total Director
-                    # Remuneration - As Filed" summary (OperationalMetric,
-                    # same metric_name/shape the real-PDF path writes via
-                    # extract_director_remuneration - see that function's
-                    # docstring and its "cluster_labeled_rows" comment) so
-                    # a condensed file's total shows there too, not just
-                    # in the per-director breakdown below it. Only when
-                    # the section has EXACTLY ONE ROW, TOTAL - not "exactly
-                    # one row named GRAND TOTAL". An earlier version of
-                    # this check counted only is_grand_total rows, which
-                    # is wrong: confirmed on KCB's real FY2025 filing, the
-                    # section has a "GRAND TOTAL" row for Non-Executive
-                    # Directors (97,395) PLUS two separately-named
-                    # Executive Director rows with their own totals (Paul
-                    # Russo 285,306; Lawrence Kimathi 147,772) - that
-                    # earlier check saw exactly one is_grand_total row and
-                    # would have written 97,395 as if it were the WHOLE
-                    # company's director remuneration, silently dropping
-                    # both executives' pay - a wrong total is worse than
-                    # no total, since it looks authoritative. The real-PDF
-                    # path avoids this exact trap by counting every
-                    # labeled total row in the section, named "GRAND
-                    # TOTAL" or not, and only trusting a single row when
-                    # there's truly only one in the whole section - this
-                    # must count the same way for the two paths to agree.
-                    if len(condensed['director_remuneration']) == 1 and director_remuneration_save_error is None:
-                        only_row = condensed['director_remuneration'][0]
-                        existing_metric = OperationalMetric.query.filter_by(
-                            period_id=period_row.id, metric_name='total_director_remuneration'
-                        ).first()
-                        if existing_metric:
-                            existing_metric.value = only_row['total']
-                        else:
-                            db.session.add(OperationalMetric(
-                                period_id=period_row.id,
-                                metric_name='total_director_remuneration',
-                                value=only_row['total'],
-                                # Always Ksh '000 - see DirectorRemunerationRow.total's
-                                # own docstring in models.py ("this row's own printed
-                                # Total column, in Ksh '000 as filed"). NOT
-                                # company_info.get('unit') - that's the unit the
-                                # ===INCOME_STATEMENT===/===BALANCE_SHEET===/
-                                # ===CASH_FLOW=== sections are stated in (millions,
-                                # for a bank like this), but a filing's own Directors'
-                                # Remuneration Report conventionally states its
-                                # figures in thousands regardless of what unit the
-                                # rest of the filing uses - confirmed against a real
-                                # KCB filing ("Amounts in Kshs '000") - so this
-                                # section is deliberately NOT unit-converted the way
-                                # the statement sections are. A condensed file's own
-                                # ===DIRECTOR_REMUNERATION=== values must always be
-                                # entered in thousands to match - see
-                                # CONDENSED_FORMAT_SPEC.md's note on this.
-                                unit=company_info.get('currency', 'KES') + " thousands",
-                            ))
-                db.session.commit()
+                        app.logger.exception(f'Unexpected error saving condensed file {filename}')
+                        _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not save: {e}'})
+                        results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
+                        continue
 
-            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'scoring'})
-            extraction_score = _finalize_source_document_score(result.get('source_document_id'))
-            file_elapsed = (datetime.utcnow() - file_started).total_seconds()
+                    if status != 201:
+                        _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': result.get('error', 'Save failed.')})
+                        results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Save failed.')})
+                        continue
+
+                    saved += 1
+                    if result.get('company_id'):
+                        existing_by_name[(company_info.get('name') or '').strip().lower()] = result['company_id']
+                        if company_info.get('ticker'):
+                            existing_by_ticker[company_info['ticker'].lower()] = result['company_id']
+
+                    period_row = FinancialPeriod.query.filter_by(
+                        company_id=result['company_id'], period_label=period_label
+                    ).first()
+                    director_remuneration_rows_parsed = len(condensed['director_remuneration'])
+                    director_remuneration_rows_saved = 0
+                    director_remuneration_save_error = None
+                    if period_row:
+                        if condensed['market_data']:
+                            existing_md = MarketDataSnapshot.query.filter_by(period_id=period_row.id).first()
+                            if existing_md is None:
+                                existing_md = MarketDataSnapshot(period_id=period_row.id)
+                                db.session.add(existing_md)
+                            for field, value in condensed['market_data'].items():
+                                setattr(existing_md, field, value)
+                        if condensed['management_guidance']:
+                            ManagementGuidance.query.filter_by(period_id=period_row.id).delete()
+                            for row in condensed['management_guidance']:
+                                db.session.add(ManagementGuidance(period_id=period_row.id, **row))
+                        if condensed['principal_risks']:
+                            PrincipalRisk.query.filter_by(period_id=period_row.id).delete()
+                            for row in condensed['principal_risks']:
+                                db.session.add(PrincipalRisk(period_id=period_row.id, **row))
+                        if condensed['director_remuneration']:
+                            try:
+                                DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
+                                for row in condensed['director_remuneration']:
+                                    components = row.pop('components', None)
+                                    db.session.add(DirectorRemunerationRow(
+                                        period_id=period_row.id,
+                                        components=json.dumps(components) if components else None,
+                                        **{**row, 'source_document_id': result.get('source_document_id')},
+                                    ))
+                                db.session.flush()  # surface any column/constraint error now, inside this try, instead of at the final commit where it would be harder to attribute to this specific step
+                                director_remuneration_rows_saved = director_remuneration_rows_parsed
+                            except Exception as e:
+                                db.session.rollback()
+                                app.logger.exception(f'Director remuneration save failed for {filename}')
+                                director_remuneration_save_error = str(e)
+                            # Also populate the single-figure "Total Director
+                            # Remuneration - As Filed" summary (OperationalMetric,
+                            # same metric_name/shape the real-PDF path writes via
+                            # extract_director_remuneration - see that function's
+                            # docstring and its "cluster_labeled_rows" comment) so
+                            # a condensed file's total shows there too, not just
+                            # in the per-director breakdown below it. Only when
+                            # the section has EXACTLY ONE ROW, TOTAL - not "exactly
+                            # one row named GRAND TOTAL". An earlier version of
+                            # this check counted only is_grand_total rows, which
+                            # is wrong: confirmed on KCB's real FY2025 filing, the
+                            # section has a "GRAND TOTAL" row for Non-Executive
+                            # Directors (97,395) PLUS two separately-named
+                            # Executive Director rows with their own totals (Paul
+                            # Russo 285,306; Lawrence Kimathi 147,772) - that
+                            # earlier check saw exactly one is_grand_total row and
+                            # would have written 97,395 as if it were the WHOLE
+                            # company's director remuneration, silently dropping
+                            # both executives' pay - a wrong total is worse than
+                            # no total, since it looks authoritative. The real-PDF
+                            # path avoids this exact trap by counting every
+                            # labeled total row in the section, named "GRAND
+                            # TOTAL" or not, and only trusting a single row when
+                            # there's truly only one in the whole section - this
+                            # must count the same way for the two paths to agree.
+                            if len(condensed['director_remuneration']) == 1 and director_remuneration_save_error is None:
+                                only_row = condensed['director_remuneration'][0]
+                                existing_metric = OperationalMetric.query.filter_by(
+                                    period_id=period_row.id, metric_name='total_director_remuneration'
+                                ).first()
+                                if existing_metric:
+                                    existing_metric.value = only_row['total']
+                                else:
+                                    db.session.add(OperationalMetric(
+                                        period_id=period_row.id,
+                                        metric_name='total_director_remuneration',
+                                        value=only_row['total'],
+                                        # Always Ksh '000 - see DirectorRemunerationRow.total's
+                                        # own docstring in models.py ("this row's own printed
+                                        # Total column, in Ksh '000 as filed"). NOT
+                                        # company_info.get('unit') - that's the unit the
+                                        # ===INCOME_STATEMENT===/===BALANCE_SHEET===/
+                                        # ===CASH_FLOW=== sections are stated in (millions,
+                                        # for a bank like this), but a filing's own Directors'
+                                        # Remuneration Report conventionally states its
+                                        # figures in thousands regardless of what unit the
+                                        # rest of the filing uses - confirmed against a real
+                                        # KCB filing ("Amounts in Kshs '000") - so this
+                                        # section is deliberately NOT unit-converted the way
+                                        # the statement sections are. A condensed file's own
+                                        # ===DIRECTOR_REMUNERATION=== values must always be
+                                        # entered in thousands to match - see
+                                        # CONDENSED_FORMAT_SPEC.md's note on this.
+                                        unit=company_info.get('currency', 'KES') + " thousands",
+                                    ))
+                        db.session.commit()
+
+                    _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'scoring'})
+                    extraction_score = _finalize_source_document_score(result.get('source_document_id'))
+                    file_elapsed = (datetime.utcnow() - file_started).total_seconds()
+                    _progress_emit(batch_id, {
+                        'type': 'file_done', 'filename': filename, 'elapsed_seconds': round(file_elapsed, 1),
+                        'extraction_score': extraction_score,
+                    })
+
+                    results.append({
+                        'filename': filename, 'ok': True, 'company_id': result.get('company_id'),
+                        'company_name': company_info.get('name'), 'period': period_label,
+                        'match_score': 1.0 if company_id and not created_company else 0.0,
+                        'created_company': created_company, 'periods_saved': [period_label],
+                        'prior_period_error': None, 'format': 'condensed',
+                        # Diagnostics for the director-remuneration section
+                        # specifically, surfaced here rather than only in server
+                        # logs - added after a real case where the upload
+                        # reported full success while every remuneration row had
+                        # silently failed a step downstream of the main save, and
+                        # there was no way to tell from the dialog alone. 0/0
+                        # (parsed=0) just means the file's own
+                        # ===DIRECTOR_REMUNERATION=== section was empty or absent -
+                        # not an error.
+                        'director_remuneration_rows_parsed': director_remuneration_rows_parsed,
+                        'director_remuneration_rows_saved': director_remuneration_rows_saved,
+                        'director_remuneration_save_error': director_remuneration_save_error,
+                    })
+                    continue
+
+                # One slow pdfplumber pass covers both company/period detection
+                # AND statement parsing - see extract_pdf_document's docstring for
+                # why this used to be two separate full passes over the same file
+                # (the main reason a large report like a 300-page integrated
+                # report could time out).
+                try:
+                    _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'parsing'})
+                    extracted = extract_pdf_document(pdf_bytes)
+                except Exception as e:
+                    _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not read/parse PDF: {e}'})
+                    results.append({'filename': filename, 'ok': False, 'error': f'Could not read/parse PDF: {e}'})
+                    continue
+
+                pages_text = extracted['pages_text']
+                # No financial statements in the text (Safaricom's annual report keeps them in a separate
+                # document): the file is NOT rejected - it still carries the board, pay and governance
+                # content, so company / period are read from every page instead of the statement pages.
+                survey_only = not extracted.get('statements')
+                detect_pages = pages_text
+                if survey_only or not pages_text:
+                    detect_pages = _pypdf_page_texts_cached(pdf_bytes) or []
+                statement_unit = detect_statement_unit(pages_text)
+                # A six-month / quarterly report keeps its own period label ("H1 2025") instead of
+                # being stored as a full fiscal year.
+                interim_label = detect_interim_period_label(detect_pages)
+                if looks_like_interim_report(detect_pages) and not interim_label:
+                    results.append({
+                        'filename': filename, 'ok': False,
+                        'error': 'This looks like an interim report but its period could not be read '
+                                 '("six months to <date>" not found).',
+                    })
+                    continue
+                period_label = interim_label or detect_period_label(detect_pages, filename=filename)
+                if not period_label:
+                    results.append({
+                        'filename': filename, 'ok': False,
+                        'error': 'Could not detect a fiscal year from this PDF - no "for the year ended" or '
+                                 '"at <date>" heading was found. Re-upload with the period specified separately.',
+                    })
+                    continue
+
+                _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'matching_company'})
+                if forced_company:
+                    detected_name = forced_company.name
+                    matched, score = {'name': forced_company.name, 'ticker': forced_company.ticker,
+                                       'sector': forced_company.sector}, 1.0
+                    company_id = forced_company.id
+                else:
+                    detected_name = detect_company_name(detect_pages, filename=filename)
+                    matched, score = (match_company(detected_name) if detected_name else (None, 0.0))
+
+                    company_id = None
+                    if matched:
+                        company_id = existing_by_ticker.get(matched['ticker'].lower()) or existing_by_name.get(matched['name'].strip().lower())
+                    if not company_id and detected_name:
+                        company_id = existing_by_name.get(detected_name.strip().lower())
+                created_company = False
+
+                save_payload = {
+                    'source_filename': filename,
+                    # the PDF's real page count - len(pages_text) is only the shortlist of
+                    # candidate pages that were scanned (157 for a 115-page PDF, 111 for a 256-page one)
+                    'source_page_count': extracted.get('num_pages') or len(pages_text),
+                    'source_sha256': hashlib.sha256(pdf_bytes).hexdigest(),
+                }
+                if company_id:
+                    save_payload['company_id'] = company_id
+                elif matched:
+                    save_payload['company_name'] = matched['name']
+                    save_payload['ticker'] = matched['ticker']
+                    save_payload['sector'] = matched['sector']
+                    created_company = True
+                elif detected_name:
+                    save_payload['company_name'] = detected_name
+                    created_company = True
+                else:
+                    results.append({
+                        'filename': filename, 'ok': False,
+                        'error': 'Could not identify which company this PDF belongs to. '
+                                 'Re-upload using the single-file import and specify company_id directly.',
+                    })
+                    continue
+
+                # Annual reports carry a prior-year comparative column right next
+                # to the current year on every statement line (see
+                # pdf_parse.detect_prior_period_label's docstring) - save both
+                # periods from this one PDF instead of only the current one, so a
+                # single upload populates two FinancialPeriod rows' worth of
+                # history (needed for every YoY figure across the Intelligence
+                # Report's 8 tabs) rather than leaving the comparative column on
+                # the page unsaved.
+                prior_period_label = None if survey_only else detect_prior_period_label(period_label)
+                if survey_only:
+                    save_payload['allow_empty_statements'] = True
+                try:
+                    _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'saving'})
+                    result, status, prior_result, prior_status = _save_current_and_prior_period(
+                        save_payload, {} if survey_only else extracted['statements'], period_label, prior_period_label
+                    )
+                except Exception as e:
+                    # Defense in depth: _save_current_and_prior_period/_save_one_import
+                    # normally return an ('error', 4xx) pair for expected problems,
+                    # but an unexpected DB/data-shape issue on one file shouldn't
+                    # take down the rest of the batch (or the whole request) - it
+                    # should show up as a per-file failure instead.
+                    db.session.rollback()
+                    app.logger.exception(f'Unexpected error saving {filename}')
+                    _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not save: {e}'})
+                    results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
+                    continue
+                if status == 201:
+                    saved += 1
+                    if result.get('company_id') and matched:
+                        existing_by_name[matched['name'].strip().lower()] = result['company_id']
+                    elif result.get('company_id') and detected_name:
+                        existing_by_name[detected_name.strip().lower()] = result['company_id']
+                    periods_saved = [period_label]
+                    if prior_status == 201:
+                        saved += 1
+                        periods_saved.append(prior_period_label)
+                    try:
+                        for _label in ([] if survey_only else periods_saved):
+                            _sync_survey_headline_from_financials(
+                                result['company_id'], _label, filename, comparative=(_label != period_label),
+                                statement_unit=statement_unit)
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Survey headline sync failed for {filename}')
+                    # The main statement save is complete. The following optional
+                    # filing-section extractors each scan the PDF for their own
+                    # tables, so expose that work separately from the final score.
+                    _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'enriching'})
+
+                    # Director remuneration total (see extract_director_remuneration's
+                    # docstring for scope: only the filing's OWN printed grand total,
+                    # never a computed/summed one) - belongs to the CURRENT period
+                    # specifically, not the derived prior-year comparative period,
+                    # since the table's own "Total" column is for one reporting year
+                    # at a time. Best-effort and non-fatal: a failure here should
+                    # never turn an otherwise-successful statement import into a
+                    # failed one, so it's wrapped separately from the save above.
+                    try:
+                        remuneration = extract_director_remuneration(pdf_bytes)
+                        if remuneration and result.get('company_id'):
+                            period_row = FinancialPeriod.query.filter_by(
+                                company_id=result['company_id'], period_label=period_label
+                            ).first()
+                            if period_row:
+                                existing_metric = OperationalMetric.query.filter_by(
+                                    period_id=period_row.id, metric_name='total_director_remuneration'
+                                ).first()
+                                if existing_metric:
+                                    existing_metric.value = remuneration['total']
+                                    existing_metric.unit = remuneration.get('currency_hint') or existing_metric.unit
+                                else:
+                                    db.session.add(OperationalMetric(
+                                        period_id=period_row.id,
+                                        metric_name='total_director_remuneration',
+                                        value=remuneration['total'],
+                                        unit=remuneration.get('currency_hint') or 'KES thousands',
+                                    ))
+                                db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Director remuneration extraction failed for {filename} (non-fatal)')
+
+                    # Market data (share price, market cap, dividend, TSR,
+                    # shareholding structure) - same non-fatal, best-effort
+                    # pattern as remuneration above, and same current-period-only
+                    # scope (this is the filing's own point-in-time investor
+                    # information, not something with a prior-period comparative
+                    # to also save).
+                    try:
+                        market_data = extract_market_data(pdf_bytes)
+                        if market_data and result.get('company_id'):
+                            period_row = FinancialPeriod.query.filter_by(
+                                company_id=result['company_id'], period_label=period_label
+                            ).first()
+                            if period_row:
+                                existing_md = MarketDataSnapshot.query.filter_by(period_id=period_row.id).first()
+                                if existing_md is None:
+                                    existing_md = MarketDataSnapshot(period_id=period_row.id)
+                                    db.session.add(existing_md)
+                                for field in (
+                                    'share_price', 'prior_share_price', 'market_cap', 'shares_issued',
+                                    'shares_authorized', 'free_float_pct', 'shareholder_count',
+                                    'prior_shareholder_count', 'dividend_per_share', 'interim_dividend_per_share',
+                                    'final_dividend_per_share', 'dividend_yield', 'total_shareholder_return',
+                                    'local_institutional_pct', 'local_individual_pct', 'foreign_investor_pct',
+                                    'page',
+                                ):
+                                    if field in market_data:
+                                        setattr(existing_md, field, market_data[field])
+                                db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Market data extraction failed for {filename} (non-fatal)')
+
+                    # Management guidance (forward-looking KPI ranges, as printed
+                    # in the filing's own Outlook table) - belongs to the CURRENT
+                    # period since it's this filing's forecast for the year ahead
+                    # of it, not a historical figure with a prior-year comparative.
+                    try:
+                        guidance_rows = extract_management_guidance(pdf_bytes)
+                        if guidance_rows and result.get('company_id'):
+                            period_row = FinancialPeriod.query.filter_by(
+                                company_id=result['company_id'], period_label=period_label
+                            ).first()
+                            if period_row:
+                                ManagementGuidance.query.filter_by(period_id=period_row.id).delete()
+                                for row in guidance_rows:
+                                    db.session.add(ManagementGuidance(period_id=period_row.id, **row))
+                                db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Management guidance extraction failed for {filename} (non-fatal)')
+
+                    # Principal risks (named qualitative risk categories with the
+                    # filing's own description/mitigation text, no numeric score -
+                    # see extract_principal_risks' docstring for why a short list
+                    # is treated as "not extracted" rather than saved partially).
+                    try:
+                        risk_rows = extract_principal_risks(pdf_bytes)
+                        if risk_rows and result.get('company_id'):
+                            period_row = FinancialPeriod.query.filter_by(
+                                company_id=result['company_id'], period_label=period_label
+                            ).first()
+                            if period_row:
+                                PrincipalRisk.query.filter_by(period_id=period_row.id).delete()
+                                for row in risk_rows:
+                                    db.session.add(PrincipalRisk(period_id=period_row.id, **row))
+                                db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Principal risks extraction failed for {filename} (non-fatal)')
+
+                    # Director remuneration detail (per-director rows, real
+                    # filed totals - see extract_director_remuneration_detail's
+                    # docstring for why target_period_label matters here: the
+                    # filing prints both this year's and last year's tables
+                    # together, and only this upload's own period_label's rows
+                    # are kept, so a separate upload of the prior year's own
+                    # filing owns that year's rows instead of duplicating them).
+                    try:
+                        rem_rows = extract_director_remuneration_detail(pdf_bytes, target_period_label=period_label)
+                        if rem_rows and result.get('company_id'):
+                            period_row = FinancialPeriod.query.filter_by(
+                                company_id=result['company_id'], period_label=period_label
+                            ).first()
+                            if period_row:
+                                DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
+                                for row in rem_rows:
+                                    row.pop('fiscal_year', None)  # already implied by period_id; not its own column
+                                    components = row.pop('components', None)
+                                    db.session.add(DirectorRemunerationRow(
+                                        period_id=period_row.id,
+                                        components=json.dumps(components) if components else None,
+                                        **{**row, 'source_document_id': result.get('source_document_id')},
+                                    ))
+                                db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Director remuneration detail extraction failed for {filename} (non-fatal)')
+
+                    # Board side runs AFTER the director pay rows exist: the filing's own pay tables name
+                    # every director (KCB's profile pages show only some), so they complete the roster.
+                    try:
+                        _sync_board_data_from_pdf(result['company_id'], period_label,
+                                                  result.get('source_document_id'), pdf_bytes, filename)
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Board extraction failed for {filename}')
+
+                    # Store the pages the AI extraction (manual button) will read; nothing is sent anywhere here.
+                    try:
+                        _queue_ai_items(result['company_id'], period_label, result.get('source_document_id'), filename,
+                                        detected_name or '', pdf_bytes)
+                    except Exception:
+                        db.session.rollback()
+                        app.logger.exception(f'Queueing AI pages failed for {filename} (non-fatal)')
+
+                    _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'scoring'})
+                    extraction_score = _finalize_source_document_score(result.get('source_document_id'))
+                    file_elapsed = (datetime.utcnow() - file_started).total_seconds()
+                    _progress_emit(batch_id, {
+                        'type': 'file_done', 'filename': filename, 'elapsed_seconds': round(file_elapsed, 1),
+                        'extraction_score': extraction_score,
+                    })
+
+                    results.append({
+                        'filename': filename, 'ok': True,
+                        'company_id': result['company_id'],
+                        'company_name': (matched['name'] if matched else detected_name),
+                        'period': period_label,
+                        'periods_saved': periods_saved,
+                        'prior_period_error': (prior_result.get('error') if prior_result and prior_status != 201 else None),
+                        'match_score': score,
+                        'created_company': created_company,
+                    })
+                else:
+                    _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': result.get('error', 'Unknown error')})
+                    results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Unknown error')})
+
+            failed_count = sum(1 for r in results if not r.get('ok'))
+            final_result = {'results': results, 'saved': saved, 'failed': failed_count}
+            _store_batch_result(batch_id, final_result)
+            total_elapsed = (datetime.utcnow() - batch_started).total_seconds()
             _progress_emit(batch_id, {
-                'type': 'file_done', 'filename': filename, 'elapsed_seconds': round(file_elapsed, 1),
-                'extraction_score': extraction_score,
+                'type': 'batch_done', 'saved': saved, 'failed': failed_count,
+                'elapsed_seconds': round(total_elapsed, 1), 'results': results,
             })
-
-            results.append({
-                'filename': filename, 'ok': True, 'company_id': result.get('company_id'),
-                'company_name': company_info.get('name'), 'period': period_label,
-                'match_score': 1.0 if company_id and not created_company else 0.0,
-                'created_company': created_company, 'periods_saved': [period_label],
-                'prior_period_error': None, 'format': 'condensed',
-                # Diagnostics for the director-remuneration section
-                # specifically, surfaced here rather than only in server
-                # logs - added after a real case where the upload
-                # reported full success while every remuneration row had
-                # silently failed a step downstream of the main save, and
-                # there was no way to tell from the dialog alone. 0/0
-                # (parsed=0) just means the file's own
-                # ===DIRECTOR_REMUNERATION=== section was empty or absent -
-                # not an error.
-                'director_remuneration_rows_parsed': director_remuneration_rows_parsed,
-                'director_remuneration_rows_saved': director_remuneration_rows_saved,
-                'director_remuneration_save_error': director_remuneration_save_error,
-            })
-            continue
-
-        # One slow pdfplumber pass covers both company/period detection
-        # AND statement parsing - see extract_pdf_document's docstring for
-        # why this used to be two separate full passes over the same file
-        # (the main reason a large report like a 300-page integrated
-        # report could time out).
-        try:
-            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'parsing'})
-            extracted = extract_pdf_document(pdf_bytes)
         except Exception as e:
-            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not read/parse PDF: {e}'})
-            results.append({'filename': filename, 'ok': False, 'error': f'Could not read/parse PDF: {e}'})
-            continue
-
-        pages_text = extracted['pages_text']
-        # No financial statements in the text (Safaricom's annual report keeps them in a separate
-        # document): the file is NOT rejected - it still carries the board, pay and governance
-        # content, so company / period are read from every page instead of the statement pages.
-        survey_only = not extracted.get('statements')
-        detect_pages = pages_text
-        if survey_only or not pages_text:
-            detect_pages = _pypdf_page_texts_cached(pdf_bytes) or []
-        statement_unit = detect_statement_unit(pages_text)
-        # A six-month / quarterly report keeps its own period label ("H1 2025") instead of
-        # being stored as a full fiscal year.
-        interim_label = detect_interim_period_label(detect_pages)
-        if looks_like_interim_report(detect_pages) and not interim_label:
-            results.append({
-                'filename': filename, 'ok': False,
-                'error': 'This looks like an interim report but its period could not be read '
-                         '("six months to <date>" not found).',
-            })
-            continue
-        period_label = interim_label or detect_period_label(detect_pages, filename=filename)
-        if not period_label:
-            results.append({
-                'filename': filename, 'ok': False,
-                'error': 'Could not detect a fiscal year from this PDF - no "for the year ended" or '
-                         '"at <date>" heading was found. Re-upload with the period specified separately.',
-            })
-            continue
-
-        _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'matching_company'})
-        if forced_company:
-            detected_name = forced_company.name
-            matched, score = {'name': forced_company.name, 'ticker': forced_company.ticker,
-                               'sector': forced_company.sector}, 1.0
-            company_id = forced_company.id
-        else:
-            detected_name = detect_company_name(detect_pages, filename=filename)
-            matched, score = (match_company(detected_name) if detected_name else (None, 0.0))
-
-            company_id = None
-            if matched:
-                company_id = existing_by_ticker.get(matched['ticker'].lower()) or existing_by_name.get(matched['name'].strip().lower())
-            if not company_id and detected_name:
-                company_id = existing_by_name.get(detected_name.strip().lower())
-        created_company = False
-
-        save_payload = {
-            'source_filename': filename,
-            # the PDF's real page count - len(pages_text) is only the shortlist of
-            # candidate pages that were scanned (157 for a 115-page PDF, 111 for a 256-page one)
-            'source_page_count': extracted.get('num_pages') or len(pages_text),
-            'source_sha256': hashlib.sha256(pdf_bytes).hexdigest(),
-        }
-        if company_id:
-            save_payload['company_id'] = company_id
-        elif matched:
-            save_payload['company_name'] = matched['name']
-            save_payload['ticker'] = matched['ticker']
-            save_payload['sector'] = matched['sector']
-            created_company = True
-        elif detected_name:
-            save_payload['company_name'] = detected_name
-            created_company = True
-        else:
-            results.append({
-                'filename': filename, 'ok': False,
-                'error': 'Could not identify which company this PDF belongs to. '
-                         'Re-upload using the single-file import and specify company_id directly.',
-            })
-            continue
-
-        # Annual reports carry a prior-year comparative column right next
-        # to the current year on every statement line (see
-        # pdf_parse.detect_prior_period_label's docstring) - save both
-        # periods from this one PDF instead of only the current one, so a
-        # single upload populates two FinancialPeriod rows' worth of
-        # history (needed for every YoY figure across the Intelligence
-        # Report's 8 tabs) rather than leaving the comparative column on
-        # the page unsaved.
-        prior_period_label = None if survey_only else detect_prior_period_label(period_label)
-        if survey_only:
-            save_payload['allow_empty_statements'] = True
-        try:
-            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'saving'})
-            result, status, prior_result, prior_status = _save_current_and_prior_period(
-                save_payload, {} if survey_only else extracted['statements'], period_label, prior_period_label
-            )
-        except Exception as e:
-            # Defense in depth: _save_current_and_prior_period/_save_one_import
-            # normally return an ('error', 4xx) pair for expected problems,
-            # but an unexpected DB/data-shape issue on one file shouldn't
-            # take down the rest of the batch (or the whole request) - it
-            # should show up as a per-file failure instead.
-            db.session.rollback()
-            app.logger.exception(f'Unexpected error saving {filename}')
-            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': f'Could not save: {e}'})
-            results.append({'filename': filename, 'ok': False, 'error': f'Could not save: {e}'})
-            continue
-        if status == 201:
-            saved += 1
-            if result.get('company_id') and matched:
-                existing_by_name[matched['name'].strip().lower()] = result['company_id']
-            elif result.get('company_id') and detected_name:
-                existing_by_name[detected_name.strip().lower()] = result['company_id']
-            periods_saved = [period_label]
-            if prior_status == 201:
-                saved += 1
-                periods_saved.append(prior_period_label)
-            try:
-                for _label in ([] if survey_only else periods_saved):
-                    _sync_survey_headline_from_financials(
-                        result['company_id'], _label, filename, comparative=(_label != period_label),
-                        statement_unit=statement_unit)
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Survey headline sync failed for {filename}')
-            # The main statement save is complete. The following optional
-            # filing-section extractors each scan the PDF for their own
-            # tables, so expose that work separately from the final score.
-            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'enriching'})
-
-            # Director remuneration total (see extract_director_remuneration's
-            # docstring for scope: only the filing's OWN printed grand total,
-            # never a computed/summed one) - belongs to the CURRENT period
-            # specifically, not the derived prior-year comparative period,
-            # since the table's own "Total" column is for one reporting year
-            # at a time. Best-effort and non-fatal: a failure here should
-            # never turn an otherwise-successful statement import into a
-            # failed one, so it's wrapped separately from the save above.
-            try:
-                remuneration = extract_director_remuneration(pdf_bytes)
-                if remuneration and result.get('company_id'):
-                    period_row = FinancialPeriod.query.filter_by(
-                        company_id=result['company_id'], period_label=period_label
-                    ).first()
-                    if period_row:
-                        existing_metric = OperationalMetric.query.filter_by(
-                            period_id=period_row.id, metric_name='total_director_remuneration'
-                        ).first()
-                        if existing_metric:
-                            existing_metric.value = remuneration['total']
-                            existing_metric.unit = remuneration.get('currency_hint') or existing_metric.unit
-                        else:
-                            db.session.add(OperationalMetric(
-                                period_id=period_row.id,
-                                metric_name='total_director_remuneration',
-                                value=remuneration['total'],
-                                unit=remuneration.get('currency_hint') or 'KES thousands',
-                            ))
-                        db.session.commit()
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Director remuneration extraction failed for {filename} (non-fatal)')
-
-            # Market data (share price, market cap, dividend, TSR,
-            # shareholding structure) - same non-fatal, best-effort
-            # pattern as remuneration above, and same current-period-only
-            # scope (this is the filing's own point-in-time investor
-            # information, not something with a prior-period comparative
-            # to also save).
-            try:
-                market_data = extract_market_data(pdf_bytes)
-                if market_data and result.get('company_id'):
-                    period_row = FinancialPeriod.query.filter_by(
-                        company_id=result['company_id'], period_label=period_label
-                    ).first()
-                    if period_row:
-                        existing_md = MarketDataSnapshot.query.filter_by(period_id=period_row.id).first()
-                        if existing_md is None:
-                            existing_md = MarketDataSnapshot(period_id=period_row.id)
-                            db.session.add(existing_md)
-                        for field in (
-                            'share_price', 'prior_share_price', 'market_cap', 'shares_issued',
-                            'shares_authorized', 'free_float_pct', 'shareholder_count',
-                            'prior_shareholder_count', 'dividend_per_share', 'interim_dividend_per_share',
-                            'final_dividend_per_share', 'dividend_yield', 'total_shareholder_return',
-                            'local_institutional_pct', 'local_individual_pct', 'foreign_investor_pct',
-                            'page',
-                        ):
-                            if field in market_data:
-                                setattr(existing_md, field, market_data[field])
-                        db.session.commit()
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Market data extraction failed for {filename} (non-fatal)')
-
-            # Management guidance (forward-looking KPI ranges, as printed
-            # in the filing's own Outlook table) - belongs to the CURRENT
-            # period since it's this filing's forecast for the year ahead
-            # of it, not a historical figure with a prior-year comparative.
-            try:
-                guidance_rows = extract_management_guidance(pdf_bytes)
-                if guidance_rows and result.get('company_id'):
-                    period_row = FinancialPeriod.query.filter_by(
-                        company_id=result['company_id'], period_label=period_label
-                    ).first()
-                    if period_row:
-                        ManagementGuidance.query.filter_by(period_id=period_row.id).delete()
-                        for row in guidance_rows:
-                            db.session.add(ManagementGuidance(period_id=period_row.id, **row))
-                        db.session.commit()
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Management guidance extraction failed for {filename} (non-fatal)')
-
-            # Principal risks (named qualitative risk categories with the
-            # filing's own description/mitigation text, no numeric score -
-            # see extract_principal_risks' docstring for why a short list
-            # is treated as "not extracted" rather than saved partially).
-            try:
-                risk_rows = extract_principal_risks(pdf_bytes)
-                if risk_rows and result.get('company_id'):
-                    period_row = FinancialPeriod.query.filter_by(
-                        company_id=result['company_id'], period_label=period_label
-                    ).first()
-                    if period_row:
-                        PrincipalRisk.query.filter_by(period_id=period_row.id).delete()
-                        for row in risk_rows:
-                            db.session.add(PrincipalRisk(period_id=period_row.id, **row))
-                        db.session.commit()
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Principal risks extraction failed for {filename} (non-fatal)')
-
-            # Director remuneration detail (per-director rows, real
-            # filed totals - see extract_director_remuneration_detail's
-            # docstring for why target_period_label matters here: the
-            # filing prints both this year's and last year's tables
-            # together, and only this upload's own period_label's rows
-            # are kept, so a separate upload of the prior year's own
-            # filing owns that year's rows instead of duplicating them).
-            try:
-                rem_rows = extract_director_remuneration_detail(pdf_bytes, target_period_label=period_label)
-                if rem_rows and result.get('company_id'):
-                    period_row = FinancialPeriod.query.filter_by(
-                        company_id=result['company_id'], period_label=period_label
-                    ).first()
-                    if period_row:
-                        DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
-                        for row in rem_rows:
-                            row.pop('fiscal_year', None)  # already implied by period_id; not its own column
-                            components = row.pop('components', None)
-                            db.session.add(DirectorRemunerationRow(
-                                period_id=period_row.id,
-                                components=json.dumps(components) if components else None,
-                                **{**row, 'source_document_id': result.get('source_document_id')},
-                            ))
-                        db.session.commit()
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Director remuneration detail extraction failed for {filename} (non-fatal)')
-
-            # Board side runs AFTER the director pay rows exist: the filing's own pay tables name
-            # every director (KCB's profile pages show only some), so they complete the roster.
-            try:
-                _sync_board_data_from_pdf(result['company_id'], period_label,
-                                          result.get('source_document_id'), pdf_bytes, filename)
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Board extraction failed for {filename}')
-
-            # Store the pages the AI extraction (manual button) will read; nothing is sent anywhere here.
-            try:
-                _queue_ai_items(result['company_id'], period_label, result.get('source_document_id'), filename,
-                                detected_name or '', pdf_bytes)
-            except Exception:
-                db.session.rollback()
-                app.logger.exception(f'Queueing AI pages failed for {filename} (non-fatal)')
-
-            _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'scoring'})
-            extraction_score = _finalize_source_document_score(result.get('source_document_id'))
-            file_elapsed = (datetime.utcnow() - file_started).total_seconds()
-            _progress_emit(batch_id, {
-                'type': 'file_done', 'filename': filename, 'elapsed_seconds': round(file_elapsed, 1),
-                'extraction_score': extraction_score,
-            })
-
-            results.append({
-                'filename': filename, 'ok': True,
-                'company_id': result['company_id'],
-                'company_name': (matched['name'] if matched else detected_name),
-                'period': period_label,
-                'periods_saved': periods_saved,
-                'prior_period_error': (prior_result.get('error') if prior_result and prior_status != 201 else None),
-                'match_score': score,
-                'created_company': created_company,
-            })
-        else:
-            _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': result.get('error', 'Unknown error')})
-            results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Unknown error')})
-
-    total_elapsed = (datetime.utcnow() - batch_started).total_seconds()
-    failed_count = sum(1 for r in results if not r.get('ok'))
-    _progress_emit(batch_id, {
-        'type': 'batch_done', 'saved': saved, 'failed': failed_count,
-        'elapsed_seconds': round(total_elapsed, 1),
-    })
-    return jsonify({'results': results, 'saved': saved, 'failed': failed_count}), 200
+            # Whatever already succeeded before the crash is still real (saved
+            # to the DB, committed) - it's reported as far as it got, plus one
+            # extra failure entry for whatever was in flight, rather than the
+            # whole batch vanishing with no explanation.
+            flask_app.logger.exception(f'Unhandled error in upload batch {batch_id}')
+            failed_count = len(file_payloads) - len(results)
+            results.append({'filename': None, 'ok': False, 'error': f'Batch processing stopped early: {e}'})
+            final_result = {'results': results, 'saved': saved, 'failed': max(failed_count, 1)}
+            _store_batch_result(batch_id, final_result)
+            _progress_emit(batch_id, {'type': 'batch_failed', 'error': str(e), 'saved': saved, 'failed': final_result['failed']})
+        finally:
+            # Return this thread's DB session to the pool - it was never
+            # associated with a request teardown the way a normal Flask-
+            # SQLAlchemy request-scoped session is.
+            db.session.remove()
 
 
 # ---------- SURVEY (multi-company board/remuneration benchmark) ----------
@@ -3827,6 +3942,17 @@ def company_survey_report(company_id):
         survey_director_benefits = [b.to_dict() for b in SurveyDirectorBenefit.query.filter_by(
             company_id=company_id, fiscal_year=survey_row.fiscal_year).all()]
 
+    # Itemized benefits breakdown (Housing/Vehicle/Medical/Travel/Pension/...)
+    # - see SurveyBenefitCategory's own docstring: no automated extractor
+    # produces these yet, they're filled in by hand via
+    # POST /api/companies/<id>/benefit-categories, but the DELETE/re-upload
+    # plumbing for them already existed before they were ever wired into
+    # a response - this was the missing read side.
+    benefit_categories = []
+    if survey_row:
+        benefit_categories = [b.to_dict() for b in SurveyBenefitCategory.query.filter_by(
+            company_id=company_id, fiscal_year=survey_row.fiscal_year).order_by(SurveyBenefitCategory.id).all()]
+
     survey_dict = None
     if survey_row:
         survey_dict = {col.name: getattr(survey_row, col.name) for col in SurveyCompanyData.__table__.columns
@@ -3868,11 +3994,59 @@ def company_survey_report(company_id):
         'has_survey_director_data': len(survey_director_rows) > 0,
         'survey_director_rows': survey_director_rows,
         'survey_director_benefits': [b for b in survey_director_benefits],
+        'benefit_categories': benefit_categories,
         'committees': committees,
         'source_documents': [d.to_dict(include_score=(current_role() == 'admin')) for d in SourceDocument.query.filter_by(company_id=company_id).all()],
         'evidence_conflicts': evidence_conflicts,
         'quality_by_year': quality_by_year,
     })
+
+
+@app.route('/api/companies/<int:company_id>/benefit-categories', methods=['POST'])
+@require_role('admin')
+def add_benefit_category(company_id):
+    """Add one itemized benefit line (Housing/Vehicle/Medical/Travel/
+    Pension/Other/...) for this company/fiscal year - see
+    SurveyBenefitCategory's docstring in models_survey.py for why this is a
+    hand-entry table rather than something an extractor fills automatically:
+    real filings almost always describe these in prose, not a clean table.
+    Body: {"fiscal_year", "category", "amount", "director_name" (optional -
+    omit/null for a company-level total), "description" (optional)}."""
+    Company.query.get_or_404(company_id)
+    body = request.get_json(silent=True) or {}
+    fiscal_year = (body.get('fiscal_year') or '').strip()
+    category = (body.get('category') or '').strip()
+    amount = body.get('amount')
+    if not fiscal_year:
+        return jsonify({'error': 'fiscal_year is required.'}), 400
+    if not category:
+        return jsonify({'error': 'category is required (e.g. "Housing Allowance").'}), 400
+    if amount is None:
+        return jsonify({'error': 'amount is required.'}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'amount must be a number.'}), 400
+
+    row = SurveyBenefitCategory(
+        company_id=company_id, fiscal_year=fiscal_year,
+        director_name=(body.get('director_name') or '').strip() or None,
+        category=category,
+        description=(body.get('description') or '').strip() or None,
+        amount=amount,
+    )
+    db.session.add(row)
+    db.session.commit()
+    return jsonify(row.to_dict()), 201
+
+
+@app.route('/api/benefit-categories/<int:row_id>', methods=['DELETE'])
+@require_role('admin')
+def delete_benefit_category(row_id):
+    row = SurveyBenefitCategory.query.get_or_404(row_id)
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({'deleted': True}), 200
 
 
 @app.route('/api/companies/<int:company_id>/committees', methods=['POST'])
