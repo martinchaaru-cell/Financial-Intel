@@ -20,6 +20,8 @@ from models import (
     MarketDataSnapshot, PrincipalRisk, ManagementGuidance, DirectorRemunerationRow,
     Committee, CommitteeMember, User, LOW_EXTRACTION_SCORE_THRESHOLD,
 )
+import ai_extract
+from models_ai import AIExtractionJob, AIExtractionItem
 from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, ActivityLogEntry
 from survey_data_parse import is_survey_data_format, parse_survey_data
 from intelligence_extractor import extract_survey_schema, extract_policy_disclosures
@@ -36,6 +38,8 @@ from pdf_parse import (
     extract_survey_directors,
     extract_survey_director_benefits,
     is_condensed_format, parse_condensed_filing,
+    detect_statement_unit, looks_like_interim_report, detect_interim_period_label,
+    _pypdf_page_texts_cached,
 )
 from report_context import build_report_context
 from report_docx import generate_docx
@@ -480,7 +484,8 @@ def _ordered_periods(company_id):
     periods = FinancialPeriod.query.filter_by(company_id=company_id).all()
     return sorted(
         periods,
-        key=lambda p: (p.fiscal_year if p.fiscal_year is not None else extract_year(p.period_label) or 0),
+        key=lambda p: ((p.fiscal_year if p.fiscal_year is not None else extract_year(p.period_label) or 0),
+                       1 if (p.period_label or '').upper().startswith('FY') else 0),   # annual before interim of the same year
         reverse=True,
     )
 
@@ -1318,6 +1323,19 @@ def _save_current_and_prior_period(base_payload, statements_payload, period_labe
             prior_payload.pop('company_name', None)
             prior_payload.pop('ticker', None)
             prior_payload.pop('sector', None)
+            # The prior year is this SAME file's comparative column, not a
+            # second document: it points at the current-period SourceDocument
+            # instead of creating a duplicate row (one PDF used to show up as
+            # two documents - the copy for the prior year with no score), and
+            # it may only FILL gaps - it must never overwrite a year's own
+            # report with the weaker comparative column of the following
+            # year's report (uploading Absa FY2023 replaced FY2022's equity
+            # statement, 18 line items, with the comparative's 2).
+            prior_payload['is_comparative'] = True
+            prior_payload['reuse_source_document_id'] = current_result.get('source_document_id')
+            prior_payload.pop('source_filename', None)
+            prior_payload.pop('source_sha256', None)
+            prior_payload.pop('pdf_url', None)
             prior_result, prior_status = _save_one_import(prior_payload)
 
     return current_result, current_status, prior_result, prior_status
@@ -1468,7 +1486,11 @@ def _save_one_import(data):
     # data and no ratios. Require at least one real line item, not just a
     # non-empty dict.
     has_line_items = any((s or {}).get('line_items') for s in statements_payload.values())
-    if not statements_payload or not has_line_items:
+    allow_empty = bool(data.get('allow_empty_statements'))
+    # A report can carry the governance / remuneration content the Survey Report needs
+    # while its financial statements live in a separate document (Safaricom's annual
+    # report): it still creates the company, the period and the source document.
+    if not allow_empty and (not statements_payload or not has_line_items):
         return {'error': 'statements (with at least one line item) is required'}, 400
 
     # Optional source document, so line items can point back to "which PDF,
@@ -1480,9 +1502,12 @@ def _save_one_import(data):
     # Intelligence Report's Source Evidence tab would have nothing to show,
     # even though the upload itself succeeded.
     source_doc_id = None
+    is_comparative = bool(data.get('is_comparative'))
     pdf_url = (data.get('pdf_url') or '').strip()
     upload_filename = (data.get('source_filename') or '').strip()
-    if pdf_url or upload_filename:
+    if data.get('reuse_source_document_id'):
+        source_doc_id = data['reuse_source_document_id']
+    elif pdf_url or upload_filename:
         # Re-uploading the same file for the same period reuses the
         # existing SourceDocument instead of stacking a new one each
         # time (sha256 was always stored "to dedupe re-uploads" but
@@ -1527,13 +1552,16 @@ def _save_one_import(data):
         if period is None:
             period = FinancialPeriod(
                 company_id=company_id, period_label=period_label,
-                period_type='FY' if 'Q' not in period_label else period_label[:2],
+                period_type=(re.match(r'^(H[12]|Q[1-4])\b', period_label).group(1)
+                             if re.match(r'^(H[12]|Q[1-4])\b', period_label) else 'FY'),
+                fiscal_year=extract_year(period_label),
                 currency='KES',
             )
             db.session.add(period)
             db.session.flush()
 
         flat = {}  # collect the 5 legacy fields as we go, for the dual-write below
+        skipped_comparative = []  # statement types a comparative column did NOT overwrite
 
         for statement_type, statement_data in statements_payload.items():
             line_items = (statement_data or {}).get('line_items') or []
@@ -1541,6 +1569,20 @@ def _save_one_import(data):
                 continue
 
             stmt = period.statement(statement_type)
+            if stmt is not None and is_comparative:
+                # A statement whose source document IS this year's own report
+                # (document period == statement period) is primary and is never
+                # replaced by a later report's comparative column, even one that
+                # happens to have more rows. Only a statement that itself came
+                # from a comparative (its source document belongs to a LATER
+                # year) can be replaced, and only by a more complete one.
+                existing_doc = db.session.get(SourceDocument, stmt.source_document_id) if stmt.source_document_id else None
+                existing_is_primary = bool(existing_doc and existing_doc.period_label == period_label)
+                existing_n = FinancialLineItem.query.filter_by(statement_id=stmt.id).count()
+                usable_n = sum(1 for li in line_items if li.get('amount') not in (None, ''))
+                if existing_is_primary or existing_n >= usable_n:
+                    skipped_comparative.append(statement_type)
+                    continue
             if stmt is None:
                 stmt = FinancialStatement(
                     period_id=period.id, statement_type=statement_type,
@@ -1593,7 +1635,8 @@ def _save_one_import(data):
                     flat[normalized] = amount
 
         db.session.commit()
-        calculate_ratios(period)
+        if not allow_empty:
+            calculate_ratios(period)
 
         job.status = 'saved'
         job.finished_at = datetime.utcnow()
@@ -1607,6 +1650,10 @@ def _save_one_import(data):
         db.session.commit()
         return {'error': f'Save failed: {e}'}, 500
 
+    if allow_empty:
+        return {'company_id': company_id, 'period': period.to_dict(), 'financials': None,
+                'source_document_id': source_doc_id}, 201
+
     # Dual-write: keep the old flat Financials table populated too, so
     # /api/overview and the pre-Phase-6 export routes keep working exactly
     # as before while those get upgraded to read from FinancialPeriod
@@ -1618,11 +1665,18 @@ def _save_one_import(data):
         f = Financials(company_id=company_id, period=period_label)
         db.session.add(f)
     f.currency = 'KES'
-    f.revenue = flat.get('revenue', 0.0)
-    f.net_income = flat.get('net_income', 0.0)
-    f.total_assets = flat.get('total_assets', 0.0)
-    f.total_liabilities = flat.get('total_liabilities', 0.0)
-    f.total_equity = flat.get('total_equity', 0.0)
+    for _field in ('revenue', 'net_income', 'total_assets', 'total_liabilities', 'total_equity'):
+        if is_comparative:
+            # a comparative column only fills a figure the year does not already have.
+            # A field the statements do not state still starts at 0.0 (never None):
+            # Financials.to_dict divides by these, and an interim report such as
+            # Kakuzi's prints no "Total liabilities" line at all.
+            if getattr(f, _field, None) is None:
+                setattr(f, _field, flat.get(_field, 0.0))
+            elif flat.get(_field) is not None and not getattr(f, _field, None):
+                setattr(f, _field, flat[_field])
+        else:
+            setattr(f, _field, flat.get(_field, 0.0))
     f.source = 'pdf_upload'
     f.updated_at = datetime.utcnow()
     db.session.commit()
@@ -1726,6 +1780,774 @@ def upload_progress_stream(batch_id):
     return Response(gen(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
     })
+
+
+def _sync_survey_headline_from_financials(company_id, fiscal_year, source_filename, comparative=False,
+                                          statement_unit=None):
+    """Give the Survey Report's Company Overview its Turnover and Net Profit
+    from the financial statements the upload just parsed.
+
+    Before this, the Upload Reports flow never created a SurveyCompanyData
+    row at all, so every Company Overview KPI for an uploaded company read
+    "Not available" even though the income statement was sitting in
+    Financials. Same source and same rule as the backfill in
+    /api/survey-data/import-pdf (Financials holds millions; the survey row's
+    own `unit` says what scale to write).
+
+    Never overwrites a figure that did not come from this backfill: a value
+    typed by hand or found by the survey extractor is kept. A figure this
+    backfill wrote on an earlier upload IS refreshed, so re-uploading
+    corrected numbers cannot leave the previous upload's value behind."""
+    fin = Financials.query.filter_by(company_id=company_id, period=fiscal_year).first()
+    if fin is None:
+        return
+    # Financials keeps the figures AS PRINTED (Shs'000 for Kakuzi / Eaagads / NSE, KShs million
+    # for Absa / KCB / Equity), so the printed scale must be known to state them in the survey
+    # row's unit. Unknown scale -> leave Turnover / Net Profit empty rather than guess 1000x.
+    to_millions = {'thousands': 0.001, 'millions': 1.0, 'billions': 1000.0}.get(statement_unit)
+    if to_millions is None:
+        return
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if row is None:
+        row = SurveyCompanyData(company_id=company_id, fiscal_year=fiscal_year,
+                                currency=fin.currency or 'KES', unit='millions')
+        db.session.add(row)
+    multiplier = {'thousands': 1000, 'millions': 1, 'billions': 0.001}.get(row.unit or 'millions', 1)
+    sources = dict(row.field_sources or {})
+    confidence = dict(row.field_confidence or {})
+    for column, fin_value, label in (('turnover', fin.revenue, 'total income / revenue'),
+                                     ('net_profit', fin.net_income, 'profit for the year')):
+        if not fin_value:
+            continue          # 0/None = the statement parse found nothing; leave the field empty
+        current = getattr(row, column)
+        came_from_backfill = str(sources.get(column, '')).startswith('from parsed financial statements')
+        if current is not None and not came_from_backfill:
+            continue
+        if comparative and current is not None:
+            continue      # a comparative column never re-attributes a year's own figure to a later file
+        setattr(row, column, fin_value * to_millions * multiplier)
+        sources[column] = (f"from parsed financial statements ({label}) in {source_filename or 'uploaded report'}"
+                           + (f" (printed in {statement_unit}, converted to millions)" if statement_unit != 'millions' else ""))
+        confidence[column] = 0.85
+    row.field_sources = sources
+    row.field_confidence = confidence
+    if not row.source_filename:
+        row.source_filename = source_filename
+    db.session.commit()
+
+
+
+
+
+def _detect_pay_table_unit(pdf_bytes, page):
+    """'units' | 'thousands' | 'millions' for the page a director-pay table sits on, from its column
+    headers (Shs, Shs'000, KShs million); None when the page does not say."""
+    text = dict(_pypdf_page_texts_cached(pdf_bytes) or []).get(page, '')
+    q = "['\u2018\u2019`]"
+    if re.search(r"(?:shs?|kshs?|kes|ksh)\.?\s*" + q + r"?\s*(?:000|thousand)|in\s+thousands", text, re.I):
+        return 'thousands'                                       # Shs'000, KShs. ‘000’ (KCB) ...
+    if re.search(r"(?:shs?|kshs?|kes|ksh)\.?\s*" + q + r"?\s*(?:million|m\b)|in\s+millions", text, re.I):
+        return 'millions'
+    if re.search(r"\b(?:shs?|kshs?|kes|ksh)\b", text, re.I):
+        return 'units'
+    return None
+
+
+# Prefixes of field_sources text this module writes itself. A survey field
+# whose current source starts with one of these was filled by the automatic
+# board extraction, so a re-upload may refresh or clear it; any other source
+# (hand-typed file, survey PDF import, a person's correction) is left alone.
+_AUTO_BOARD_SOURCE_PREFIXES = ('from the board table', 'from the attendance table',
+                               'stated in the report', 'from the director roster',
+                               'from the remuneration policy text', 'from the remuneration report')
+
+
+def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_bytes, filename):
+    """Fill Board Composition, the Directors' Register, Committees, Market Cap
+    and board meetings from the uploaded report's own content (board_extract.py).
+    Current period only, and only what the report states:
+
+      - a director register from the first reader that finds >= 3 directors
+        (board table -> labelled cards -> profile cards -> honorific bios), then
+        COMPLETED with every director named in the report's attendance table and
+        directors' pay tables (a profile page may show only some of the board);
+      - board meetings, board size / executive / non-executive counts and market
+        capitalisation where a SENTENCE states them ("the Board held five
+        meetings", "10 Non-Executive Directors and 1 Executive Director");
+      - counts derived from the register only when EVERY row states the fact;
+      - committees (meetings, members, attendance rate) from an attendance table.
+
+    Re-upload REPLACES: fields/rows this function wrote before but did not find
+    this time are cleared. Survey fields with any other source (typed by hand,
+    survey-PDF import, a reviewer's correction) are never overwritten."""
+    from board_extract import (extract_board_bundle, derive_board_composition, same_person,
+                               _split_honorific_and_name)
+    bundle = extract_board_bundle(pdf_bytes)
+    register = [dict(d) for d in bundle['register']]
+    attendance = bundle['attendance']
+    facts = bundle['facts']
+    period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fiscal_year).first()
+
+    # ---- complete the roster from the filing's other director lists
+    def find(name):
+        return next((d for d in register if same_person(d['director_name'], name)), None)
+
+    extra_sources = []
+    if attendance:
+        for d in attendance['directors']:
+            if d.get('on_board', True):
+                extra_sources.append((d['name'], None, None, d['committees'], attendance['page'], 'attendance'))
+    if period is not None:
+        for r in DirectorRemunerationRow.query.filter_by(period_id=period.id).all():
+            if r.is_grand_total or r.is_total_row:
+                continue
+            hon, nm = _split_honorific_and_name(r.director_name)
+            if nm:
+                role = r.role if r.role in ('executive', 'non_executive') else None
+                extra_sources.append((nm, role, hon, None, r.page, 'pay table'))
+    used_extra = False
+    for name, role, gender, committees, page, origin in extra_sources:
+        d = find(name)
+        if d is None:
+            register.append({'director_name': name, 'position': None, 'role': role or 'unknown', 'independent': None,
+                             'gender': gender, 'nationality': None, 'appointed_date': None, 'age': None,
+                             'committees': committees, 'page': page, 'order_index': len(register), 'source': 'roster'})
+            used_extra = True
+        else:
+            if d.get('role') in (None, 'unknown') and role:
+                d['role'] = role
+            if not d.get('gender') and gender:
+                d['gender'] = gender
+            if committees and not d.get('committees'):
+                d['committees'] = committees
+
+    # A profile page / table that already covers >= 75% of every name the report lists IS the
+    # board: the extra names (directors who left during the year, people named in a pay table)
+    # only enrich its rows and must not inflate the board size. A page that covers less (KCB's
+    # profiles show 8 of 12) is completed by the other lists.
+    if bundle['register'] and len(bundle['register']) >= 0.75 * len(register):
+        register = [d for d in register if d.get('source') != 'roster']
+        used_extra = False
+
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if row is None:
+        row = SurveyCompanyData(company_id=company_id, fiscal_year=fiscal_year, currency='KES', unit='millions')
+        db.session.add(row)
+    sources = dict(row.field_sources or {})
+    confidence = dict(row.field_confidence or {})
+
+    produced = {}     # column -> (value, source text, confidence)
+    if register:
+        pages = sorted({d.get('page') for d in register if d.get('page')})
+        where = (f"director roster ({len(register)} directors named in the report's "
+                 f"{bundle.get('register_kind') or 'attendance / pay'} listing{' and pay / attendance tables' if used_extra else ''}"
+                 f", page{'s' if len(pages) > 1 else ''} {', '.join(str(x) for x in pages[:4])})")
+        derived = derive_board_composition(register, where=where)
+        for col, val in derived['fields'].items():
+            produced[col] = (val, 'from the director roster: ' + derived['notes'][col],
+                             0.6 if col == 'board_size' else 0.8)
+    comp = facts.get('composition')
+    if comp:      # a sentence that STATES the counts beats counts derived from a roster
+        pg = comp['page']
+        produced['non_executive_directors_count'] = (comp['non_executive'], f"stated in the report on page {pg}: \"{comp['text']}\"", 0.85)
+        produced['executive_directors_count'] = (comp['executive'], f"stated in the report on page {pg}: \"{comp['text']}\"", 0.85)
+        produced['board_size'] = (comp['non_executive'] + comp['executive'], f"stated in the report on page {pg}: \"{comp['text']}\" (sum)", 0.85)
+    if attendance and attendance.get('board_meetings') is not None:
+        produced['board_meetings_per_year'] = (
+            attendance['board_meetings'],
+            f"from the attendance table on page {attendance['page']}: total number of scheduled Board meetings", 0.9)
+    elif facts.get('board_meetings'):
+        bm = facts['board_meetings']
+        produced['board_meetings_per_year'] = (bm['value'], f"stated in the report on page {bm['page']}: \"{bm['text']}\"", 0.85)
+    if attendance and attendance.get('committees'):
+        produced['committees_per_board'] = (
+            len(attendance['committees']),
+            f"from the attendance table on page {attendance['page']}: committees with attendance columns "
+            f"({', '.join(c['name'] for c in attendance['committees'])})", 0.7)
+    cap = facts.get('market_cap')
+    if cap:
+        produced['market_cap'] = (cap['value_millions'], f"stated in the report on page {cap['page']}: \"{cap['text']}\"", 0.75)
+
+    owned_columns = {'board_size', 'executive_directors_count', 'non_executive_directors_count',
+                     'independent_neds_count', 'non_independent_neds_count', 'directors_female',
+                     'directors_male', 'neds_kenyan_count', 'neds_non_kenyan_count',
+                     'avg_age_executive_directors', 'avg_age_non_executive_directors',
+                     'avg_age_independent_neds', 'avg_age_non_independent_neds',
+                     'board_meetings_per_year', 'committees_per_board', 'market_cap'}
+    for col in owned_columns:
+        ours = str(sources.get(col, '')).startswith(_AUTO_BOARD_SOURCE_PREFIXES)
+        if col in produced:
+            if getattr(row, col) is None or ours:
+                setattr(row, col, produced[col][0])
+                sources[col] = produced[col][1]
+                confidence[col] = produced[col][2]
+        elif ours:                          # this file no longer states it: clear the previous upload's value
+            setattr(row, col, None)
+            sources.pop(col, None)
+            confidence.pop(col, None)
+    # ---- pay unit of the directors' pay tables ("Shs" / "Shs'000" / "KShs million"), so the survey's
+    # policy and CEO figures below are stored in the same unit as the pay rows they sit beside
+    from policy_extract import extract_ned_benefits, extract_committee_prose, extract_ned_policy, extract_ceo_pay
+    if period is not None and not row.director_figures_unit:
+        pay_pages = [r.page for r in DirectorRemunerationRow.query.filter_by(period_id=period.id).all() if r.page]
+        unit = _detect_pay_table_unit(pdf_bytes, pay_pages[0]) if pay_pages else None
+        if unit:
+            row.director_figures_unit = unit
+    to_pay_unit = {'units': 1.0, 'thousands': 1e-3, 'millions': 1e-6}.get(row.director_figures_unit or 'units', 1.0)
+
+    # ---- NED fee policy and CEO pay from the text (rules first; the AI only sees what is still empty)
+    def _rule_field(col, value, src_text, conf_value=0.75):
+        ours = str(sources.get(col, '')).startswith(_AUTO_BOARD_SOURCE_PREFIXES)
+        if getattr(row, col) is None or ours:
+            setattr(row, col, value); sources[col] = src_text; confidence[col] = conf_value
+    policy = extract_ned_policy(pdf_bytes)
+    for col, info in policy.items():
+        _rule_field(col, info['value'] * to_pay_unit,
+                    f"from the remuneration report (page {info['page']}): \"{info['text'][:90]}\"")
+    ceo = extract_ceo_pay(pdf_bytes)
+    if ceo:
+        cf = {'units': 1.0, 'thousands': 1e3, 'millions': 1e6}[ceo['unit']] * to_pay_unit / 12.0     # annual -> monthly
+        src = (f"from the remuneration report (page {ceo['page']}): {ceo['name']} - annual figures divided by 12"
+               f" (printed in {ceo['unit']})")
+        for key, col in (('salary', 'ceo_monthly_salary'), ('allowances', 'ceo_monthly_allowances'),
+                         ('incentive_bonus', 'ceo_monthly_incentive_bonus'), ('deferred_incentive', 'ceo_monthly_deferred_incentive'),
+                         ('non_cash_benefits', 'ceo_monthly_non_cash_benefits'), ('pension', 'ceo_monthly_pension'),
+                         ('cost_of_employment', 'ceo_monthly_cost_of_employment')):
+            if ceo['components'].get(key) is not None:
+                _rule_field(col, ceo['components'][key] * cf, src)
+        if ceo['components'].get('salary') is not None and row.ceo_annual_salary_as_stated is None:
+            row.ceo_annual_salary_as_stated = ceo['components']['salary'] * cf * 12.0
+            row.ceo_monthly_conversion_basis = 'annual / 12'
+
+    # ---- NED benefits checklist, read from the remuneration policy sentences (policy_extract.py)
+    benefits = extract_ned_benefits(pdf_bytes)
+    ben_ours = str(sources.get('ned_benefits', '')).startswith('from the remuneration policy text')
+    if benefits and (not row.ned_benefits or ben_ours):
+        row.ned_benefits = {k: {'provided': v['provided'], 'detail': v['detail']} for k, v in benefits.items()}
+        pgs = sorted({v['page'] for v in benefits.values()})
+        sources['ned_benefits'] = ('from the remuneration policy text (page%s %s): sentences about non-executive '
+                                   'directors that name a benefit, yes or no' % ('s' if len(pgs) > 1 else '', ', '.join(map(str, pgs[:4]))))
+        confidence['ned_benefits'] = 0.7
+    elif ben_ours and not benefits:
+        row.ned_benefits = None
+        sources.pop('ned_benefits', None); confidence.pop('ned_benefits', None)
+
+    row.field_sources = sources
+    row.field_confidence = confidence
+    db.session.commit()
+
+    # ---- Directors' Register (replace this year's rows)
+    def committees_for(d):
+        if d.get('committees'):
+            return d['committees']
+        for x in (attendance['directors'] if attendance else []):
+            if same_person(d['director_name'], x['name']):
+                return x['committees'] or None
+        return None
+    if register:
+        SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).delete()
+        for i, d in enumerate(register):
+            conf = 0.85 if (bundle.get('register_kind') == 'table' and d.get('source') != 'roster') else \
+                   0.6 if d.get('source') == 'roster' else 0.8
+            db.session.add(SurveyDirector(
+                company_id=company_id, fiscal_year=fiscal_year, director_name=d['director_name'],
+                position=(d.get('position') or None), role=d.get('role'), gender=d.get('gender'),
+                nationality=d.get('nationality'), independent=d.get('independent'),
+                appointed_date=d.get('appointed_date'), committees=committees_for(d),
+                order_index=i, page=d.get('page'), confidence=conf))
+        db.session.commit()
+
+    # ---- Committees named in sentences when there is no attendance table ("The members of the
+    # Audit Committee during the year were A, B and C") - members only, meetings if a sentence says so.
+    prose_committees = [] if (attendance and attendance.get('committees')) else extract_committee_prose(pdf_bytes)
+    if prose_committees and period is not None:
+        existing = Committee.query.filter_by(period_id=period.id).all()
+        if not any(c.source_document_id is None for c in existing):
+            for c in existing:
+                CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                db.session.delete(c)
+            db.session.flush()
+            for i, c in enumerate(prose_committees):
+                committee = Committee(period_id=period.id, source_document_id=source_document_id, name=c['name'],
+                                      member_count=len(c['members']), meetings_held=c['meetings'], order_index=i,
+                                      page=c['page'], confidence=0.7)
+                db.session.add(committee)
+                db.session.flush()
+                for j, nm in enumerate(c['members']):
+                    db.session.add(CommitteeMember(committee_id=committee.id, director_name=nm, order_index=j))
+            db.session.commit()
+
+    # ---- Committees (period-based). Rows a person filed by hand (no source document) are never replaced.
+    if attendance and attendance.get('committees') and period is not None:
+        existing = Committee.query.filter_by(period_id=period.id).all()
+        if not any(c.source_document_id is None for c in existing):
+            for c in existing:
+                CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                db.session.delete(c)
+            db.session.flush()
+            for i, c in enumerate(attendance['committees']):
+                committee = Committee(
+                    period_id=period.id, source_document_id=source_document_id, name=c['name'],
+                    member_count=len(c['members']), meetings_held=c['meetings'],
+                    attendance_rate=c['attendance_rate'], order_index=i, page=attendance['page'],
+                    confidence=0.9 if c['consistent'] else 0.7)
+                db.session.add(committee)
+                db.session.flush()
+                for j, m in enumerate(c['members']):
+                    db.session.add(CommitteeMember(committee_id=committee.id, director_name=m['name'], order_index=j))
+            db.session.commit()
+
+
+
+
+# ---------------------------------------------------------------------------
+# AI extraction (ai_extract.py): queue at upload, run on demand, verify, apply
+# ---------------------------------------------------------------------------
+_AI_TO_MILLIONS = {'units': 1e-6, 'thousands': 1e-3, 'millions': 1.0, 'billions': 1e3, 'trillions': 1e6}
+_AI_FACT_COLUMNS = {
+    'board_size': 'board_size', 'board_meetings_held': 'board_meetings_per_year',
+    'executive_directors_count': 'executive_directors_count', 'non_executive_directors_count': 'non_executive_directors_count',
+    'independent_neds_count': 'independent_neds_count', 'directors_female': 'directors_female', 'directors_male': 'directors_male',
+}
+
+
+_POLICY_COLS = ['chairperson_annual_retainer', 'other_ned_annual_retainer', 'chairperson_meeting_allowance',
+                'other_ned_meeting_allowance', 'executive_director_annual_retainer', 'executive_director_meeting_allowance',
+                'committee_chair_annual_retainer', 'committee_member_annual_retainer']
+_CEO_COLS = ['ceo_monthly_salary', 'ceo_monthly_allowances', 'ceo_monthly_incentive_bonus', 'ceo_monthly_deferred_incentive',
+             'ceo_monthly_non_cash_benefits', 'ceo_monthly_pension', 'ceo_monthly_cost_of_employment']
+
+
+def _compute_ai_gaps(company_id, fiscal_year, task_texts):
+    """What the rule-based readers did NOT fill, per AI task - the only thing the AI is ever asked for.
+    task_texts = {task: page-text-blob} is used to skip a gap the report cannot answer (no page even
+    mentions retainers / market capitalisation / ...), so the AI is not paid to find nothing."""
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fiscal_year).first()
+    reg = SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).all()
+    txt = {t: (task_texts.get(t) or '').lower() for t in ai_extract.TASKS}
+    val = (lambda col: getattr(row, col, None)) if row else (lambda col: None)
+    gaps = {'board': [], 'committees': [], 'pay': []}
+    # -- board
+    if len(reg) < 3:
+        gaps['board'].append('register')
+    elif any((d.role in (None, 'unknown')) for d in reg):
+        gaps['board'].append('roles')
+    for col in ('board_size', 'board_meetings_per_year', 'executive_directors_count', 'non_executive_directors_count'):
+        if val(col) is None:
+            gaps['board'].append(col)
+    if val('independent_neds_count') is None and 'independen' in txt['board']:
+        gaps['board'].append('independent_neds_count')
+    if (val('directors_female') is None or val('directors_male') is None) and re.search(r"\b(female|women|gender)\b", txt['board']):
+        gaps['board'].append('directors_female')
+    if val('market_cap') is None and 'market capitali' in txt['board']:
+        gaps['board'].append('market_cap')
+    # -- committees
+    comms = Committee.query.filter_by(period_id=period.id).all() if period else []
+    if not comms:
+        gaps['committees'].append('committees')
+    elif any(c.meetings_held is None for c in comms):
+        gaps['committees'].append('committee_meetings')
+    # -- pay
+    prow = DirectorRemunerationRow.query.filter_by(period_id=period.id).all() if period else []
+    persons = [r for r in prow if not r.is_grand_total and not r.is_total_row]
+    if not persons:
+        gaps['pay'].append('pay_rows')
+    else:
+        totals = [r.total for r in prow if r.is_grand_total and r.total is not None]
+        sums = [r.total for r in persons if r.total is not None]
+        if totals and sums and abs(sum(sums) - totals[0]) > max(1.0, len(sums)) and not any(
+                abs(sum(sums) - t) <= max(1.0, len(sums)) for t in totals):
+            gaps['pay'].append('pay_reconcile')
+    if any(val(c) is None for c in _POLICY_COLS) and re.search(r"retainer|sitting allowance|annual fee|per meeting|monthly fee", txt['pay']):
+        gaps['pay'].append('ned_policy')
+    if val('ceo_monthly_cost_of_employment') is None and re.search(r"chief executive|managing director", txt['pay']):
+        gaps['pay'].append('ceo_pay')
+    if not (row and row.ned_benefits) and re.search(r"medical|indemnity|insurance|club|travell?ing|allowance", txt['pay']):
+        gaps['pay'].append('ned_benefits')
+    return gaps
+
+
+def _queue_ai_items(company_id, fiscal_year, source_document_id, filename, company_name, pdf_bytes):
+    """Tier 2 of the extraction ladder. Rules have already run; this stores the pages for ONLY the
+    tasks that still have a gap, together with the list of gaps, so the AI is asked for the missing
+    items and nothing the rules already found. A report the rules fully read queues nothing."""
+    pages = _pypdf_page_texts_cached(pdf_bytes) or []
+    if not pages:
+        return 0
+    AIExtractionItem.query.filter(
+        AIExtractionItem.company_id == company_id, AIExtractionItem.fiscal_year == fiscal_year,
+        AIExtractionItem.status.in_(('pending', 'failed', 'done', 'skipped'))).delete(synchronize_session=False)
+    chosen = {t: ai_extract.select_pages(pages, t) for t in ai_extract.TASKS}
+    by_pn = dict(pages)
+    blobs = {t: " ".join(by_pn.get(pn, '') for pn in chosen[t]) for t in ai_extract.TASKS}
+    gaps = _compute_ai_gaps(company_id, fiscal_year, blobs)
+    made = 0
+    for task in ai_extract.TASKS:
+        if not chosen[task] or not gaps[task]:
+            continue
+        texts = ai_extract.layout_texts(pdf_bytes, chosen[task])
+        db.session.add(AIExtractionItem(
+            company_id=company_id, fiscal_year=fiscal_year, source_document_id=source_document_id,
+            filename=filename, task=task, pages_json=json.dumps({'pages': chosen[task], 'gaps': gaps[task]}),
+            page_text=json.dumps({str(k): v for k, v in texts.items()}), status='pending'))
+        made += 1
+    db.session.commit()
+    return made
+
+
+def _refresh_item_gaps(item):
+    """Re-check an item against the data as it is NOW (a re-upload or a typed value may have filled
+    its gaps since it was queued). An item with no gaps left is skipped - it is never sent."""
+    blob = {item.task: " ".join(item.pages().values())}
+    now = _compute_ai_gaps(item.company_id, item.fiscal_year, blob)[item.task]
+    meta = item._meta()
+    meta['gaps'] = now
+    item.pages_json = json.dumps(meta)
+    if not now and item.status in ('pending', 'failed'):
+        item.status = 'skipped'
+    return now
+
+
+def _ai_params_for(item):
+    company = db.session.get(Company, item.company_id)
+    return ai_extract.build_request(item.task, {int(k): v for k, v in item.pages().items()},
+                                    company.name if company else 'the company', item.fiscal_year, gaps=item.gaps())
+
+
+def _ai_ingest_result(item, data, usage, error=None):
+    item.updated_at = datetime.utcnow()
+    item.usage_json = json.dumps(usage or {})
+    if data is None:
+        item.status = 'failed'
+        item.error = error or 'no result'
+        return
+    verified = ai_extract.verify_result(item.task, data, {int(k): v for k, v in item.pages().items()})
+    item.result_json = json.dumps(verified['data'])
+    item.verification_json = json.dumps({'summary': verified['summary'], 'checks': verified['checks']})
+    item.status = 'done'
+    item.error = None
+
+
+def _survey_row_for(company_id, fiscal_year):
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if row is None:
+        row = SurveyCompanyData(company_id=company_id, fiscal_year=fiscal_year, currency='KES', unit='millions')
+        db.session.add(row)
+    return row
+
+
+def _set_ai_field(row, sources, conf, column, value, source_text, confidence=0.85, conflicts=None):
+    """FILL-ONLY. The AI is the fallback tier: it may fill an empty field (or refresh an earlier AI
+    value) but never replaces a value the rules or a person already put there. When its value
+    disagrees with what is stored, the disagreement is reported (conflicts) instead of applied."""
+    current = getattr(row, column)
+    src = str(sources.get(column, ''))
+    if current is not None and not src.startswith('from AI extraction'):
+        if conflicts is not None and value is not None and abs(float(current) - float(value)) > 0.005 * max(abs(float(current)), 1e-9):
+            conflicts.append({'field': column, 'kept': current, 'ai': value})
+        return False
+    setattr(row, column, value)
+    sources[column] = source_text
+    conf[column] = confidence
+    return True
+
+
+def _apply_ai_item(item):
+    """Write one verified AI item into the survey tables, but only where the rule-based tier left a
+    gap. Returns a summary: what was filled, what was skipped because rules already had it, and any
+    disagreements."""
+    data = json.loads(item.result_json or '{}')
+    company_id, fy = item.company_id, item.fiscal_year
+    row = _survey_row_for(company_id, fy)
+    sources, conf = dict(row.field_sources or {}), dict(row.field_confidence or {})
+    applied = {'fields': [], 'directors': 0, 'committees': 0, 'pay_rows': 0, 'benefits': 0, 'conflicts': [], 'skipped': []}
+    gaps_now = set(_compute_ai_gaps(company_id, fy, {item.task: " ".join(item.pages().values())})[item.task])
+    where = lambda d: f"from AI extraction (page {d.get('page')}): \"{(d.get('evidence') or '')[:90]}\""
+    setf = lambda col, val, src, c=0.85: _set_ai_field(row, sources, conf, col, val, src, c, applied['conflicts'])
+
+    if item.task == 'board':
+        directors = [d for d in data.get('directors', []) if d.get('verified')]
+        if directors and gaps_now & {'register', 'roles'}:
+            SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fy).delete()
+            for i, d in enumerate(directors):
+                db.session.add(SurveyDirector(
+                    company_id=company_id, fiscal_year=fy, director_name=d['name'], position=(d.get('title_as_printed') or None),
+                    role=d.get('role'), gender=d.get('gender'), nationality=d.get('nationality'), independent=d.get('independent'),
+                    appointed_date=d.get('appointed'), order_index=i, page=d.get('page'), confidence=0.85))
+            applied['directors'] = len(directors)
+        elif directors:
+            applied['skipped'].append('register (rules already read it)')
+        stated = set()
+        for f in data.get('facts', []):
+            col = _AI_FACT_COLUMNS.get(f.get('field'))
+            if col and f.get('verified') and setf(col, f['value'], where(f)):
+                applied['fields'].append(col); stated.add(col)
+        if directors and applied['directors']:      # counts the report did not state are derived from the listed names
+            from board_extract import derive_board_composition
+            rows = [{'role': d.get('role'), 'independent': d.get('independent'), 'gender': d.get('gender'),
+                     'nationality': d.get('nationality'), 'age': d.get('age'), 'page': d.get('page')} for d in directors]
+            derived = derive_board_composition(rows, where=f"AI-read director list ({len(rows)} directors)")
+            for col, val in derived['fields'].items():
+                if col not in stated and setf(col, val, 'from AI extraction: ' + derived['notes'][col], 0.75):
+                    applied['fields'].append(col)
+        mc = data.get('market_cap')
+        if mc and mc.get('verified'):
+            factor = _AI_TO_MILLIONS.get(mc.get('unit'))
+            if factor and setf('market_cap', mc['value'] * factor, where(mc), 0.8):
+                applied['fields'].append('market_cap')
+
+    elif item.task == 'committees':
+        bm = data.get('board_meetings_held')
+        if bm and bm.get('verified') and setf('board_meetings_per_year', bm['value'], where(bm)):
+            applied['fields'].append('board_meetings_per_year')
+        committees = [c for c in data.get('committees', []) if c.get('verified')]
+        period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fy).first()
+        if committees and period is not None and 'committees' in gaps_now:
+            existing = Committee.query.filter_by(period_id=period.id).all()
+            if not any(c.source_document_id is None for c in existing):      # never replace committees filed by hand
+                for c in existing:
+                    CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                    db.session.delete(c)
+                db.session.flush()
+                for i, c in enumerate(committees):
+                    members = c.get('members') or []
+                    att = sum(m['attended'] for m in members if m.get('attended') is not None and m.get('eligible'))
+                    elig = sum(m['eligible'] for m in members if m.get('attended') is not None and m.get('eligible'))
+                    committee = Committee(period_id=period.id, source_document_id=item.source_document_id, name=c['name'],
+                                          chairperson_name=c.get('chair'), member_count=len(members) or None,
+                                          meetings_held=c.get('meetings_held'),
+                                          attendance_rate=round(100.0 * att / elig, 1) if elig else None,
+                                          order_index=i, page=c.get('page'), confidence=0.85)
+                    db.session.add(committee)
+                    db.session.flush()
+                    for j, m in enumerate(members):
+                        is_chair = bool(c.get('chair')) and ai_extract._norm(m['name']) == ai_extract._norm(c['chair'])
+                        db.session.add(CommitteeMember(committee_id=committee.id, director_name=m['name'],
+                                                       role_on_committee='chair' if is_chair else 'member', order_index=j))
+                    applied['committees'] += 1
+            if applied['committees']:
+                setf('committees_per_board', applied['committees'],
+                     f"from AI extraction: {applied['committees']} committees listed on page {committees[0].get('page')}")
+        elif committees:
+            applied['skipped'].append('committees (rules already read them)')
+
+    elif item.task == 'pay':
+        period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fy).first()
+        tables = [t for t in data.get('tables', []) if t.get('is_current_year') is not False]
+        rows_out = []
+        for t in tables:
+            for r in t.get('rows', []):
+                if r.get('verified'):
+                    rows_out.append((t, r, bool(re.fullmatch(r"(?i)\s*(grand\s+)?total.*", r.get('name', '')))))
+            if t.get('printed_total') is not None and t.get('reconciled') is not False:
+                rows_out.append((t, {'name': 'Total', 'total': t['printed_total'], 'role': 'unknown', 'components': {},
+                                     'page': t.get('printed_total_page')}, True))
+        if rows_out and period is not None and gaps_now & {'pay_rows', 'pay_reconcile'}:
+            DirectorRemunerationRow.query.filter_by(period_id=period.id).delete()
+            for i, (t, r, is_total) in enumerate(rows_out):
+                db.session.add(DirectorRemunerationRow(
+                    period_id=period.id, source_document_id=item.source_document_id, director_name=r['name'][:150],
+                    role=r.get('role') or 'unknown', table_kind='ai', is_grand_total=is_total, is_total_row=False,
+                    total=r.get('total'), components=json.dumps(r.get('components') or {}), order_index=i,
+                    page=r.get('page'), confidence=0.9 if t.get('reconciled') else 0.75))
+                applied['pay_rows'] += 0 if is_total else 1
+            units = {t.get('unit') for t, _r, _x in rows_out if t.get('unit')}
+            if len(units) == 1:
+                row.director_figures_unit = units.pop()
+        elif rows_out:
+            applied['skipped'].append('pay rows (rules already read them)')
+        pay_unit = row.director_figures_unit or 'thousands'
+        for p in data.get('policy', []):
+            if p.get('verified') and hasattr(row, p['field']):
+                val = p['value'] * (_AI_TO_MILLIONS[p['unit']] / _AI_TO_MILLIONS[pay_unit])
+                if setf(p['field'], val, where(p), 0.8):
+                    applied['fields'].append(p['field'])
+        ceo = data.get('ceo')
+        if ceo and ceo.get('verified') and ceo.get('is_annual'):
+            unit_f = _AI_TO_MILLIONS[ceo['unit']] / _AI_TO_MILLIONS[pay_unit]
+            src = where(ceo) + ' (annual figure divided by 12)'
+            for key, col in (('salary', 'ceo_monthly_salary'), ('allowances', 'ceo_monthly_allowances'),
+                             ('bonus', 'ceo_monthly_incentive_bonus'), ('non_cash_benefits', 'ceo_monthly_non_cash_benefits'),
+                             ('pension', 'ceo_monthly_pension'), ('total', 'ceo_monthly_cost_of_employment')):
+                if ceo.get(key) is not None and setf(col, ceo[key] * unit_f / 12.0, src, 0.8):
+                    applied['fields'].append(col)
+            if ceo.get('salary') is not None and row.ceo_annual_salary_as_stated is None:
+                row.ceo_annual_salary_as_stated = ceo['salary'] * unit_f
+                row.ceo_monthly_conversion_basis = 'annual / 12'
+        ben = dict(row.ned_benefits or {})
+        for b in data.get('ned_benefits', []):
+            if b.get('verified') and b['key'] not in ben:          # only benefits the rules did not already record
+                ben[b['key']] = {'provided': bool(b['provided']), 'detail': b.get('detail')}
+                applied['benefits'] += 1
+        if applied['benefits']:
+            row.ned_benefits = ben
+            sources['ned_benefits'] = sources.get('ned_benefits') or 'from AI extraction: sentences about non-executive directors'
+
+    row.field_sources, row.field_confidence = sources, conf
+    item.status = 'applied'
+    item.applied_at = datetime.utcnow()
+    db.session.commit()
+    return applied
+
+
+@app.route('/api/ai/status')
+@require_role('admin')
+def ai_status():
+    counts = {}
+    for st, n in db.session.query(AIExtractionItem.status, db.func.count(AIExtractionItem.id)).group_by(AIExtractionItem.status):
+        counts[st] = n
+    return jsonify({'configured': ai_extract.api_key_configured(), 'model': ai_extract.DEFAULT_MODEL, 'items': counts,
+                    'jobs': [j.to_dict() for j in AIExtractionJob.query.order_by(AIExtractionJob.id.desc()).limit(10)]})
+
+
+@app.route('/api/ai/items')
+@require_role('admin')
+def ai_items():
+    q = AIExtractionItem.query
+    if request.args.get('status'):
+        q = q.filter_by(status=request.args['status'])
+    if request.args.get('company_id'):
+        q = q.filter_by(company_id=int(request.args['company_id']))
+    names = {c.id: c.name for c in Company.query.all()}
+    out = []
+    for it in q.order_by(AIExtractionItem.company_id, AIExtractionItem.fiscal_year, AIExtractionItem.task).all():
+        d = it.to_dict()
+        d['company'] = names.get(it.company_id)
+        out.append(d)
+    return jsonify(out)
+
+
+@app.route('/api/ai/items/<int:item_id>')
+@require_role('admin')
+def ai_item_detail(item_id):
+    return jsonify(AIExtractionItem.query.get_or_404(item_id).to_dict(full=True))
+
+
+def _selected_items(payload):
+    ids = payload.get('item_ids')
+    q = AIExtractionItem.query.filter(AIExtractionItem.status.in_(('pending', 'failed')))
+    if ids:
+        q = q.filter(AIExtractionItem.id.in_(ids))
+    items = q.order_by(AIExtractionItem.id).all()
+    live = [it for it in items if _refresh_item_gaps(it)]      # drop items whose gaps were filled since queueing
+    db.session.commit()
+    return live
+
+
+@app.route('/api/ai/estimate', methods=['POST'])
+@require_role('admin')
+def ai_estimate():
+    payload = request.get_json(silent=True) or {}
+    items = _selected_items(payload)
+    model = payload.get('model') or ai_extract.DEFAULT_MODEL
+    params = [_ai_params_for(it) for it in items]
+    for p in params:
+        p['model'] = model
+    gap_counts = [len(it.gaps()) for it in items]
+    batch = ai_extract.estimate_cost(params, [it.task for it in items], model, batch=True, gap_counts=gap_counts)
+    direct = ai_extract.estimate_cost(params, [it.task for it in items], model, batch=False, gap_counts=gap_counts)
+    return jsonify({'items': len(items), 'files': len({(it.company_id, it.fiscal_year) for it in items}),
+                    'batch': batch, 'direct': direct})
+
+
+@app.route('/api/ai/run', methods=['POST'])
+@require_role('admin')
+def ai_run():
+    """The manual button: send the selected pending items to the model (batch = half price,
+    results within ~1 h; direct = immediate, capped at 6 items per click)."""
+    payload = request.get_json(silent=True) or {}
+    mode = payload.get('mode', 'batch')
+    model = payload.get('model') or ai_extract.DEFAULT_MODEL
+    max_cost = payload.get('max_cost_usd')
+    if not ai_extract.api_key_configured():
+        return jsonify({'error': 'ANTHROPIC_API_KEY is not set. Add it in the project secrets, then try again.'}), 400
+    items = _selected_items(payload)
+    if not items:
+        return jsonify({'error': 'Nothing pending to send.'}), 400
+    if mode == 'direct':
+        items = items[:6]
+    params = {it.id: _ai_params_for(it) for it in items}
+    for p in params.values():
+        p['model'] = model
+    est = ai_extract.estimate_cost(list(params.values()), [it.task for it in items], model, batch=(mode == 'batch'),
+                                   gap_counts=[len(it.gaps()) for it in items])
+    if max_cost is not None and est['usd'] > float(max_cost):
+        return jsonify({'error': f"Estimated cost ${est['usd']:.2f} is above your cap of ${float(max_cost):.2f}.", 'estimate': est}), 400
+    job = AIExtractionJob(mode=mode, model=model, n_items=len(items), est_cost_usd=est['usd'], status='submitted')
+    db.session.add(job)
+    db.session.flush()
+    try:
+        if mode == 'batch':
+            for it in items:
+                it.custom_id = f"item-{it.id}"
+            job.batch_id = ai_extract.submit_batch([(it.custom_id, params[it.id]) for it in items])
+            for it in items:
+                it.status, it.job_id = 'submitted', job.id
+        else:
+            cost = 0.0
+            for it in items:
+                it.job_id = job.id
+                try:
+                    data, usage = ai_extract.run_direct(params[it.id])
+                    _ai_ingest_result(it, data, usage)
+                    job.input_tokens += usage.get('input_tokens', 0); job.output_tokens += usage.get('output_tokens', 0)
+                    cost += ai_extract.actual_cost(usage, model, batch=False)
+                except Exception as e:      # one failing item must not lose the others
+                    _ai_ingest_result(it, None, {}, str(e))
+            job.status, job.actual_cost_usd, job.finished_at = 'ended', round(cost, 5), datetime.utcnow()
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Could not start the AI run: {e}'}), 502
+    return jsonify({'job': job.to_dict(), 'estimate': est})
+
+
+@app.route('/api/ai/jobs/<int:job_id>/collect', methods=['POST'])
+@require_role('admin')
+def ai_collect(job_id):
+    job = AIExtractionJob.query.get_or_404(job_id)
+    if job.mode != 'batch' or job.status == 'ended':
+        return jsonify({'job': job.to_dict(), 'collected': 0})
+    polled = ai_extract.poll_batch(job.batch_id)
+    if polled['status'] != 'ended':
+        return jsonify({'job': job.to_dict(), 'status': polled['status'], 'counts': polled['counts'], 'collected': 0})
+    cost, collected = 0.0, 0
+    for it in AIExtractionItem.query.filter_by(job_id=job.id, status='submitted').all():
+        res = polled['results'].get(it.custom_id) or {'ok': False, 'data': None, 'usage': {}, 'error': 'missing from batch results'}
+        _ai_ingest_result(it, res['data'] if res['ok'] else None, res['usage'], res['error'])
+        job.input_tokens += res['usage'].get('input_tokens', 0); job.output_tokens += res['usage'].get('output_tokens', 0)
+        cost += ai_extract.actual_cost(res['usage'], job.model, batch=True)
+        collected += 1
+    job.status, job.actual_cost_usd, job.finished_at = 'ended', round(cost, 5), datetime.utcnow()
+    db.session.commit()
+    return jsonify({'job': job.to_dict(), 'collected': collected, 'counts': polled['counts']})
+
+
+@app.route('/api/ai/items/<int:item_id>/apply', methods=['POST'])
+@require_role('admin')
+def ai_apply(item_id):
+    item = AIExtractionItem.query.get_or_404(item_id)
+    if item.status not in ('done', 'applied'):
+        return jsonify({'error': f'Item is {item.status}; only finished items can be applied.'}), 400
+    try:
+        applied = _apply_ai_item(item)
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception('AI apply failed')
+        return jsonify({'error': f'Could not apply: {e}'}), 500
+    log_activity(item.company_id, 'ai_apply', f"{item.task}: {applied}", fiscal_year=item.fiscal_year, actor=None)
+    return jsonify({'applied': applied, 'item': item.to_dict()})
+
+
+@app.route('/api/ai/items/<int:item_id>/discard', methods=['POST'])
+@require_role('admin')
+def ai_discard(item_id):
+    item = AIExtractionItem.query.get_or_404(item_id)
+    item.status = 'discarded'
+    db.session.commit()
+    return jsonify({'item': item.to_dict()})
+
 
 @app.route('/api/import/upload-batch', methods=['POST'])
 @require_role('admin')
@@ -2042,13 +2864,30 @@ def upload_documents_batch():
             continue
 
         pages_text = extracted['pages_text']
-
-        period_label = detect_period_label(pages_text, filename=filename)
+        # No financial statements in the text (Safaricom's annual report keeps them in a separate
+        # document): the file is NOT rejected - it still carries the board, pay and governance
+        # content, so company / period are read from every page instead of the statement pages.
+        survey_only = not extracted.get('statements')
+        detect_pages = pages_text
+        if survey_only or not pages_text:
+            detect_pages = _pypdf_page_texts_cached(pdf_bytes) or []
+        statement_unit = detect_statement_unit(pages_text)
+        # A six-month / quarterly report keeps its own period label ("H1 2025") instead of
+        # being stored as a full fiscal year.
+        interim_label = detect_interim_period_label(detect_pages)
+        if looks_like_interim_report(detect_pages) and not interim_label:
+            results.append({
+                'filename': filename, 'ok': False,
+                'error': 'This looks like an interim report but its period could not be read '
+                         '("six months to <date>" not found).',
+            })
+            continue
+        period_label = interim_label or detect_period_label(detect_pages, filename=filename)
         if not period_label:
             results.append({
                 'filename': filename, 'ok': False,
                 'error': 'Could not detect a fiscal year from this PDF - no "for the year ended" or '
-                         '"at <date>" statement heading was found. Re-upload with the period specified separately.',
+                         '"at <date>" heading was found. Re-upload with the period specified separately.',
             })
             continue
 
@@ -2059,7 +2898,7 @@ def upload_documents_batch():
                                'sector': forced_company.sector}, 1.0
             company_id = forced_company.id
         else:
-            detected_name = detect_company_name(pages_text, filename=filename)
+            detected_name = detect_company_name(detect_pages, filename=filename)
             matched, score = (match_company(detected_name) if detected_name else (None, 0.0))
 
             company_id = None
@@ -2069,16 +2908,11 @@ def upload_documents_batch():
                 company_id = existing_by_name.get(detected_name.strip().lower())
         created_company = False
 
-        if not extracted.get('statements'):
-            results.append({
-                'filename': filename, 'ok': False,
-                'error': 'No recognizable financial statements found in this PDF.',
-            })
-            continue
-
         save_payload = {
             'source_filename': filename,
-            'source_page_count': len(pages_text),
+            # the PDF's real page count - len(pages_text) is only the shortlist of
+            # candidate pages that were scanned (157 for a 115-page PDF, 111 for a 256-page one)
+            'source_page_count': extracted.get('num_pages') or len(pages_text),
             'source_sha256': hashlib.sha256(pdf_bytes).hexdigest(),
         }
         if company_id:
@@ -2107,11 +2941,13 @@ def upload_documents_batch():
         # history (needed for every YoY figure across the Intelligence
         # Report's 8 tabs) rather than leaving the comparative column on
         # the page unsaved.
-        prior_period_label = detect_prior_period_label(period_label)
+        prior_period_label = None if survey_only else detect_prior_period_label(period_label)
+        if survey_only:
+            save_payload['allow_empty_statements'] = True
         try:
             _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'saving'})
             result, status, prior_result, prior_status = _save_current_and_prior_period(
-                save_payload, extracted['statements'], period_label, prior_period_label
+                save_payload, {} if survey_only else extracted['statements'], period_label, prior_period_label
             )
         except Exception as e:
             # Defense in depth: _save_current_and_prior_period/_save_one_import
@@ -2134,7 +2970,14 @@ def upload_documents_batch():
             if prior_status == 201:
                 saved += 1
                 periods_saved.append(prior_period_label)
-
+            try:
+                for _label in ([] if survey_only else periods_saved):
+                    _sync_survey_headline_from_financials(
+                        result['company_id'], _label, filename, comparative=(_label != period_label),
+                        statement_unit=statement_unit)
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Survey headline sync failed for {filename}')
             # The main statement save is complete. The following optional
             # filing-section extractors each scan the PDF for their own
             # tables, so expose that work separately from the final score.
@@ -2270,6 +3113,23 @@ def upload_documents_batch():
             except Exception:
                 db.session.rollback()
                 app.logger.exception(f'Director remuneration detail extraction failed for {filename} (non-fatal)')
+
+            # Board side runs AFTER the director pay rows exist: the filing's own pay tables name
+            # every director (KCB's profile pages show only some), so they complete the roster.
+            try:
+                _sync_board_data_from_pdf(result['company_id'], period_label,
+                                          result.get('source_document_id'), pdf_bytes, filename)
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Board extraction failed for {filename}')
+
+            # Store the pages the AI extraction (manual button) will read; nothing is sent anywhere here.
+            try:
+                _queue_ai_items(result['company_id'], period_label, result.get('source_document_id'), filename,
+                                detected_name or '', pdf_bytes)
+            except Exception:
+                db.session.rollback()
+                app.logger.exception(f'Queueing AI pages failed for {filename} (non-fatal)')
 
             _progress_emit(batch_id, {'type': 'stage', 'filename': filename, 'stage': 'scoring'})
             extraction_score = _finalize_source_document_score(result.get('source_document_id'))
@@ -2515,6 +3375,17 @@ def import_survey_data_from_pdf():
         db.session.add(row)
 
     model_columns = {c.name for c in SurveyCompanyData.__table__.columns}
+    # Re-upload must REPLACE, not merge: a field the previous upload extracted
+    # but this one did not is cleared - otherwise its old value survives next
+    # to this upload's field_sources/field_confidence (which are replaced
+    # wholesale below), i.e. a figure from a previous file shown with no
+    # source and a mismatched confidence. Fields a person has already acted on
+    # (approved / rejected / corrected in the review workflow) are left alone.
+    _previously_extracted = set((row.field_confidence or {}).keys())
+    _human_reviewed = set((row.field_review_status or {}).keys())
+    for _col in _previously_extracted - _human_reviewed:
+        if _col in model_columns and _col not in parsed:
+            setattr(row, _col, None)
     for key, value in parsed.items():
         if key in model_columns:
             setattr(row, key, value)
@@ -2975,8 +3846,18 @@ def company_survey_report(company_id):
         evidence_conflicts = [ec.to_dict() for ec in EvidenceConflict.query.filter_by(
             company_id=company_id, fiscal_year=survey_row.fiscal_year).order_by(EvidenceConflict.created_at).all()]
 
+    # What the AI Extraction page holds for this report, so an empty tab can say WHY it is empty
+    # and what to do (run the pending pages / review finished ones) instead of just "Not available".
+    ai_items = {}
+    ai_label = (survey_row.fiscal_year if survey_row else None) or (period.period_label if period else None)
+    if ai_label:
+        for it in AIExtractionItem.query.filter_by(company_id=company_id, fiscal_year=ai_label).all():
+            ai_items.setdefault(it.task, {})
+            ai_items[it.task][it.status] = ai_items[it.task].get(it.status, 0) + 1
+
     return jsonify({
         'company': c.to_dict(),
+        'ai_items': ai_items,
         'has_survey_data': survey_row is not None,
         'has_director_data': len(director_rows) > 0,
         'has_committee_data': len(committees) > 0,

@@ -20,7 +20,7 @@ import re
 import io
 import hashlib
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 import pdfplumber
 import canonical_extended as _ext
 
@@ -155,6 +155,9 @@ CANONICAL_LINE_ITEMS = {
         # nothing after the word itself but note refs/whitespace, so this
         # loses no genuine match.
         r"^\s*revenue\s*$": 'revenue',
+        # A trading company's top line is often just "Sales" (Kakuzi) or "Turnover";
+        # anchored so "Cost of sales" / "Sales tax" / "Selling costs" cannot match.
+        r"^\s*(?:net\s+)?(?:sales|turnover)\s*$": 'revenue',
         r"total\s+revenue": 'revenue',
         # NSE's own statement labels its top line "Total income" (a sum of
         # transaction levies/listing fees/data-vending income, not a
@@ -351,13 +354,252 @@ def _strip_note_reference(remainder: str) -> str:
     return rest.lstrip()
 
 
-def _split_label_and_numbers(line: str):
+# Space-grouped thousands ("57 672", "(14 384)", "1 234 567"): some
+# filers (confirmed on Absa Bank Kenya's reports, every year) group
+# thousands with a space instead of a comma. The comma-only tokenizer
+# above read "60 024" as TWO numbers (60 and 24) and kept the last one,
+# so Absa's FY2025 total income was stored as 24 instead of 60,024 and
+# profit for the year as 905 instead of 22,905 - with 0.9 confidence.
+#
+# The hard part is that a space is ALSO the column separator, so
+# "648 128 640 100" is two numbers (648,128 and 640,100) but "15 345 320"
+# may be note 15 followed by 345 and 320. The split is therefore chosen
+# by scoring every legal reading of the trailing run of digit groups
+# (see _value_list_plausibility), never by a fixed rule. A line with no
+# possible space-grouped reading goes through the original comma-only
+# code path byte-for-byte, so filings that already parsed correctly
+# cannot change behaviour.
+# A heading like "Bank statement of financial position" / "Company statement
+# of ..." is the SEPARATE (entity-only) statement that many filers print
+# right after the "Consolidated statement of ..." one (confirmed on Absa
+# Bank Kenya: pages 138/139, 140/141, 142/144, 146/147). Its rows repeat the
+# consolidated labels with slightly different figures, so folding them into
+# the same statement produced duplicate rows ("net_interest_income_2",
+# "payables_and_accruals_3", ...) and mixed group and bank figures.
+# Convention (same as NSE's Group-first ordering): the consolidated
+# statement wins; the entity-only one is skipped when a consolidated one
+# exists, and used only if it is the sole version in the report.
+_ENTITY_ONLY_HEADING_RE = re.compile(
+    r"^\s*(?:the\s+)?(?:bank|company|separate|parent|standalone|stand-alone)\b", re.I)
+
+_NOTE_XREF_RE = re.compile(r"\(\s*notes?\s*[\d,\sand&]+\)", re.I)
+_NUMERIC_TOKEN_RE = re.compile(r"^\(?-?\d[\d,]*\.?\d*\)?$")
+_DASH_TOKENS = frozenset({"-", "\u2013", "\u2014"})
+_MONTH_NAMES = frozenset({"january", "february", "march", "april", "may", "june", "july", "august",
+                    "september", "october", "november", "december"})
+_DIGITS_ONLY_RE = re.compile(r"^\d+$")
+_ATOM_DIGITS_RE = re.compile(r"^(?P<open>[(\-])?(?P<d>\d+)(?P<close>\))?$")
+_MAX_PARTITIONS = 512
+
+
+def _line_may_be_space_grouped(tokens: list) -> bool:
+    """True when some digits-only token is directly followed by a digits-
+    only token of exactly 3 digits - the only shape a space-grouped
+    thousands number can take."""
+    for a, b in zip(tokens, tokens[1:]):
+        ma, mb = _ATOM_DIGITS_RE.match(a), _ATOM_DIGITS_RE.match(b)
+        if ma and mb and len(mb.group('d')) == 3 and not mb.group('open'):
+            return True
+    return False
+
+
+def _partitions_of_digit_run(groups: list):
+    """Every legal way to read a run of digits-only tokens as numbers.
+    A number is a head of 1-3 digits (no leading zero) followed by any
+    number of exactly-3-digit groups, or a single longer token. Yields
+    lists of (value, n_groups) tuples."""
+    out = []
+
+    def rec(i, acc):
+        if len(out) >= _MAX_PARTITIONS:
+            return
+        if i == len(groups):
+            out.append([list(num) for num in acc])   # deep copy: acc's inner lists are mutated as we backtrack
+            return
+        g = groups[i]
+        # start a new number at g (a 4+ digit token is a whole number by itself)
+        if not (len(g) > 1 and g.startswith('0')):
+            acc.append([g])
+            rec(i + 1, acc)
+            acc.pop()
+        # continue the previous number with g (only exact 3-digit groups,
+        # and only after a head of 1-3 digits)
+        if acc and len(g) == 3 and len(acc[-1][0]) <= 3:
+            acc[-1].append(g)
+            rec(i + 1, acc)
+            acc[-1].pop()
+
+    rec(0, [])
+    return [[(float("".join(num)), len(num)) for num in part] for part in out]
+
+
+def _value_list_plausibility(vals: list, expected_cols=None) -> float:
+    """Score one candidate reading of a line's value columns. Filings
+    print 2 value columns (current, prior) - or 4 for Group + Company -
+    and one line's current and prior figures are normally within an
+    order of magnitude of each other. Used only to choose between legal
+    readings of the same characters."""
+    n = len(vals)
+    score = {2: 3.0, 4: 2.0, 1: 1.0}.get(n, 0.0)
+    if expected_cols and n == expected_cols:
+        score += 2.0
+    if n >= 2 and vals[0] and vals[1]:
+        ratio = max(abs(vals[0]), abs(vals[1])) / min(abs(vals[0]), abs(vals[1]))
+        score += 1.0 if ratio <= 10 else (0.0 if ratio <= 50 else -1.0)
+    # Columns of one row are normally the same order of magnitude, so a
+    # reading that mixes 2-digit and 11-digit "numbers" is a mis-split
+    # ("86 703 10 048 100 520" read as 86, 703, 10048100520). Small
+    # penalty: it only decides between otherwise-tied readings.
+    digit_counts = [len(str(int(abs(v)))) for v in vals if v]
+    if len(digit_counts) >= 2:
+        score -= 0.1 * (max(digit_counts) - min(digit_counts))
+    return score
+
+
+def _split_label_and_numbers_space_grouped(line: str, has_note_column: bool, expected_cols,
+                                           allow_dash_columns: bool = False):
+    """Returns (label, values) or None when the line has no space-grouped
+    reading (caller then uses the original comma-only path)."""
+    # "(Note 48)" / "(Notes 9, 10)" cross-references sit between the label and
+    # the figures and their digits + ")" would otherwise be swallowed into the
+    # value columns.
+    line = _NOTE_XREF_RE.sub("", line)
+    words = line.split()
+    # trailing run of numeric-looking tokens = the value columns. A lone
+    # dash is a nil column ("Profit for the year - - - 20 876 -").
+    k = len(words)
+    while k > 0 and (_NUMERIC_TOKEN_RE.match(words[k - 1]) or words[k - 1] in _DASH_TOKENS):
+        k -= 1
+    tail = words[k:]
+    has_dash_col = allow_dash_columns and any(t in _DASH_TOKENS for t in tail) and any(t not in _DASH_TOKENS for t in tail)
+    if not tail or not (_line_may_be_space_grouped(tail) or has_dash_col):
+        return None
+    # A year that belongs to the label ("Balance at 1 January 2024 2 716 ...",
+    # "Final dividend for 2023 paid") is not a value column.
+    while (len(tail) >= 3 and re.match(r"^(19|20)\d\d$", tail[0]) and k > 0
+           and (words[k - 1].lower() in _MONTH_NAMES or words[k - 1].lower() in ('for', 'of', 'in', 'at', 'to'))):
+        words = words[:k] + [tail[0]] + tail[1:]
+        k += 1
+        tail = words[k:]
+    label = " ".join(words[:k]).strip(' .')
+
+    # Split the tail into segments, keeping order. Digit groups are grouped
+    # into runs; "(14 384)" and "-14 384" are SIGNED runs that can only be
+    # read as one number; anything else numeric (decimals, comma-grouped)
+    # is a standalone value.
+    segments = []   # ('run', [groups]) | ('signed', [groups], negative) | ('one', value)
+    cur = None      # dict: groups, kind ('plain'|'paren'|'dash')
+
+    def flush():
+        nonlocal cur
+        if cur is None:
+            return True
+        if cur['kind'] == 'paren' and not cur.get('closed'):
+            cur = None
+            return False
+        if cur['kind'] == 'plain':
+            segments.append(('run', cur['groups']))
+        else:
+            segments.append(('signed', cur['groups'], True))
+        cur = None
+        return True
+
+    for tok in tail:
+        if tok in _DASH_TOKENS:
+            if not flush():
+                return None
+            segments.append(('one', None))
+            continue
+        m = _ATOM_DIGITS_RE.match(tok)
+        if not m:
+            if not flush():
+                return None
+            v = _parse_number(tok)
+            if v is None:
+                return None
+            segments.append(('one', v))
+            continue
+        op, d, cl = m.group('open'), m.group('d'), m.group('close')
+        if op:
+            if not flush():
+                return None
+            cur = {'groups': [d], 'kind': 'paren' if op == '(' else 'dash', 'closed': bool(cl)}
+            if cl:
+                if not flush():
+                    return None
+        elif cur is not None and cur['kind'] == 'paren' and not cur.get('closed'):
+            cur['groups'].append(d)
+            if cl:
+                cur['closed'] = True
+                if not flush():
+                    return None
+        elif cur is not None and cur['kind'] == 'dash' and len(d) == 3 and not cl:
+            cur['groups'].append(d)
+        elif cl:
+            return None   # stray ")" - not a shape we understand
+        else:
+            if cur is not None and cur['kind'] == 'plain':
+                cur['groups'].append(d)
+            else:
+                if not flush():
+                    return None
+                cur = {'groups': [d], 'kind': 'plain', 'closed': True}
+    if not flush():
+        return None
+
+    import itertools
+    options = []
+    for seg in segments:
+        kind = seg[0]
+        if kind == 'run':
+            options.append(_partitions_of_digit_run(seg[1]))
+        elif kind == 'signed':
+            groups = seg[1]
+            head_ok = len(groups) == 1 or (len(groups[0]) <= 3 and all(len(g) == 3 for g in groups[1:]))
+            if not head_ok or (len(groups[0]) > 1 and groups[0].startswith('0')):
+                return None
+            options.append([[(-float("".join(groups)), 0)]])   # 0 groups = never a Notes column
+        else:
+            options.append([[(seg[1], 0)]])   # standalone (decimal/comma-grouped) number
+    best = None
+    count = 0
+    for combo in itertools.product(*options):
+        count += 1
+        if count > 4000:
+            break
+        flat = [item for part in combo for item in part]
+        vals = [v for v, _ in flat]
+        variants = [(False, vals)]
+        # a leading bare 1-3 digit integer (single group) may be the Notes column
+        first_v, first_groups = flat[0]
+        if (has_note_column and len(flat) > 1 and first_groups == 1
+                and float(first_v).is_integer() and 0 <= first_v <= 999):
+            variants.append((True, vals[1:]))
+        for stripped, cand in variants:
+            key = (_value_list_plausibility(cand, expected_cols), not stripped, -len(cand))
+            if best is None or key > best[0]:
+                best = (key, cand)
+    if best is None:
+        return None
+    return label, best[1]
+
+
+def _split_label_and_numbers(line: str, has_note_column: bool = True, expected_cols=None,
+                             allow_dash_columns: bool = False):
     """A statement line typically looks like:
         'Total operating income     6   45,231,000   38,940,000'
     label, an optional note-reference token, then the amount column(s)
     (by NSE convention: Group current, Group prior, [Company current,
     Company prior] where applicable). Splits the label off, strips any
-    note reference, and returns the remaining numbers in report order."""
+    note reference, and returns the remaining numbers in report order.
+
+    has_note_column / expected_cols only matter for space-grouped filings
+    (see _split_label_and_numbers_space_grouped); comma-grouped lines are
+    parsed exactly as before."""
+    space_result = _split_label_and_numbers_space_grouped(
+        line, has_note_column, expected_cols, allow_dash_columns)
+    if space_result is not None:
+        return space_result
     matches = list(_NUMBER_RE.finditer(line))
     if not matches:
         return None, []
@@ -718,6 +960,64 @@ def _filename_year(filename: str | None) -> str | None:
     return years[-1] if years else None
 
 
+
+_UNIT_PATTERNS = [
+    ('thousands', re.compile(r"(?:shs?|kshs?|kes|ksh|sh)\s*[\u2019'`\u2018.]?\s*(?:000|thousand)s?\b|in\s+thousands|\(\s*(?:shs?|kshs?|kes)\s*'?000\s*\)|[\u2019']000\b", re.I)),
+    ('millions',  re.compile(r"(?:shs?|kshs?|kes|ksh|sh)\s*[\u2019'`\u2018.]?\s*(?:m|mn|mio|million)s?\b|in\s+millions|\bmillions?\s+of\s+(?:kenya|kenyan)", re.I)),
+    ('billions',  re.compile(r"(?:shs?|kshs?|kes|ksh)\s*[\u2019'`\u2018.]?\s*(?:bn|billion)s?\b|in\s+billions", re.I)),
+]
+
+
+def detect_statement_unit(pages_text):
+    """'thousands' | 'millions' | 'billions' | None - the scale the financial
+    statements are printed in ("Shs'000", "KShs million", "Shs\u2019million" column
+    headers), by majority vote over header-like lines of every scanned page.
+    None when no header states one; callers must then NOT assume a scale (a
+    thousands filer read as millions is a 1000x error - Kakuzi, Eaagads and
+    NSE report in Shs'000)."""
+    votes = Counter()
+    for _, text in pages_text:
+        for line in (text or '').splitlines():
+            if len(line) > 140:
+                continue                       # column headers are short; skip narrative
+            for unit, rx in _UNIT_PATTERNS:
+                if rx.search(line):
+                    votes[unit] += 1
+                    break
+    if not votes:
+        return None
+    (unit, n), = votes.most_common(1)
+    return unit if n >= 3 else None
+
+
+_INTERIM_RE = re.compile(
+    r"interim\s+(?:condensed\s+)?(?:consolidated\s+)?financial\s+statements|condensed\s+interim|interim\s+report|"
+    r"(?:six|6|nine|9|three|3)\s+months?\s+(?:period\s+)?(?:ended|ending|to)\s+\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}", re.I)
+
+
+def detect_interim_period_label(pages_text, first_pages: int = 3):
+    """'H1 2025' for a six-month report, 'Q3 2025' for nine months, 'Q1 2025' for
+    three months - judged from the cover / contents pages. None for an annual
+    report. Periods keep their own label (the model supports 'H1 2025' style
+    labels) so a half-year is never stored as a full fiscal year."""
+    head = " ".join((t or '') for _, t in list(pages_text)[:first_pages])
+    if not _INTERIM_RE.search(head):
+        return None
+    m = re.search(r"(six|6|nine|9|three|3)\s+months?\s+(?:period\s+)?(?:ended|ending|to)\s+\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+((?:19|20)\d{2})", head, re.I)
+    if not m:
+        return None
+    code = {'six': 'H1', '6': 'H1', 'nine': 'Q3', '9': 'Q3', 'three': 'Q1', '3': 'Q1'}[m.group(1).lower()]
+    return f"{code} {m.group(2)}"
+
+
+def looks_like_interim_report(pages_text, first_pages: int = 3) -> bool:
+    """A six-month / nine-month / quarterly report, judged from its first pages
+    (cover + contents), not from narrative deep in an annual report. Saving one
+    as a fiscal year would store half a year's profit as the full year's."""
+    head = " ".join((t or '') for _, t in list(pages_text)[:first_pages])
+    return bool(_INTERIM_RE.search(head))
+
+
 def detect_period_label(pages_text, filename: str | None = None) -> str | None:
     """Determine the reporting fiscal year and return it as 'FY<year>'.
 
@@ -807,6 +1107,9 @@ def detect_prior_period_label(period_label: str | None) -> str | None:
     detect_period_label() produces - a period label detect_period_label
     never returns (quarterly, half-year) has no defined prior label here,
     so callers should treat None as 'don't attempt a second save'."""
+    m_int = re.match(r"^(H[12]|Q[1-4])\s+((?:19|20)\d{2})$", period_label or "")
+    if m_int:
+        return f"{m_int.group(1)} {int(m_int.group(2)) - 1}"     # the same half / quarter a year earlier
     if not period_label or not period_label.startswith('FY'):
         return None
     try:
@@ -962,6 +1265,55 @@ def _derive_total_liabilities(items: list) -> dict | None:
     return derived or None
 
 
+# "Shs\u2019million Shs\u2019million" style column headers: the count is the number of
+# value columns the statement prints, which settles space-grouped ambiguity.
+_UNIT_TOKEN_RE = re.compile(
+    r"(?:Shs|Kshs?|KES|KSh|USD|US\$|Rs|\$|\u20ac|\u00a3)[\u2019'.]?\s?(?:million|billion|thousand|'000|000|m|bn|k)\b", re.I)
+_EQUITY_BLOCK_RE = re.compile(r"\b((?:19|20)\d\d)\b")
+
+
+def _is_block_header_line(current_stmt, line) -> bool:
+    return bool(current_stmt == 'equity' and _EQUITY_BLOCK_RE.search(line)
+                and line.lower().lstrip().startswith(('year ended', 'for the year ended', 'period ended')))
+
+
+def _equity_label_key(label: str) -> str:
+    return re.sub(r"[^a-z]+", " ", label.lower()).strip()
+
+
+def _collapse_equity_blocks(items: list, order_counters: dict) -> None:
+    """A statement of changes in equity prints one block per year ("Year
+    ended 31 December 2024", then "... 2025"). Keep the latest block as the
+    current period and use the earlier block's matching row (same label,
+    years ignored) as prior_amount - instead of mixing both years' movements
+    in one list, which produced rows like "Profit for the year" three times
+    with different years' figures. Mutates `items` in place; no-op when the
+    statement has fewer than two year blocks."""
+    years = sorted({i['_block'] for i in items if i.get('_block')})
+    if len(years) >= 2:
+        latest, earlier = years[-1], years[-2]
+        prior_by_key = {}
+        for it in items:
+            if it.get('_block') == earlier:
+                prior_by_key.setdefault(_equity_label_key(it['label']), it['amount'])
+        kept = []
+        for it in items:
+            blk = it.get('_block')
+            if blk == latest or blk is None:
+                if blk == latest:
+                    it['prior_amount'] = prior_by_key.get(_equity_label_key(it['label']))
+                    if it['normalized_name'] is None and it['prior_amount'] is not None:
+                        # confidence was scored before the prior-year figure was paired in
+                        it['confidence'] = _ext.structural_confidence(it['label'], it['amount'], it['prior_amount'])
+                kept.append(it)
+        items[:] = kept
+        for n, it in enumerate(items, 1):
+            it['order_index'] = n
+        order_counters['equity'] = len(items)
+    for it in items:
+        it.pop('_block', None)
+
+
 def parse_financials_text(pages_text) -> dict:
     """
     pages_text: iterable of (page_number, page_text), 1-indexed.
@@ -992,6 +1344,12 @@ def parse_financials_text(pages_text) -> dict:
     order_counters = {stmt: 0 for stmt in STATEMENT_HEADINGS}
     seen_normalized = {stmt: set() for stmt in STATEMENT_HEADINGS}
     seen_raw = {stmt: set() for stmt in STATEMENT_HEADINGS}
+    col_votes = {stmt: Counter() for stmt in STATEMENT_HEADINGS}
+    group_heading_seen = {stmt: False for stmt in STATEMENT_HEADINGS}
+    entity_only_used = {stmt: False for stmt in STATEMENT_HEADINGS}
+    skip_entity_rows = False
+    equity_block_year = None
+    hdr_cols = {}
 
     for page_num, page_text in pages_text:
         page_lines = [l.strip() for l in page_text.splitlines()]
@@ -1017,6 +1375,25 @@ def parse_financials_text(pages_text) -> dict:
                         or _has_nearby_note_column(page_lines, line_idx)):
                     current_stmt = heading_match
                     section_has_items = False
+                    entity_only = bool(_ENTITY_ONLY_HEADING_RE.match(line))
+                    if entity_only:
+                        # skip when a consolidated version already exists
+                        skip_entity_rows = group_heading_seen[heading_match]
+                        if not skip_entity_rows:
+                            entity_only_used[heading_match] = True
+                    else:
+                        if entity_only_used[heading_match]:
+                            # consolidated version arrived AFTER an entity-only
+                            # one was read: the consolidated one replaces it
+                            statements[heading_match] = []
+                            seen_normalized[heading_match] = set()
+                            seen_raw[heading_match] = set()
+                            ext_name_counts[heading_match] = {}
+                            order_counters[heading_match] = 0
+                            col_votes[heading_match] = Counter()
+                            entity_only_used[heading_match] = False
+                        group_heading_seen[heading_match] = True
+                        skip_entity_rows = False
                 continue
 
             if current_stmt is None:
@@ -1035,14 +1412,66 @@ def parse_financials_text(pages_text) -> dict:
                 current_stmt = None
                 continue
 
+            n_unit_tokens = len(_UNIT_TOKEN_RE.findall(line))
+            if n_unit_tokens >= 2:
+                hdr_cols[current_stmt] = n_unit_tokens
+
             # A "Notes Shs'000 Shs'000" style column-header row is not a
             # line item ("000" was being read as an amount of 0).
             if _NOTE_COLUMN_RE.match(line) and len(line.split()) <= 6:
                 continue
 
-            label, numbers = _split_label_and_numbers(line)
+            # Notes column expected everywhere except equity; expected_cols
+            # = the value-column count this section has shown so far, which
+            # settles space-grouped ambiguity ("648 128 640 100").
+            votes = col_votes[current_stmt]
+            expected_cols = hdr_cols.get(current_stmt)
+            if expected_cols is None and sum(votes.values()) >= 3:
+                expected_cols = votes.most_common(1)[0][0]
+            # A statement row ENDS with its figures. A line whose last word is
+            # text ("Final dividend for 2022 paid", "Proposed final dividend
+            # 2023 (Note 49)") has a year or note number in its label and no
+            # values - the row's numbers are printed elsewhere on the page -
+            # and reading that year as an amount saved rows like
+            # "Final dividend for | 2".
+            _no_notes = _NOTE_XREF_RE.sub("", line).split()
+            _last_tok = _no_notes[-1] if _no_notes else ""
+            if not (_NUMERIC_TOKEN_RE.match(_last_tok) or _last_tok in _DASH_TOKENS):
+                _is_block_header = (current_stmt == 'equity' and _EQUITY_BLOCK_RE.search(line)
+                                    and line.lower().lstrip().startswith(('year ended', 'for the year ended', 'period ended')))
+                if not _is_block_header:
+                    continue
+            elif (re.fullmatch(r"(19|20)\d\d", _last_tok) and not _is_block_header_line(current_stmt, line)
+                  and (len(_no_notes) < 2 or not _NUMERIC_TOKEN_RE.match(_no_notes[-2]))):
+                # a lone year at the end of the label ("Proposed final dividend 2023
+                # (Note 49)") is part of the label, not a value column
+                continue
+            if current_stmt == 'equity':
+                block_m = _EQUITY_BLOCK_RE.search(line)
+                if block_m and line.lower().lstrip().startswith(('year ended', 'for the year ended', 'period ended')):
+                    new_year = int(block_m.group(1))
+                    if new_year != equity_block_year:
+                        equity_block_year = new_year
+                        ext_name_counts['equity'] = {}
+                        seen_normalized['equity'] = set()
+                        seen_raw['equity'] = set()
+                    continue
+            label, numbers = _split_label_and_numbers(
+                line, has_note_column=(current_stmt != 'equity'), expected_cols=expected_cols,
+                allow_dash_columns=True)
             if not numbers or not _looks_like_label(label):
                 continue
+            if skip_entity_rows:
+                continue
+            if current_stmt == 'equity' and len(numbers) >= 3:
+                # multi-column changes-in-equity matrix (share capital, reserves,
+                # ..., Total equity): the meaningful figure is the LAST column.
+                if numbers[-1] is None:
+                    continue
+                numbers = [numbers[-1]]
+            else:
+                numbers = [0.0 if n is None else n for n in numbers]   # a dash = nil
+            col_votes[current_stmt][len(numbers)] += 1
 
             # Running headers/footers and "as at"/"year ended" lines are not
             # line items (see canonical_extended.is_page_furniture).
@@ -1105,7 +1534,10 @@ def parse_financials_text(pages_text) -> dict:
                 'page': page_num,
                 'confidence': confidence,
                 'order_index': order_counters[current_stmt],
+                **({'_block': equity_block_year} if current_stmt == 'equity' else {}),
             })
+
+    _collapse_equity_blocks(statements['equity'], order_counters)
 
     # Derived total_liabilities (see _derive_total_liabilities docstring) -
     # balance sheet only, added as its own synthetic line item so it flows
@@ -1275,7 +1707,7 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict:
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         num_pages = len(pdf.pages)
         if num_pages == 0:
-            return {'pages_text': [], 'statements': {}}
+            return {'pages_text': [], 'num_pages': 0, 'statements': {}}
         if num_pages > _MAX_PAGES:
             raise ValueError(
                 f"PDF has {num_pages} pages, over the {_MAX_PAGES}-page limit for a single upload. "
@@ -1325,7 +1757,8 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict:
                 "image PDF with no embedded text layer, which isn't supported yet (no OCR)."
             )
 
-    return {'pages_text': pages_text, 'statements': parse_financials_text(pages_text)['statements']}
+    return {'pages_text': pages_text, 'num_pages': num_pages,
+            'statements': parse_financials_text(pages_text)['statements']}
 
 
 _COMMON_WORDS_FOR_REVERSAL_CHECK = {
@@ -2565,7 +2998,183 @@ def _parse_remuneration_rows_from_plain_text(text: str) -> list:
     return rows
 
 
+_JUNK_DIRECTOR_NAME_RE = re.compile(
+    r"integrated\s+report|annual\s+report|financial\s+statements?|\b(?:plc|ltd|limited)\b|\bshs\b|\bkshs?\b|"
+    r"date\s+of\s+appointment|type\s+of\s+contract|notice\s+period|remuneration\s+report", re.I)
+_NAME_MARKER_TAIL_RE = re.compile(r"[\s*\u2020\u2021\u00a7\u00b9\u00b2\u00b3\u2070-\u2079#^]+$")
+_NAME_STATUS_RE = re.compile(r"\s*[(,]\s*(?:resigned|retired|appointed|deceased|alternate|effective|until|from|w\.e\.f)[^)]*\)?\s*$", re.I)
+_TOTAL_COMPONENT_RE = re.compile(r"\btotal\b", re.I)
+
+
+def _coerce_amount(value):
+    """A remuneration cell as a float: numbers pass through; "328,920" ->
+    328920.0, "(1,234)" -> -1234.0, "-" / "" / text -> None. The raw extractor
+    keeps cell text as printed for some layouts (Equity Group 2024), and
+    a string `total` cannot be stored in the Float column."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    t = value.strip().replace("\u00a0", " ")
+    if not t or t in ("-", "\u2013", "\u2014", "nil", "Nil"):
+        return None
+    neg = t.startswith("(") and t.endswith(")")
+    t = re.sub(r"[()\s,]", "", t)
+    if t.startswith("-"):
+        neg, t = True, t[1:]
+    if not re.fullmatch(r"\d+(?:\.\d+)?", t):
+        return None
+    return -float(t) if neg else float(t)
+
+
+def clean_director_detail_rows(rows: list, fiscal_year: int | None = None) -> list:
+    """Validation pass over extract_director_remuneration_detail's raw rows.
+
+    Confirmed on Absa Bank Kenya's four reports, the raw extractor returned:
+      - the page footer saved as a director ("Absa Bank Kenya PLC 2025
+        Integrated Report and Financial Statements", with the page
+        number 127 as its "2024" pay),
+      - year-only names ("2022", "2023") from the LTIP table,
+      - a whole paragraph of the executives' contract table as one
+        component key,
+      - footnote asterisks left on names ("Patricia Ithau***"),
+      - `total` empty on every row because the total column's header is
+        year-suffixed ("Total Emoluments 2025 Shs"), and the printed
+        final "Total" row flagged as a subtotal rather than the table's
+        grand total,
+      - no confidence on any row.
+    Nothing here re-derives a figure: every kept number is exactly what
+    the filing printed. Rows are only dropped, renamed (markers
+    stripped), or have their `total` picked from a column the filing
+    itself labelled "Total ...". Rows earn a confidence from whether the
+    table reconciles to the filing's own printed Total row."""
+    kept = []
+    for row in rows or []:
+        name = (row.get('director_name') or '').strip()
+        comps = row.get('components') or {}
+        if not name or re.fullmatch(r"(?:19|20)\d\d", name) or _JUNK_DIRECTOR_NAME_RE.search(name):
+            continue
+        if any(len(str(k)) > 70 for k in comps):       # a paragraph of table text, not a column header
+            continue
+        clean_name = _NAME_STATUS_RE.sub("", name)
+        clean_name = _NAME_MARKER_TAIL_RE.sub("", clean_name).strip(" ,")
+        clean_name = re.sub(r"\s*\(\s*\d{1,2}\s*\)\s*$", "", clean_name).strip(" ,")    # "Agnes Lutukai(3)" footnote number
+        if not clean_name:
+            continue
+        r = dict(row)
+        r['director_name'] = clean_name
+        r['total'] = _coerce_amount(r.get('total'))
+        is_total_name = bool(re.fullmatch(r"(?:grand\s+)?total(?:\s+.*)?", clean_name, re.I))
+        numeric = [v for v in (_coerce_amount(x) for x in comps.values()) if v is not None]
+        if not numeric and not is_total_name:
+            continue                                     # nothing printed for this row
+        if not is_total_name and len(clean_name.split()) > 6:
+            continue                                     # a sentence, not a person
+        # `total`: the column the FILING labels "Total ...", latest year first
+        if r.get('total') is None and comps:
+            best = None
+            for k, v in comps.items():
+                v = _coerce_amount(v)
+                if v is None or not _TOTAL_COMPONENT_RE.search(str(k)):
+                    continue
+                ym = re.search(r"\b((?:19|20)\d\d)\b", str(k))
+                year = int(ym.group(1)) if ym else 0
+                if fiscal_year and year and year != fiscal_year:
+                    continue
+                if best is None or year > best[0]:
+                    best = (year, v)
+            if best is not None:
+                r['total'] = best[1]
+        # A person whose ONLY printed figure is a prior-year total (e.g. a
+        # director who left during the year, shown just for comparison) has no
+        # current-year remuneration to report - dropping the row keeps the
+        # table reconcilable to the filing's own current-year Total row.
+        if (not is_total_name and r.get('total') is None
+                and any(_coerce_amount(v) is not None and _TOTAL_COMPONENT_RE.search(str(k)) for k, v in comps.items())):
+            continue
+        r['_is_total_name'] = is_total_name
+        kept.append(r)
+
+    # a printed final "Total" row is the table's own grand total
+    groups = {}
+    for r in kept:
+        groups.setdefault((r.get('page'), r.get('table_kind')), []).append(r)
+    for rows_in_group in groups.values():
+        persons = [x for x in rows_in_group if not x['_is_total_name']]
+        totals = [x for x in rows_in_group if x['_is_total_name']]
+        for t in totals:
+            if re.fullmatch(r"(?:grand\s+)?total", (t['director_name'] or '').strip(), re.I):
+                t['is_grand_total'] = True
+                t['is_total_row'] = False
+        reconciles = False
+        if totals and persons:
+            printed = next((t.get('total') for t in totals if t.get('total') is not None), None)
+            person_totals = [p.get('total') for p in persons]
+            if printed is not None and all(v is not None for v in person_totals):
+                reconciles = abs(sum(person_totals) - printed) <= max(1.0, len(persons))
+        for x in rows_in_group:
+            has_total = x.get('total') is not None
+            if reconciles:
+                x['confidence'] = 0.9
+            elif has_total:
+                x['confidence'] = 0.75
+            else:
+                x['confidence'] = 0.6
+        # roles: a NED-only table means every named row in it is a non-executive
+        for x in persons:
+            if (x.get('role') in (None, 'unknown')) and x.get('table_kind') in ('ned_named_totals', 'non_executive'):
+                x['role'] = 'non_executive'
+    for i, r in enumerate(kept, 1):
+        r.pop('_is_total_name', None)
+        r['order_index'] = i
+    return kept
+
+
 def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: str | None = None) -> list:
+    """See _extract_director_remuneration_detail_raw for the extraction
+    itself; this wrapper applies clean_director_detail_rows to its output
+    so every caller gets validated rows."""
+    raw = _extract_director_remuneration_detail_raw(pdf_bytes, target_period_label)
+    fy = None
+    if target_period_label:
+        m = re.search(r"((?:19|20)\d\d)", target_period_label)
+        fy = int(m.group(1)) if m else None
+    return clean_director_detail_rows(_drop_prior_year_tables(raw, pdf_bytes, fy), fy)
+
+
+def _drop_prior_year_tables(rows: list, pdf_bytes: bytes, fiscal_year) -> list:
+    """A remuneration report prints the current year's table and, right after it, the
+    comparative table ("Year ended 31 December 2023") - Equity Group 2024 stored both, so
+    its pay tab showed 22 rows (two full boards) against a 328,920 total. A group of rows
+    (one page + table kind) whose page's "year ended <date> <year>" headings name only an
+    OTHER year is dropped, but only when another group of rows IS headed with the fiscal
+    year - so a report with a single table is never touched."""
+    if not fiscal_year or not rows:
+        return rows
+    texts = dict(_pypdf_page_texts_cached(pdf_bytes) or [])
+    def years_on(page):
+        text = texts.get(page, '')
+        heads = re.findall(r"year\s+ended\s+\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+((?:19|20)\d{2})(.{0,36})", text, re.I | re.S)
+        # the intro sentence ("... for the year ended 31 December 2024 together with the comparative
+        # figures") names the current year on BOTH tables' pages; a TABLE header is followed by its
+        # column labels (Shs'000, Salary, Fees, Total ...), so only those headings decide
+        table_heads = [y for y, tail in heads if re.search(r"shs|kshs|kes|ksh|salary|fees|total|notes|\bsh\b", tail, re.I)]
+        return {int(y) for y in (table_heads or [h[0] for h in heads])}
+    groups = {}
+    for r in rows:
+        groups.setdefault((r.get('page'), r.get('table_kind')), []).append(r)
+    status = {}
+    for key in groups:
+        ys = years_on(key[0])
+        status[key] = 'current' if fiscal_year in ys else ('prior' if ys else 'unknown')
+    if 'current' not in status.values():
+        return rows
+    return [r for r in rows if status[(r.get('page'), r.get('table_kind'))] != 'prior']
+
+
+def _extract_director_remuneration_detail_raw(pdf_bytes: bytes, target_period_label: str | None = None) -> list:
     """Every named director/role's own remuneration row(s) from the
     filing's "Directors' Remuneration Report", reconstructed generically
     from word positions rather than assumed against one fixed column

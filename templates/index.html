@@ -899,6 +899,7 @@ const PAGES = [
   {id:'survey-report', label:'Survey Report', icon:'🧭'},
   {id:'survey-analytics', label:'Survey Analytics & Reporting', icon:'📈'},
   {id:'intelligence-layer', label:'Intelligence Layer', icon:'🧠'},
+  {id:'ai-extraction', label:'AI Extraction', icon:'🤖'},
   {id:'settings', label:'Settings', icon:'⚙️'},
 ];
 // Removed from the visible nav (2026-09-12/13 sessions): Compare
@@ -1138,6 +1139,10 @@ async function render(){
     title.textContent = 'Overview';
     sub.innerHTML = 'Portfolio Overview · All Companies';
     await renderOverview();
+  } else if (currentPage === 'ai-extraction') {
+    title.textContent = 'AI Extraction';
+    sub.textContent = 'Read board, committee and pay pages with a Claude model - verified against the page text before anything is applied';
+    await renderAIExtractionPage();
   } else if (currentPage === 'settings') {
     title.textContent = 'Settings';
     sub.textContent = 'Database status, portfolio management, and import activity';
@@ -2458,7 +2463,37 @@ function renderSRTabBody(){
   else if (srTab === 'evidence') body.innerHTML = srEvidenceTab(data);
   else if (srTab === 'survey-mapping') body.innerHTML = srSurveyMappingTab(data);
   else if (srTab === 'data-quality') { body.innerHTML = srDataQualityTab(data); srDrawDataQualityTrend(data); }
+  const emptyBanner = srEmptyBanner(srTab, data);
+  if (emptyBanner) body.innerHTML = emptyBanner + body.innerHTML;
   if (srTab === 'committees') attachSRCommitteeHandlers();
+}
+
+// An empty tab says WHY it is empty. "Not available" alone hides whether the report does not
+// disclose the data, the rule-based readers missed it, or the AI extraction just has not been run.
+const SR_TAB_TASK = {'board-composition':'board', 'directors-register':'board', 'remuneration':'pay', 'benefits':'pay', 'committees':'committees'};
+function srTabIsEmpty(tabId, data){
+  const s = data.survey || {};
+  if (tabId === 'board-composition') {
+    const keys = ['board_size','board_meetings_per_year','committees_per_board','directors_female','directors_male','executive_directors_count','non_executive_directors_count','independent_neds_count'];
+    return !keys.some(k => s[k] !== null && s[k] !== undefined);
+  }
+  if (tabId === 'directors-register') return !(data.survey_director_rows || []).length;
+  if (tabId === 'remuneration') return !(data.director_rows || []).length;
+  if (tabId === 'committees') return !(data.committees || []).length;
+  if (tabId === 'benefits') return !(s.ned_benefits && Object.keys(s.ned_benefits).length) && !(data.survey_director_benefits || []).length;
+  return false;
+}
+function srEmptyBanner(tabId, data){
+  if (!SR_TAB_TASK[tabId] || !srTabIsEmpty(tabId, data)) return '';
+  const task = SR_TAB_TASK[tabId];
+  const st = (data.ai_items || {})[task] || {};
+  let why;
+  if (st.done) why = `AI results for this tab are <b>ready to review</b> (${st.done}). Open <a href="#" onclick="currentPage='ai-extraction';renderNav();render();return false;">AI Extraction</a> and apply the verified items.`;
+  else if (st.pending || st.failed) why = `The rule-based readers found nothing here. The AI can read this report's pages - <b>${(st.pending || 0) + (st.failed || 0)} item(s) are waiting</b> in <a href="#" onclick="currentPage='ai-extraction';renderNav();render();return false;">AI Extraction</a> (the cost is shown before anything is sent).`;
+  else if (st.submitted) why = 'The AI extraction for this tab has been sent and is still processing. Check it in AI Extraction.';
+  else if (st.applied) why = 'The AI extraction ran for this tab but none of its items could be verified against the page text, so nothing was written. Open AI Extraction to see why.';
+  else why = 'The rule-based readers found nothing here and no page in this report is relevant enough to send to the AI, so the report most likely does not disclose it (or it was uploaded before AI extraction existed - re-upload to check).';
+  return `<div class="status-banner warn" style="margin-bottom:12px">No data on this tab yet. ${why}</div>`;
 }
 
 // Field-level confidence badge, reading SurveyCompanyData.field_confidence
@@ -2806,6 +2841,8 @@ function srDirectorsRegisterTab(data){
   const execCount = rows.filter(d => d.role === 'executive').length;
   const nonExecCount = rows.filter(d => d.role === 'non_executive').length;
   const independentCount = rows.filter(d => d.independent === true).length;
+  const roleKnown = rows.filter(d => d.role === 'executive' || d.role === 'non_executive').length;
+  const independentKnown = rows.filter(d => d.independent === true || d.independent === false).length;
   const genderKnown = rows.filter(d => d.gender).length;
   const femaleCount = rows.filter(d => (d.gender || '').toLowerCase() === 'female').length;
   const avgAgeNote = null; // SurveyDirector has no date-of-birth/age field - never fabricated here
@@ -2813,9 +2850,9 @@ function srDirectorsRegisterTab(data){
   return `
     <div class="sr-stat-grid" style="margin-bottom:14px;">
       <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc65</div><div class="sr-stat-label">Total Directors</div></div><div class="sr-stat-value">${total}</div></div>
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc64</div><div class="sr-stat-label">Executive Directors</div></div><div class="sr-stat-value">${execCount}</div></div>
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc65</div><div class="sr-stat-label">Non-Executive Directors</div></div><div class="sr-stat-value">${nonExecCount}</div></div>
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udee1\ufe0f</div><div class="sr-stat-label">Independent Directors</div></div><div class="sr-stat-value">${independentCount}${total ? ` <span style="font-size:11px;color:var(--text-faint);">(${Math.round(independentCount/total*100)}%)</span>` : ''}</div></div>
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc64</div><div class="sr-stat-label">Executive Directors</div></div><div class="sr-stat-value">${roleKnown ? execCount : naSpan('Role not stated for any director')}</div></div>
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc65</div><div class="sr-stat-label">Non-Executive Directors</div></div><div class="sr-stat-value">${roleKnown ? nonExecCount : naSpan('Role not stated for any director')}</div></div>
+      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udee1\ufe0f</div><div class="sr-stat-label">Independent Directors</div></div><div class="sr-stat-value">${!independentKnown ? naSpan('Independence not stated for any director') : `${independentCount}`}${independentKnown && total ? ` <span style="font-size:11px;color:var(--text-faint);">(${Math.round(independentCount/total*100)}%)</span>` : ''}</div></div>
       <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\u2640\ufe0f</div><div class="sr-stat-label">Female Directors</div></div><div class="sr-stat-value">${genderKnown ? `${femaleCount} <span style="font-size:11px;color:var(--text-faint);">(${Math.round(femaleCount/genderKnown*100)}%)</span>` : naSpan('Gender not stated for any director')}</div></div>
     </div>
     <div class="row row-2" style="grid-template-columns:1.7fr 1fr;">
@@ -5892,6 +5929,107 @@ function renderMappingTab(sd, opts){
 }
 
 // ---------- Settings ----------
+
+
+// ---------------------------------------------------------------------------
+// AI Extraction page (ai_extract.py): pending pages -> estimate -> batch run ->
+// collect -> review verification -> apply. Nothing is sent until "Run" is clicked.
+// ---------------------------------------------------------------------------
+async function renderAIExtractionPage(){
+  const app = document.getElementById('app');
+  if (window.currentUser.role !== 'admin') {
+    app.innerHTML = `<div class="panel"><div class="empty">AI Extraction is only available to admin accounts.</div></div>`;
+    return;
+  }
+  const [st, items] = await Promise.all([
+    fetch('/api/ai/status').then(r => r.json()),
+    fetch('/api/ai/items').then(r => r.json()),
+  ]);
+  const c = st.items || {};
+  const pending = items.filter(i => i.status === 'pending' || i.status === 'failed');
+  const banner = st.configured
+    ? `<div class="status-banner ok">✓ API key configured · model ${escapeHtml(st.model)}</div>`
+    : `<div class="status-banner warn">⚠ ANTHROPIC_API_KEY is not set - add it in the project secrets to run extraction. You can still see what would be sent.</div>`;
+  const statusPill = i => ({pending:'⏳ waiting for AI', submitted:'📤 sent', done:'✅ ready to review', applied:'✔ applied', failed:'❌ failed', discarded:'🗑 discarded', skipped:'⏭ rules filled it - not sent'}[i.status] || i.status);
+  const sum = i => i.summary ? `${i.summary.verified}/${i.summary.items} verified` + (i.summary.checks_failed ? ` · ⚠ ${i.summary.checks_failed} check(s) failed` : '') : '-';
+  const rows = items.map(i => `
+    <tr>
+      <td>${escapeHtml(i.company || '')}<div class="muted">${escapeHtml(i.fiscal_year)}</div></td>
+      <td>${escapeHtml(i.task)}<div class="muted">pages ${escapeHtml((i.pages || []).join(', '))}</div>${(i.gaps || []).length ? `<div class="muted">rules left empty: ${escapeHtml(i.gaps.join(', '))}</div>` : ''}</td>
+      <td>${statusPill(i)}${i.error ? `<div class="muted">${escapeHtml(i.error)}</div>` : ''}</td>
+      <td>${escapeHtml(sum(i))}</td>
+      <td>${i.status === 'done' || i.status === 'applied' ? `<button class="btn" onclick="aiViewItem(${i.id})">View</button> <button class="btn primary" onclick="aiApplyItem(${i.id})">${i.status === 'applied' ? 'Re-apply' : 'Apply verified'}</button>` : ''}</td>
+    </tr>`).join('') || `<tr><td colspan="5" class="muted">No pages queued yet. Upload annual reports first - the pages the AI will read are stored at upload.</td></tr>`;
+  const jobs = (st.jobs || []).map(j => `
+    <tr><td>#${j.id} ${escapeHtml(j.mode)}</td><td>${escapeHtml(j.model || '')}</td><td>${j.n_items}</td>
+    <td>${escapeHtml(j.status)}</td><td>$${(j.actual_cost_usd != null ? j.actual_cost_usd : j.est_cost_usd || 0).toFixed(3)}${j.actual_cost_usd != null ? '' : ' (est.)'}</td>
+    <td>${j.mode === 'batch' && j.status !== 'ended' ? `<button class="btn" onclick="aiCollect(${j.id})">Check / collect</button>` : ''}</td></tr>`).join('');
+  app.innerHTML = `
+    ${banner}
+    <div class="panel">
+      <h3>Run</h3>
+      <p class="muted"><b>The AI is the last resort.</b> Rule-based readers run first at upload; only what they left empty is listed here, and the AI is asked for those items alone. Anything the rules fill in the meantime is dropped before sending. ${pending.length} item(s) waiting (${c.pending || 0} pending, ${c.failed || 0} failed) · ${c.done || 0} ready to review · ${c.applied || 0} applied.
+      Batch is half price and returns within about an hour; direct runs the first 6 items now at full price.</p>
+      <div id="aiEstimate" class="muted">Press Estimate to see the cost before anything is sent.</div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn" onclick="aiEstimate()">Estimate</button>
+        <label>Spend cap $ <input id="aiCap" type="number" step="0.5" min="0" value="5" style="width:70px"></label>
+        <button class="btn primary" onclick="aiRun('batch')" ${st.configured && pending.length ? '' : 'disabled'}>Run AI extraction (batch)</button>
+        <button class="btn" onclick="aiRun('direct')" ${st.configured && pending.length ? '' : 'disabled'}>Run now (direct, 6 max)</button>
+      </div>
+    </div>
+    ${jobs ? `<div class="panel"><h3>Jobs</h3><table class="tbl"><thead><tr><th>Job</th><th>Model</th><th>Items</th><th>Status</th><th>Cost</th><th></th></tr></thead><tbody>${jobs}</tbody></table></div>` : ''}
+    <div class="panel"><h3>Items</h3>
+      <table class="tbl"><thead><tr><th>Report</th><th>Task</th><th>Status</th><th>Verification</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    </div>
+    <div id="aiDetail"></div>`;
+}
+async function aiEstimate(){
+  const r = await fetch('/api/ai/estimate', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  const e = await r.json();
+  document.getElementById('aiEstimate').innerHTML = e.items
+    ? `<b>${e.items} item(s) from ${e.files} report(s)</b> · ~${e.batch.input_tokens.toLocaleString()} tokens in / ${e.batch.output_tokens.toLocaleString()} out · <b>batch $${e.batch.usd.toFixed(2)}</b> · direct $${e.direct.usd.toFixed(2)} (${escapeHtml(e.batch.model)})`
+    : 'Nothing pending.';
+}
+async function aiRun(mode){
+  const cap = parseFloat(document.getElementById('aiCap').value);
+  const r = await fetch('/api/ai/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode, max_cost_usd: isNaN(cap) ? null : cap})});
+  const d = await r.json();
+  if (!r.ok) { alert(d.error || 'Could not start'); return; }
+  await renderAIExtractionPage();
+}
+async function aiCollect(id){
+  const r = await fetch(`/api/ai/jobs/${id}/collect`, {method:'POST'});
+  const d = await r.json();
+  if (d.status && d.status !== 'ended') alert('Still processing (' + d.status + '). Try again in a few minutes.');
+  await renderAIExtractionPage();
+}
+async function aiApplyItem(id){
+  if (!confirm('Write the VERIFIED values from this item into the survey tables? Unverified items are never written.')) return;
+  const r = await fetch(`/api/ai/items/${id}/apply`, {method:'POST'});
+  const d = await r.json();
+  if (!r.ok) { alert(d.error || 'Could not apply'); return; }
+  alert('Applied: ' + JSON.stringify(d.applied));
+  await renderAIExtractionPage();
+}
+async function aiViewItem(id){
+  const it = await fetch(`/api/ai/items/${id}`).then(r => r.json());
+  const res = it.result || {};
+  const flag = x => x.verified ? '✅' : '❌';
+  const problems = x => (x.problems || []).length ? `<div class="muted">${escapeHtml(x.problems.join('; '))}</div>` : '';
+  let body = '';
+  (res.directors || []).forEach(d => body += `<tr><td>${flag(d)}</td><td>${escapeHtml(d.name)}${problems(d)}</td><td>${escapeHtml(d.role || '')}${d.independent ? ' · independent' : ''}</td><td>${escapeHtml(d.gender || '')} ${escapeHtml(d.nationality || '')} ${escapeHtml(d.appointed || '')}</td><td>p.${d.page}</td></tr>`);
+  (res.facts || []).forEach(f => body += `<tr><td>${flag(f)}</td><td>${escapeHtml(f.field)}${problems(f)}</td><td>${f.value}</td><td>${escapeHtml(f.evidence || '')}</td><td>p.${f.page}</td></tr>`);
+  (res.committees || []).forEach(c => body += `<tr><td>${flag(c)}</td><td>${escapeHtml(c.name)}${problems(c)}</td><td>${c.meetings_held ?? ''} meetings · ${(c.members || []).length} members</td><td>chair ${escapeHtml(c.chair || '-')}</td><td>p.${c.page}</td></tr>`);
+  (res.tables || []).forEach(t => { (t.rows || []).forEach(r => body += `<tr><td>${flag(r)}</td><td>${escapeHtml(r.name)}${problems(r)}</td><td>${r.total ?? ''} <span class="muted">${escapeHtml(t.unit || '')}</span></td><td>${escapeHtml(t.title || '')}${t.is_current_year === false ? ' (prior year - not applied)' : ''}</td><td>p.${r.page}</td></tr>`); });
+  (res.policy || []).forEach(p => body += `<tr><td>${flag(p)}</td><td>${escapeHtml(p.field)}${problems(p)}</td><td>${p.value} ${escapeHtml(p.unit || '')}</td><td>${escapeHtml(p.evidence || '')}</td><td>p.${p.page}</td></tr>`);
+  (res.ned_benefits || []).forEach(b => body += `<tr><td>${flag(b)}</td><td>${escapeHtml(b.key)}${problems(b)}</td><td>${b.provided ? 'provided' : 'not provided'}</td><td>${escapeHtml(b.detail || b.evidence || '')}</td><td>p.${b.page}</td></tr>`);
+  const checks = (it.checks || []).map(c => `<li>${c.ok ? '✅' : '⚠'} ${escapeHtml(c.check)} - ${escapeHtml(c.detail || '')}</li>`).join('');
+  document.getElementById('aiDetail').innerHTML = `<div class="panel"><h3>${escapeHtml(it.task)} · ${escapeHtml(it.fiscal_year)}</h3>
+    ${checks ? `<ul>${checks}</ul>` : ''}
+    <table class="tbl"><thead><tr><th></th><th>Item</th><th>Value</th><th>Detail / evidence</th><th>Page</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  document.getElementById('aiDetail').scrollIntoView({behavior:'smooth'});
+}
 
 async function renderSettingsPage(){
   const app = document.getElementById('app');
