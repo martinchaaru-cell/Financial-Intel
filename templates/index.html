@@ -13,10 +13,34 @@
   --green:#3ddc84; --green-soft:rgba(34,197,94,.14);
   --amber:#ffb020; --amber-soft:rgba(245,158,11,.14);
   --red:#ff6161; --red-soft:rgba(239,68,68,.14);
-  --purple:#b79bfc; --purple-soft:rgba(183,155,252,.16); --radius:14px; --radius-sm:9px;
+  --purple:#b79bfc; --purple-soft:rgba(183,155,252,.16);
+  --teal:#2dd4bf; --teal-soft:rgba(45,212,191,.16);
+  --pink:#f472b6; --pink-soft:rgba(244,114,182,.16); --radius:14px; --radius-sm:9px;
+  /* Stronger tints used only for KPI colour boxes (the *-soft tokens above are too faint on the dark panels to read as a coloured box). */
+  --blue-box:rgba(91,155,255,.26);  --blue-line:rgba(91,155,255,.55);
+  --green-box:rgba(61,220,132,.24); --green-line:rgba(61,220,132,.55);
+  --amber-box:rgba(255,176,32,.24); --amber-line:rgba(255,176,32,.55);
+  --red-box:rgba(255,97,97,.24);    --red-line:rgba(255,97,97,.55);
+  --purple-box:rgba(183,155,252,.28); --purple-line:rgba(183,155,252,.6);
+  --teal-box:rgba(45,212,191,.24);  --teal-line:rgba(45,212,191,.55);
+  --pink-box:rgba(244,114,182,.26); --pink-line:rgba(244,114,182,.6);
+  /* Titles/headings used to inherit body's plain --text colour, so a heading
+     read no differently from the paragraph underneath it. --heading gives
+     every real title a light blue-lavender tint that stands apart from both
+     --text (body copy) and --text-dim/--text-faint (secondary/muted copy). */
+  --heading:#cddbff;
 }
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,'Segoe UI',Arial,sans-serif;}
 body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5px;}
+/* Every real section/page title, in one place. Deliberately excludes small
+   uppercase "eyebrow" labels that were already intentionally muted
+   (.ir-panel-title, .mini-bar-panel .mb-title, .sa-subtitle) - those aren't
+   broken, so they keep their own colour. Later, more specific rules (e.g.
+   .ir-sro-col.strengths h3{color:var(--green)}) still win over this. */
+h1,h2,h3,h4,h5,h6,
+.page-title,.sa-title,.sa-panel-title,
+.hc-title,.ov-qa-title,.ov-timeline-title,
+.sa-insight-text-title,.sa-method-title{color:var(--heading);}
 .shell{display:flex;min-height:100vh;}
 
 .sidebar{width:224px;flex-shrink:0;background:var(--bg-sidebar);border-right:1px solid var(--border);
@@ -155,10 +179,10 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 
 .ov-status-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;
   font-size:10.5px;font-weight:600;white-space:nowrap;}
-.ov-status-pill.completed{background:var(--green-soft);color:var(--green);}
-.ov-status-pill.in-progress{background:var(--blue-soft);color:var(--blue);}
-.ov-status-pill.pending{background:var(--amber-soft);color:var(--amber);}
-.ov-status-pill.failed{background:var(--red-soft);color:var(--red);}
+.ov-status-pill.completed{background:var(--bg-app);color:var(--green);}
+.ov-status-pill.in-progress{background:var(--bg-app);color:var(--blue);}
+.ov-status-pill.pending{background:var(--bg-app);color:var(--amber);}
+.ov-status-pill.failed{background:var(--bg-app);color:var(--red);}
 .ov-mini-bar-track{width:70px;height:5px;border-radius:3px;background:var(--bg-panel-2);overflow:hidden;display:inline-block;vertical-align:middle;margin-right:6px;}
 .ov-mini-bar-fill{height:100%;border-radius:3px;}
 
@@ -183,7 +207,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
   border-bottom:1px solid var(--border);}
 .ov-workload-row:last-child{border-bottom:none;}
 .ov-analyst-name{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;}
-.ov-analyst-avatar{width:24px;height:24px;border-radius:50%;background:var(--blue-soft);color:var(--blue);
+.ov-analyst-avatar{width:24px;height:24px;border-radius:50%;background:transparent;color:var(--text-dim);
   font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 
 .ov-quick-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
@@ -210,7 +234,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .sa-header-row{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:16px;flex-wrap:wrap;}
 .sa-title{font-size:22px;font-weight:700;margin:0 0 4px;}
 .sa-subtitle{font-size:12.5px;color:var(--text-dim);}
-.sa-info-strip{display:flex;gap:16px;background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);
+.sa-info-strip{display:flex;gap:16px;
   padding:10px 16px;flex-wrap:wrap;align-items:center;}
 .sa-info-item{display:flex;align-items:center;gap:8px;font-size:11.5px;}
 .sa-info-icon{width:26px;height:26px;border-radius:7px;background:var(--blue-soft);color:var(--blue);
@@ -219,7 +243,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .sa-info-value{font-weight:700;font-size:12.5px;}
 .sa-stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
 @media (max-width:1100px){.sa-stat-grid{grid-template-columns:repeat(2,1fr);}}
-.sa-stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px;}
+.sa-stat-card{padding:14px;}
 .sa-stat-top{display:flex;align-items:center;gap:9px;margin-bottom:8px;}
 .sa-stat-icon{width:30px;height:30px;border-radius:50%;background:var(--blue-soft);color:var(--blue);
   display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;}
@@ -237,7 +261,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .sa-insight-text-title{font-size:12.5px;font-weight:700;margin-bottom:2px;}
 .sa-insight-text-body{font-size:11.5px;color:var(--text-dim);line-height:1.4;}
 .sa-key-takeaway{display:flex;gap:10px;}
-.sa-key-takeaway-icon{width:30px;height:30px;border-radius:8px;background:var(--blue-soft);color:var(--blue);
+.sa-key-takeaway-icon{width:30px;height:30px;border-radius:8px;background:var(--amber-soft);color:var(--amber);
   display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;}
 .sa-donut-legend-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);margin-bottom:8px;}
 .sa-donut-legend-row .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
@@ -261,15 +285,15 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .sa-method-title{font-size:12.5px;font-weight:700;margin-bottom:3px;}
 .sa-method-desc{font-size:11px;color:var(--text-dim);line-height:1.4;}
 .sa-company-chip-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
-.sa-company-chip{background:var(--bg-panel);border:1px solid var(--border);border-radius:11px;padding:10px 14px;
+.sa-company-chip{border-radius:11px;padding:10px 14px;
   cursor:pointer;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;}
 .sa-company-chip:hover{background:var(--bg-hover);}
 .sa-company-chip.active{background:var(--blue-soft);border-color:var(--blue);color:#fff;}
 .sa-company-chip .sub{font-size:10px;color:var(--text-faint);font-weight:400;}
 
 /* ---------- Survey Report (per-company, 9 tabs) ---------- */
-.sr-company-card{display:flex;justify-content:space-between;gap:16px;background:var(--bg-panel);
-  border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px;flex-wrap:wrap;}
+.sr-company-card{display:flex;justify-content:space-between;gap:16px;
+  padding:16px;margin-bottom:14px;flex-wrap:wrap;}
 .sr-company-left{display:flex;gap:14px;align-items:flex-start;flex:1;min-width:260px;}
 .sr-logo{width:56px;height:56px;border-radius:10px;background:var(--bg-panel-2);display:flex;
   align-items:center;justify-content:center;font-size:22px;flex-shrink:0;}
@@ -285,29 +309,28 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .sr-tab-selector{margin-bottom:10px;}
 .sr-stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
 @media (max-width:1100px){.sr-stat-grid{grid-template-columns:repeat(2,1fr);}}
-.sr-stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:13px;}
+.sr-stat-card{padding:13px;}
 .sr-stat-top{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
-.sr-stat-icon{width:26px;height:26px;border-radius:7px;background:var(--blue-soft);color:var(--blue);
+.sr-stat-icon{width:26px;height:26px;border-radius:7px;background:transparent;color:var(--text-dim);
   display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
 .sr-stat-label{font-size:11px;font-weight:600;color:var(--text-dim);}
 .sr-stat-value{font-size:19px;font-weight:700;}
-.sr-insight-panel{background:var(--blue-soft-bg,rgba(91,155,255,.06));border:1px solid var(--border);
-  border-radius:var(--radius);padding:14px;}
+.sr-insight-panel{padding:14px;}
 .sr-insight-item{display:flex;gap:8px;font-size:11.5px;color:var(--text-dim);margin-bottom:8px;align-items:flex-start;}
 .sr-insight-item:last-child{margin-bottom:0;}
 .sr-conf-badge{padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;}
-.sr-conf-high{background:var(--green-soft);color:var(--green);}
-.sr-conf-med{background:var(--amber-soft);color:var(--amber);}
-.sr-conf-low{background:var(--red-soft);color:var(--red);}
+.sr-conf-high{background:var(--bg-app);color:var(--green);}
+.sr-conf-med{background:var(--bg-app);color:var(--amber);}
+.sr-conf-low{background:var(--bg-app);color:var(--red);}
 .sr-status-badge{padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;}
 .sr-doc-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);font-size:11.5px;}
 .sr-doc-row:last-child{border-bottom:none;}
-.sr-doc-icon{width:26px;height:26px;border-radius:6px;background:var(--red-soft);color:var(--red);
+.sr-doc-icon{width:26px;height:26px;border-radius:6px;background:var(--blue-soft);color:var(--blue);
   display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;}
 
 /* ---------- Intelligence Layer (interactive, 6 tabs) ---------- */
-.il-filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;background:var(--bg-panel);
-  border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;}
+.il-filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;
+  padding:12px 14px;margin-bottom:14px;}
 .il-filter-field{display:flex;flex-direction:column;gap:4px;min-width:150px;}
 .il-filter-field label{font-size:10px;color:var(--text-faint);font-weight:600;}
 .il-info-strip{display:flex;gap:16px;margin-left:auto;align-items:center;font-size:11px;color:var(--text-dim);flex-wrap:wrap;}
@@ -316,12 +339,12 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .il-gov-bar-track{flex:1;height:8px;border-radius:4px;background:var(--bg-panel-2);overflow:hidden;}
 .il-gov-bar-fill{height:100%;border-radius:4px;}
 .il-subtab-row{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;}
-.il-subtab-btn{padding:8px 14px;border-radius:9px;border:1px solid var(--border);background:var(--bg-panel);
+.il-subtab-btn{padding:8px 14px;border-radius:9px;
   color:var(--text-dim);font-size:12px;font-weight:600;cursor:pointer;}
 .il-subtab-btn.active{background:var(--blue);color:#fff;border-color:var(--blue);}
-.il-methodology-note{font-size:10.5px;color:var(--text-faint);background:var(--bg-panel-2);
-  border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;line-height:1.5;}
-.compare-chip{display:flex;align-items:center;gap:8px;background:var(--bg-panel-2);border:1px solid var(--border);
+.il-methodology-note{font-size:10.5px;color:var(--text-faint);
+  padding:10px 12px;margin-top:10px;line-height:1.5;}
+.compare-chip{display:flex;align-items:center;gap:8px;
   border-radius:11px;padding:8px 10px;}
 .compare-chip .co-avatar{width:26px;height:26px;}
 .compare-chip .cc-name{font-size:12px;font-weight:600;}
@@ -405,7 +428,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .content{padding:24px 28px;flex:1;}
 
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px;}
-.stat-card{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;
+.stat-card{padding:10px 12px;
   display:flex;align-items:flex-start;gap:9px;}
 .stat-card-body{min-width:0;flex:1;}
 .stat-value{font-size:15px;font-weight:700;line-height:1.2;}
@@ -419,7 +442,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .row-3{grid-template-columns:1fr 1.3fr 1fr;}
 .row-2{grid-template-columns:1fr 1fr;}
 .row-4{grid-template-columns:repeat(4,1fr);}
-.chart-panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+.chart-panel{padding:16px;}
 .co-breadcrumb{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-faint);margin-bottom:14px;flex-wrap:wrap;}
 .co-breadcrumb a{color:var(--text-faint);cursor:pointer;text-decoration:none;}
 .co-breadcrumb a:hover{color:var(--text);}
@@ -446,7 +469,7 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .ratio-row .rr-metric{color:var(--text-dim);}
 .ratio-row .rr-values{display:flex;gap:10px;align-items:center;}
 .source-doc-row{display:flex;align-items:center;gap:10px;}
-.source-doc-icon{width:34px;height:34px;border-radius:8px;background:var(--red-soft);color:var(--red);
+.source-doc-icon{width:34px;height:34px;border-radius:8px;background:var(--blue-soft);color:var(--blue);
   display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
 .source-doc-meta .sd-name{font-size:12px;font-weight:600;word-break:break-all;}
 .source-doc-meta .sd-date{font-size:10.5px;color:var(--text-faint);}
@@ -469,16 +492,16 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .ir-gauge-hole .n{font-size:26px;font-weight:700;line-height:1;}
 .ir-gauge-hole .l{font-size:10px;color:var(--text-faint);margin-top:2px;}
 .ir-band-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;margin-top:10px;}
-.ir-band-pill.strong{background:var(--green-soft);color:var(--green);}
-.ir-band-pill.moderate{background:var(--amber-soft);color:var(--amber);}
-.ir-band-pill.weak{background:var(--red-soft);color:var(--red);}
+.ir-band-pill.strong{background:var(--bg-app);color:var(--green);}
+.ir-band-pill.moderate{background:var(--bg-app);color:var(--amber);}
+.ir-band-pill.weak{background:var(--bg-app);color:var(--red);}
 .ir-kv-list{display:flex;flex-direction:column;gap:11px;}
 .ir-kv-row{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;}
 .ir-kv-row .k{color:var(--text-faint);}
 .ir-kv-pill{padding:3px 10px;border-radius:6px;font-size:11px;font-weight:700;}
-.ir-kv-pill.strong,.ir-kv-pill.positive,.ir-kv-pill.outperformer,.ir-kv-pill.high{background:var(--green-soft);color:var(--green);}
-.ir-kv-pill.moderate,.ir-kv-pill.neutral,.ir-kv-pill.in-line,.ir-kv-pill.medium{background:var(--amber-soft);color:var(--amber);}
-.ir-kv-pill.weak,.ir-kv-pill.negative,.ir-kv-pill.underperformer,.ir-kv-pill.low{background:var(--red-soft);color:var(--red);}
+.ir-kv-pill.strong,.ir-kv-pill.positive,.ir-kv-pill.outperformer,.ir-kv-pill.high{background:var(--bg-app);color:var(--green);}
+.ir-kv-pill.moderate,.ir-kv-pill.neutral,.ir-kv-pill.in-line,.ir-kv-pill.medium{background:var(--bg-app);color:var(--amber);}
+.ir-kv-pill.weak,.ir-kv-pill.negative,.ir-kv-pill.underperformer,.ir-kv-pill.low{background:var(--bg-app);color:var(--red);}
 .ir-highlight-item{display:flex;align-items:flex-start;gap:9px;font-size:12.5px;color:var(--text-dim);padding:6px 0;line-height:1.5;}
 .ir-highlight-item .ic{flex-shrink:0;margin-top:1px;}
 .ir-snapshot-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
@@ -486,12 +509,12 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .ir-snapshot-cell .sn-value{font-size:19px;font-weight:700;margin-top:3px;}
 .ir-snapshot-cell .sn-delta{font-size:11px;margin-top:4px;}
 .ir-bench-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
-.ir-bench-cell{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px;}
+.ir-bench-cell{padding:14px;}
 .ir-bench-cell .bc-label{font-size:10.5px;color:var(--text-faint);}
 .ir-bench-cell .bc-value{font-size:19px;font-weight:700;margin-top:4px;}
 .ir-bench-cell .bc-delta{font-size:11px;margin-top:4px;}
 .ir-sector-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;}
-.ir-sector-cell{background:var(--bg-panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;text-align:center;}
+.ir-sector-cell{padding:10px;text-align:center;}
 .ir-sector-cell .sc-icon{font-size:16px;}
 .ir-sector-cell .sc-name{font-size:10.5px;color:var(--text-faint);margin-top:4px;}
 .ir-sector-cell .sc-count{font-size:16px;font-weight:700;margin-top:2px;}
@@ -500,17 +523,17 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 @media(max-width:900px){.ir-sro-grid{grid-template-columns:1fr;}}
 .ir-risk-cat-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 @media(max-width:900px){.ir-risk-cat-grid{grid-template-columns:1fr;}}
-.ir-risk-cat-card{border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--panel-alt,#fafafa);}
+.ir-risk-cat-card{padding:14px;}
 .ir-risk-cat-title{font-weight:700;font-size:13px;margin-bottom:8px;}
 .ir-risk-cat-desc{font-size:12px;line-height:1.5;color:var(--text-secondary,#444);margin-bottom:8px;}
-.ir-risk-cat-mitigation{font-size:11.5px;line-height:1.5;color:var(--text-secondary,#444);background:rgba(0,0,0,0.03);border-radius:6px;padding:8px 10px;}
+.ir-risk-cat-mitigation{font-size:11.5px;line-height:1.5;color:var(--text-secondary,#444);padding:8px 10px;}
 .ir-risk-cat-page{font-size:10px;color:var(--text-faint);margin-top:8px;}
 .ir-sro-col h3{font-size:12px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px;}
 .ir-sro-col.strengths h3{color:var(--green);}
 .ir-sro-col.risks h3{color:var(--amber);}
 .ir-sro-col.opportunities h3{color:var(--blue);}
 .ir-peer-badge{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;}
-.ir-peer-badge.rank1{background:var(--green-soft);color:var(--green);}
+.ir-peer-badge.rank1{background:var(--bg-app);color:var(--green);}
 .ir-percentile-table td, .ir-percentile-table th{white-space:nowrap;}
 .ir-benefit-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);}
 .ir-benefit-row:last-child{border-bottom:none;}
@@ -520,15 +543,15 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .ir-benefit-row .bn-pct{flex:0 0 40px;text-align:right;font-size:11.5px;font-weight:700;}
 .ir-source-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
 .ir-source-row:last-child{border-bottom:none;}
-.ir-source-icon{width:36px;height:36px;border-radius:9px;background:var(--red-soft);color:var(--red);
+.ir-source-icon{width:36px;height:36px;border-radius:9px;background:var(--purple-soft);color:var(--purple);
   display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
 .ir-source-meta{flex:1;min-width:0;}
 .ir-source-meta .sm-name{font-size:12.5px;font-weight:600;word-break:break-word;}
 .ir-source-meta .sm-date{font-size:11px;color:var(--text-faint);margin-top:2px;}
 .ir-outlook-banner{padding:16px;border-radius:var(--radius);margin-bottom:16px;border:1px solid var(--border);}
-.ir-outlook-banner.Positive{background:var(--green-soft);border-color:rgba(61,220,132,.35);}
-.ir-outlook-banner.Negative{background:var(--red-soft);border-color:rgba(255,97,97,.35);}
-.ir-outlook-banner.Neutral{background:var(--amber-soft);border-color:rgba(255,176,32,.35);}
+.ir-outlook-banner.Positive{background:var(--bg-app);border-color:rgba(61,220,132,.35);}
+.ir-outlook-banner.Negative{background:var(--bg-app);border-color:rgba(255,97,97,.35);}
+.ir-outlook-banner.Neutral{background:var(--bg-app);border-color:rgba(255,176,32,.35);}
 .ir-outlook-banner .ob-label{font-size:15px;font-weight:700;}
 .ir-outlook-banner .ob-sub{font-size:12px;color:var(--text-dim);margin-top:4px;}
 
@@ -572,9 +595,9 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .compare-picker{display:flex;flex-wrap:wrap;gap:8px 16px;margin-bottom:14px;}
 .compare-picker label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-dim);}
 .chart-wrap{position:relative;height:260px;margin:14px 0 22px;}
-.status-banner{padding:12px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);margin-bottom:14px;font-size:12.5px;line-height:1.5;}
-.status-banner.warn{border-color:rgba(255,176,32,.4);color:var(--amber);}
-.status-banner.ok{border-color:rgba(61,220,132,.4);color:var(--green);}
+.status-banner{padding:12px 14px;margin-bottom:14px;font-size:12.5px;line-height:1.5;}
+.status-banner.warn{color:var(--amber);}
+.status-banner.ok{color:var(--green);}
 .company-flag{width:22px;height:22px;border-radius:6px;background:transparent;color:var(--blue);border:1px solid var(--border);
   display:inline-flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;margin-right:8px;}
 .data-summary-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);}
@@ -601,11 +624,19 @@ body{background:var(--bg-app);color:var(--text);min-height:100vh;font-size:13.5p
 .mini-legend{font-size:10.5px;line-height:1.9;}
 .mini-legend .dot{width:6px;height:6px;}
 
-.panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px;}
+.panel{padding:18px;background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);}
+.panel.ov-boxed{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);}
 .panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
 .panel-head h2{font-size:13.5px;font-weight:600;}
 .panel-link{color:var(--blue);font-size:11.5px;cursor:pointer;}
 .empty{color:var(--text-faint);font-size:12.5px;padding:18px 0;text-align:center;}
+/* Supporting/body copy next to a bold title - e.g. a panel's explanatory
+   paragraph, a row's secondary line, an empty-state note. Used 35+ places
+   across the app but was never actually defined, so every one of those
+   elements silently fell back to the page's default text color (the same
+   bright var(--text) used for headings) instead of reading as quieter
+   body text. */
+.muted{color:var(--text-dim);font-size:12px;line-height:1.5;}
 
 .donut-wrap{display:flex;align-items:center;gap:18px;}
 .donut{width:130px;height:130px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;position:relative;}
@@ -628,9 +659,9 @@ tr.clickable:hover{background:var(--bg-hover);}
 tr.clickable.active{background:var(--bg-hover);box-shadow:inset 2px 0 0 var(--blue);}
 .rank-medal{font-size:14px;}
 .score-badge{padding:2px 8px;border-radius:6px;font-weight:700;font-size:12px;display:inline-block;}
-.score-strong{background:var(--green-soft);color:var(--green);}
-.score-moderate{background:var(--amber-soft);color:var(--amber);}
-.score-weak{background:var(--red-soft);color:var(--red);}
+.score-strong{background:var(--bg-app);color:var(--green);}
+.score-moderate{background:var(--bg-app);color:var(--amber);}
+.score-weak{background:var(--bg-app);color:var(--red);}
 .delta{font-size:10.5px;display:block;margin-top:2px;}
 .delta.up{color:var(--green);}
 .delta.down{color:var(--red);}
@@ -657,7 +688,7 @@ button.secondary.active{background:var(--blue);color:#fff;border-color:var(--blu
 .back-link{color:var(--blue);cursor:pointer;font-size:13px;display:inline-block;margin-bottom:14px;}
 
 .download-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;}
-.download-card{background:var(--bg-panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);
+.download-card{
   padding:14px;display:flex;flex-direction:column;gap:6px;}
 .download-card .dl-title{font-weight:600;font-size:12.5px;}
 .download-card .dl-desc{color:var(--text-faint);font-size:11.5px;}
@@ -753,6 +784,40 @@ tr.li-child td:first-child{color:var(--text-dim);}
 .row-menu button.danger:hover{color:var(--red);}
 .trend-up{color:var(--green);}
 .trend-down{color:var(--red);}
+
+/* ---------- KPI colour boxes: every KPI card gets a coloured icon box; tones cycle per position so a row never reads as one flat colour ---------- */
+.sa-stat-grid>.sa-stat-card:nth-child(6n+1),.sr-kpi-strip>.sr-kpi:nth-child(6n+1),.sa-info-strip>.sa-info-item:nth-child(6n+1),.stat-grid>.stat-card:nth-child(6n+1),.sa-mini-stat:nth-child(6n+1),.summary-metric:nth-child(6n+1){--k:var(--blue);--kb:var(--blue-box);--kl:var(--blue-line);}
+.sa-stat-grid>.sa-stat-card:nth-child(6n+2),.sr-kpi-strip>.sr-kpi:nth-child(6n+2),.sa-info-strip>.sa-info-item:nth-child(6n+2),.stat-grid>.stat-card:nth-child(6n+2),.sa-mini-stat:nth-child(6n+2),.summary-metric:nth-child(6n+2){--k:var(--green);--kb:var(--green-box);--kl:var(--green-line);}
+.sa-stat-grid>.sa-stat-card:nth-child(6n+3),.sr-kpi-strip>.sr-kpi:nth-child(6n+3),.sa-info-strip>.sa-info-item:nth-child(6n+3),.stat-grid>.stat-card:nth-child(6n+3),.sa-mini-stat:nth-child(6n+3),.summary-metric:nth-child(6n+3){--k:var(--amber);--kb:var(--amber-box);--kl:var(--amber-line);}
+.sa-stat-grid>.sa-stat-card:nth-child(6n+4),.sr-kpi-strip>.sr-kpi:nth-child(6n+4),.sa-info-strip>.sa-info-item:nth-child(6n+4),.stat-grid>.stat-card:nth-child(6n+4),.sa-mini-stat:nth-child(6n+4),.summary-metric:nth-child(6n+4){--k:var(--purple);--kb:var(--purple-box);--kl:var(--purple-line);}
+.sa-stat-grid>.sa-stat-card:nth-child(6n+5),.sr-kpi-strip>.sr-kpi:nth-child(6n+5),.sa-info-strip>.sa-info-item:nth-child(6n+5),.stat-grid>.stat-card:nth-child(6n+5),.sa-mini-stat:nth-child(6n+5),.summary-metric:nth-child(6n+5){--k:var(--teal);--kb:var(--teal-box);--kl:var(--teal-line);}
+.sa-stat-grid>.sa-stat-card:nth-child(6n+6),.sr-kpi-strip>.sr-kpi:nth-child(6n+6),.sa-info-strip>.sa-info-item:nth-child(6n+6),.stat-grid>.stat-card:nth-child(6n+6),.sa-mini-stat:nth-child(6n+6),.summary-metric:nth-child(6n+6){--k:var(--pink);--kb:var(--pink-box);--kl:var(--pink-line);}
+.sa-stat-icon,.sr-kpi-icon,.sa-info-icon{background:var(--kb,var(--blue-box));color:var(--k,var(--blue));border:1px solid var(--kl,var(--blue-line));border-radius:9px;}
+.sa-stat-icon{width:32px;height:32px;font-size:14px;}
+.sr-kpi-icon{width:28px;height:28px;font-size:13px;}
+.sa-info-icon{width:28px;height:28px;font-size:13px;}
+.sr-stat-icon{width:30px;height:30px;border-radius:9px;font-size:14px;}
+.stat-icon-square{width:32px;height:32px;border-radius:9px;font-size:14px;}
+.ov-stat-icon{border-radius:10px;}
+/* Icon-less KPI blocks (Board Composition mini stats, comparison summary metrics) become coloured boxes themselves. */
+.sa-mini-stat,.summary-metric{background:var(--kb,var(--blue-box));border:1px solid var(--kl,var(--blue-line));border-radius:10px;padding:10px 8px;}
+.sa-mini-stat .n,.summary-metric .sm-val{color:var(--k,var(--text));}
+
+.co-toolbar{display:flex;align-items:center;gap:12px;padding:8px 0 10px;border-bottom:1px solid var(--border);margin-bottom:2px;}
+.co-selectall{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);cursor:pointer;}
+.co-count{font-size:11.5px;color:var(--text-faint);}
+.co-toolbar button[disabled]{opacity:.4;cursor:not-allowed;}
+.co-check,.co-selectall input{width:16px;height:16px;accent-color:var(--blue);cursor:pointer;}
+
+/* ---------- each KPI is its own coloured card (not a bare block inside a shared panel) ---------- */
+.sa-stat-card,.sr-stat-card,.stat-card,.sr-kpi{
+  background:linear-gradient(140deg,var(--kb,var(--blue-box)),rgba(0,0,0,0) 75%),var(--bg-panel);
+  border:1px solid var(--kl,var(--blue-line));border-radius:12px;}
+.sa-stat-card{padding:14px;}
+.sr-stat-card{padding:13px 14px;}
+.sr-kpi{padding:8px 10px;}
+.sr-kpi-strip{gap:10px;}
+.sa-stat-value,.sr-stat-value,.stat-value{color:var(--text);}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 </head>
@@ -844,6 +909,9 @@ tr.li-child td:first-child{color:var(--text-dim);}
     <form class="grid" onsubmit="event.preventDefault(); submitRegister();">
       <input id="register-name" placeholder="Full name">
       <input id="register-email" type="email" placeholder="Email" autocomplete="username">
+      <input id="register-organization" placeholder="Organization / Company">
+      <input id="register-job-title" placeholder="Job title">
+      <input id="register-phone" type="tel" placeholder="Phone (optional)">
       <input id="register-password" type="password" placeholder="Password (min 6 characters)" autocomplete="new-password">
       <button type="submit">Create Account</button>
     </form>
@@ -851,6 +919,26 @@ tr.li-child td:first-child{color:var(--text-dim);}
     <p style="font-size:12.5px;margin-top:12px;color:var(--text-faint);">
       Registered accounts can view and download. Already have one? <a href="#" onclick="switchToLogin(event)">Log in</a>
     </p>
+  </div>
+</div>
+
+<div class="modal-overlay" id="profileModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>My Profile</h2>
+      <span class="modal-close" onclick="closeProfileModal()">✕</span>
+    </div>
+    <form class="grid" onsubmit="event.preventDefault(); submitProfile();">
+      <input id="profile-name" placeholder="Full name">
+      <input id="profile-email" placeholder="Email" disabled>
+      <input id="profile-organization" placeholder="Organization / Company">
+      <input id="profile-job-title" placeholder="Job title">
+      <input id="profile-phone" type="tel" placeholder="Phone (optional)">
+      <div id="profile-meta" style="font-size:12.5px;color:var(--text-faint);margin:2px 0 4px;"></div>
+      <button type="submit">Save Changes</button>
+    </form>
+    <div id="profile-error" class="error"></div>
+    <div id="profile-saved" style="font-size:12.5px;color:var(--positive,#2e7d32);display:none;margin-top:8px;">Saved.</div>
   </div>
 </div>
 
@@ -899,8 +987,14 @@ const PAGES = [
   {id:'survey-report', label:'Survey Report', icon:'🧭'},
   {id:'survey-analytics', label:'Survey Analytics & Reporting', icon:'📈'},
   {id:'intelligence-layer', label:'Intelligence Layer', icon:'🧠'},
-  {id:'ai-extraction', label:'AI Extraction', icon:'🤖'},
-  {id:'settings', label:'Settings', icon:'⚙️'},
+  // AI, Review and Manual Entry used to be tabs inside Settings - promoted to their
+  // own top-level nav items (2026-09-25, per explicit user request) so they are one
+  // click away instead of buried behind Settings. Still admin-only (adminOnly:true),
+  // same gating Settings itself always had - see renderNav()/render() below.
+  {id:'ai', label:'AI', icon:'🤖', adminOnly:true},
+  {id:'review', label:'Review', icon:'🔍', adminOnly:true},
+  {id:'manual-entry', label:'Manual Entry', icon:'📝', adminOnly:true},
+  {id:'settings', label:'Settings', icon:'⚙️', adminOnly:true},
 ];
 // Removed from the visible nav (2026-09-12/13 sessions): Compare
 // Companies, Rankings, Sectors, Watchlist, Saved Views, Data Explorer,
@@ -984,6 +1078,7 @@ function updateUserBadge(){
   const dd = document.getElementById('userDropdown');
   if (u.logged_in) {
     dd.innerHTML = `
+      <button onclick="openProfileModal()">My Profile</button>
       ${u.role === 'admin' ? `<button onclick="goTo('settings')">Settings</button>` : ''}
       <button onclick="logout()">Log Out</button>`;
   } else {
@@ -999,6 +1094,8 @@ function openLoginModal(){
 }
 function openRegisterModal(){
   document.getElementById('register-error').textContent = '';
+  ['register-name','register-email','register-organization','register-job-title','register-phone','register-password']
+    .forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('registerModal').classList.add('open');
 }
 function closeAuthModals(){
@@ -1031,13 +1128,16 @@ async function submitLogin(){
 async function submitRegister(){
   const name = document.getElementById('register-name').value.trim();
   const email = document.getElementById('register-email').value.trim();
+  const organization = document.getElementById('register-organization').value.trim();
+  const job_title = document.getElementById('register-job-title').value.trim();
+  const phone = document.getElementById('register-phone').value.trim();
   const password = document.getElementById('register-password').value;
   const errEl = document.getElementById('register-error');
   errEl.textContent = '';
   try {
     const res = await fetch('/api/register', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name, email, password}),
+      body: JSON.stringify({name, email, organization, job_title, phone, password}),
     });
     const data = await res.json();
     if (!res.ok) { errEl.textContent = data.error || 'Registration failed.'; return; }
@@ -1049,11 +1149,57 @@ async function submitRegister(){
   } catch (e) { errEl.textContent = 'Registration failed - please try again.'; }
 }
 
+async function openProfileModal(){
+  const errEl = document.getElementById('profile-error');
+  const savedEl = document.getElementById('profile-saved');
+  errEl.textContent = '';
+  savedEl.style.display = 'none';
+  document.getElementById('profileModal').classList.add('open');
+  try {
+    const res = await fetch('/api/profile');
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'Could not load profile.'; return; }
+    document.getElementById('profile-name').value = data.name || '';
+    document.getElementById('profile-email').value = data.email || '';
+    document.getElementById('profile-organization').value = data.organization || '';
+    document.getElementById('profile-job-title').value = data.job_title || '';
+    document.getElementById('profile-phone').value = data.phone || '';
+    const roleLabel = data.role === 'admin' ? 'Admin' : 'Member';
+    const since = data.created_at ? new Date(data.created_at).toLocaleDateString() : null;
+    document.getElementById('profile-meta').textContent =
+      `${roleLabel}${since ? ' · Member since ' + since : ''}`;
+  } catch (e) { errEl.textContent = 'Could not load profile - please try again.'; }
+}
+function closeProfileModal(){
+  document.getElementById('profileModal').classList.remove('open');
+}
+async function submitProfile(){
+  const name = document.getElementById('profile-name').value.trim();
+  const organization = document.getElementById('profile-organization').value.trim();
+  const job_title = document.getElementById('profile-job-title').value.trim();
+  const phone = document.getElementById('profile-phone').value.trim();
+  const errEl = document.getElementById('profile-error');
+  const savedEl = document.getElementById('profile-saved');
+  errEl.textContent = '';
+  savedEl.style.display = 'none';
+  try {
+    const res = await fetch('/api/profile', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, organization, job_title, phone}),
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'Could not save profile.'; return; }
+    window.currentUser = {...window.currentUser, ...data};
+    updateUserBadge();
+    savedEl.style.display = 'block';
+  } catch (e) { errEl.textContent = 'Could not save profile - please try again.'; }
+}
+
 async function logout(){
   try { await fetch('/api/logout', {method: 'POST'}); } catch (e) {}
   window.currentUser = {logged_in: false, role: 'guest', name: null, email: null};
   updateUserBadge();
-  if (currentPage === 'settings') currentPage = 'overview';
+  if (['settings', 'ai', 'review', 'manual-entry'].includes(currentPage)) currentPage = 'overview';
   renderNav();
   render();
 }
@@ -1082,7 +1228,7 @@ function applyPermGating(){
 
 function renderNav(){
   const role = window.currentUser.role;
-  const pages = PAGES.filter(p => p.id !== 'settings' || role === 'admin');
+  const pages = PAGES.filter(p => !p.adminOnly || role === 'admin');
   document.getElementById('navList').innerHTML = pages.map(p => p.soon ? `
     <button class="nav-btn disabled" title="Coming soon" onclick="return false;">
       <span class="ic">${p.icon}</span><span>${p.label}</span><span class="soon-tag">Soon</span>
@@ -1139,14 +1285,22 @@ async function render(){
     title.textContent = 'Overview';
     sub.innerHTML = 'Portfolio Overview · All Companies';
     await renderOverview();
-  } else if (currentPage === 'ai-extraction') {
-    title.textContent = 'AI Extraction';
-    sub.textContent = 'Read board, committee and pay pages with a Claude model - verified against the page text before anything is applied';
-    await renderAIExtractionPage();
   } else if (currentPage === 'settings') {
     title.textContent = 'Settings';
-    sub.textContent = 'Database status, portfolio management, and import activity';
+    sub.textContent = 'Database health, users, and import activity';
     await renderSettingsPage();
+  } else if (currentPage === 'ai') {
+    title.textContent = 'AI';
+    sub.textContent = 'Run AI extraction for items the rule-based readers could not read';
+    await renderAIPage();
+  } else if (currentPage === 'review') {
+    title.textContent = 'Review';
+    sub.textContent = 'Review uploads, AI results, conflicts and issues';
+    await renderReviewPage();
+  } else if (currentPage === 'manual-entry') {
+    title.textContent = 'Manual Entry';
+    sub.textContent = 'Type in what a report contains but the app could not read';
+    await renderManualEntryPage();
   } else if (currentPage === 'survey-report') {
     // Title/sub set inside renderSurveyReportPage() per-tab, same pattern
     // as Survey Analytics.
@@ -1392,30 +1546,30 @@ async function renderOverview(){
   app.innerHTML = `
     <div class="ov-stat-grid">
       <div class="ov-stat-card">
-        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--blue-soft);color:var(--blue);">🏢</div><div class="ov-stat-label">Total Companies</div></div>
+        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--blue-box);color:var(--blue);border:1px solid var(--blue-line);">🏢</div><div class="ov-stat-label">Total Companies</div></div>
         <div class="ov-stat-value">${totalCompanies}</div>
         <div class="ov-stat-sub">Across all sectors</div>
       </div>
       <div class="ov-stat-card">
-        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--green-soft);color:var(--green);">✅</div><div class="ov-stat-label">Completed Surveys</div></div>
+        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--green-box);color:var(--green);border:1px solid var(--green-line);">✅</div><div class="ov-stat-label">Completed Surveys</div></div>
         <div class="ov-stat-value">${statusCounts.completed}</div>
         <div class="ov-stat-sub">${totalCompanies ? Math.round(statusCounts.completed/totalCompanies*100) : 0}% completion rate</div>
         <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.completed/totalCompanies*100) : 0}%;background:var(--green);"></div></div>
       </div>
       <div class="ov-stat-card">
-        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--amber-soft);color:var(--amber);">⏱️</div><div class="ov-stat-label">In Progress</div></div>
+        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--amber-box);color:var(--amber);border:1px solid var(--amber-line);">⏱️</div><div class="ov-stat-label">In Progress</div></div>
         <div class="ov-stat-value">${statusCounts.inProgress}</div>
         <div class="ov-stat-sub">Active import or review</div>
         <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.inProgress/totalCompanies*100) : 0}%;background:var(--amber);"></div></div>
       </div>
       <div class="ov-stat-card">
-        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--red-soft);color:var(--red);">❗</div><div class="ov-stat-label">Pending Review</div></div>
+        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--red-box);color:var(--red);border:1px solid var(--red-line);">❗</div><div class="ov-stat-label">Pending Review</div></div>
         <div class="ov-stat-value">${statusCounts.pending}</div>
         <div class="ov-stat-sub">Awaiting survey data or review</div>
         <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.pending/totalCompanies*100) : 0}%;background:var(--red);"></div></div>
       </div>
       <div class="ov-stat-card">
-        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--purple-soft);color:var(--purple);">✖️</div><div class="ov-stat-label">Failed / Needs Attention</div></div>
+        <div class="ov-stat-top"><div class="ov-stat-icon" style="background:var(--purple-box);color:var(--purple);border:1px solid var(--purple-line);">✖️</div><div class="ov-stat-label">Failed / Needs Attention</div></div>
         <div class="ov-stat-value">${statusCounts.attention}</div>
         <div class="ov-stat-sub">Failed imports or low scores</div>
         <div class="ov-stat-bar-track"><div class="ov-stat-bar-fill" style="width:${totalCompanies ? Math.round(statusCounts.attention/totalCompanies*100) : 0}%;background:var(--purple);"></div></div>
@@ -1423,7 +1577,7 @@ async function renderOverview(){
     </div>
 
     <div class="ov-row ov-row-3col">
-      <div class="panel">
+      <div class="panel ov-boxed">
         <div class="ov-panel-head"><h2>Survey Progress by Sector</h2></div>
         ${totalCompanies > 0 ? `
         <div class="ov-donut-wrap">
@@ -1434,7 +1588,7 @@ async function renderOverview(){
         </div>` : `<div class="empty">Add companies to see the sector breakdown here.</div>`}
       </div>
 
-      <div class="panel">
+      <div class="panel ov-boxed">
         <div class="ov-panel-head"><h2>Company Survey Status</h2></div>
         ${companyRows ? `
         <table>
@@ -1446,14 +1600,14 @@ async function renderOverview(){
         ` : `<div class="empty">No companies on file yet.</div>`}
       </div>
 
-      <div class="panel">
+      <div class="panel ov-boxed">
         <div class="ov-panel-head"><h2>Recent Activities</h2></div>
         ${activityItems || `<div class="empty">No recorded activity yet \u2014 uploading survey data or reviewing a field will appear here.</div>`}
       </div>
     </div>
 
     <div class="ov-row ov-row-2col">
-      <div class="panel">
+      <div class="panel ov-boxed">
         <div class="ov-panel-head"><h2>Data Quality Overview</h2><span class="ov-panel-link">View details &rarr;</span></div>
         ${dataQuality.has_data ? `
         <div class="ov-dq-grid">
@@ -1470,7 +1624,7 @@ async function renderOverview(){
             <div class="ov-dq-sub">${dqTotal ? Math.round(dq.partial/dqTotal*100) : 0}% of total</div>
           </div>
           <div class="ov-dq-card">
-            <div class="ov-dq-icon" style="background:var(--purple-soft);color:var(--purple);">ℹ️</div>
+            <div class="ov-dq-icon" style="background:var(--red-soft);color:var(--red);">ℹ️</div>
             <div class="ov-dq-label">Missing Disclosures</div>
             <div class="ov-dq-value">${dq.missing}</div>
             <div class="ov-dq-sub">${dqTotal ? Math.round(dq.missing/dqTotal*100) : 0}% of total</div>
@@ -1480,28 +1634,28 @@ async function renderOverview(){
         ` : `<div class="empty">No survey data on file yet — add company survey data from the Survey Companies page to see quality here.</div>`}
       </div>
 
-      <div class="panel">
+      <div class="panel ov-boxed">
         <div class="ov-panel-head"><h2>Analyst Workload</h2></div>
         <div class="empty">${naSpan('This app has no user or authentication system, so there is no real analyst identity to assign work to or measure completion against \u2014 adding this would mean building a user/login system first, not a data-mapping fix')}</div>
       </div>
 
-      <div class="panel">
+      <div class="panel ov-boxed">
         <div class="ov-panel-head"><h2>Quick Actions</h2></div>
         <div class="ov-quick-actions">
           <div class="ov-qa-card" onclick="goTo('settings')">
-            <div class="ov-qa-icon" style="background:var(--amber-soft);color:var(--amber);">📄</div>
+            <div class="ov-qa-icon" style="background:var(--blue-soft);color:var(--blue);">📄</div>
             <div><div class="ov-qa-title">Generate Report</div><div class="ov-qa-desc">Create survey progress or quality report</div></div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel ov-boxed">
       <div class="ov-panel-head"><h2>Survey Administration Timeline</h2><span class="ov-panel-link">View timeline &rarr;</span></div>
       <div class="ov-timeline">
-        ${timelineSteps.map((s) => `
+        ${timelineSteps.map((s, i) => `
           <div class="ov-timeline-step">
-            <div class="ov-timeline-icon" style="background:var(--blue-soft);color:var(--blue);">${s.icon}</div>
+            <div class="ov-timeline-icon" style="${statTone(['blue','green','amber','purple','teal','pink'][i % 6])}">${s.icon}</div>
             <div class="ov-timeline-title">${escapeHtml(s.title)}</div>
             <div class="ov-timeline-count">${s.count} companies</div>
           </div>`).join('')}
@@ -1513,16 +1667,25 @@ async function renderOverview(){
 
 // Shared stat-card markup: icon square on the left, label/value/trend
 // stacked to the right - used by every stat-grid across the app.
+// `color` picks one of the palette tones defined on :root (blue/green/
+// amber/red/purple/teal/pink) - the icon square gets that color's soft
+// tint as a background and the full tone as the icon color, so different
+// stats in the same row are visually distinguishable at a glance rather
+// than all reading as the same flat gray square.
+function statTone(color){
+  const known = ['blue','green','amber','red','purple','teal','pink'];
+  const c = known.includes(color) ? color : 'blue';
+  return `background:var(--${c}-box);color:var(--${c});border:1px solid var(--${c}-line);`;
+}
+function toneVars(color){
+  const known = ['blue','green','amber','red','purple','teal','pink'];
+  const c = known.includes(color) ? color : 'blue';
+  return `--k:var(--${c});--kb:var(--${c}-box);--kl:var(--${c}-line);`;
+}
 function statCard(color, icon, value, label, trendHtml){
-  const colorMap = {
-    blue: ['var(--blue-soft)', 'var(--blue)'], green: ['var(--green-soft)', 'var(--green)'],
-    purple: ['var(--purple-soft)', 'var(--purple)'], amber: ['var(--amber-soft)', 'var(--amber)'],
-    red: ['var(--red-soft)', 'var(--red)'],
-  };
-  const [bg, fg] = colorMap[color] || colorMap.blue;
   return `
-    <div class="stat-card">
-      <div class="stat-icon-square" style="background:${bg};color:${fg};">${icon}</div>
+    <div class="stat-card" style="${toneVars(color)}">
+      <div class="stat-icon-square" style="${statTone(color)}">${icon}</div>
       <div class="stat-card-body">
         <div class="stat-label">${escapeHtml(label)}</div>
         <div class="stat-value">${value}</div>
@@ -1685,8 +1848,15 @@ function renderUploadBatchResults(data){
   const statusEl = document.getElementById('uploadReportsStatus');
   const resultsEl = document.getElementById('uploadReportsResults');
   statusEl.style.display = 'block';
-  statusEl.textContent = `Done: ${data.saved} saved, ${data.failed} failed.`;
+  const queued = (data.results || []).filter(r => r.review).length;
+  statusEl.textContent = queued
+    ? `${queued} file(s) queued for review - nothing is saved until you approve them.${data.saved ? ' ' + data.saved + ' saved.' : ''} ${data.failed} failed.`
+    : `Done: ${data.saved} saved, ${data.failed} failed.`;
   resultsEl.innerHTML = (data.results || []).map(r => {
+    if (r.ok && r.review) {
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);">🕒 <strong>${escapeHtml(r.filename)}</strong> — queued for review.
+        <a href="#" onclick="closeUploadReportsModal();openReview('uploads');return false;">Open Review</a></div>`;
+    }
     if (r.ok) {
       return `<div style="padding:6px 0;border-bottom:1px solid var(--border,#eee);">
         ✅ <strong>${escapeHtml(r.filename)}</strong> → ${escapeHtml(r.company_name || 'Unknown')}
@@ -1783,10 +1953,20 @@ async function submitUploadReports(){
     logEl.scrollTop = logEl.scrollHeight;
   };
   const fmtTime = (iso) => { try { return new Date(iso).toLocaleTimeString(); } catch(e) { return ''; } };
+  // Elapsed time: under a minute -> "42.3s"; from 60s -> "1m 05s"; from an hour -> "1h 02m 05s".
+  const fmtElapsed = (secs) => {
+    secs = Number(secs);
+    if (!isFinite(secs) || secs < 0) return '';
+    if (secs < 59.95) return secs.toFixed(1) + 's';
+    const total = Math.floor(secs);
+    const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
+    const pad = n => String(n).padStart(2, '0');
+    return h ? `${h}h ${pad(m)}m ${pad(sec)}s` : `${m}m ${pad(sec)}s`;
+  };
   const es = new EventSource(`/api/upload-progress/${batchId}`);
   logWrap.style.display = 'block';
   timerHandle = setInterval(() => {
-    timerEl.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + 's';
+    timerEl.textContent = fmtElapsed((Date.now() - startedAt) / 1000);
   }, 100);
 
   const finish = (ok, message) => {
@@ -1810,11 +1990,11 @@ async function submitUploadReports(){
     } else if (e.type === 'file_done') {
       const scoreTxt = (e.extraction_score !== null && e.extraction_score !== undefined)
         ? ` — extraction score ${e.extraction_score}/100${e.extraction_score < 70 ? ' ⚠️ low' : ''}` : '';
-      logLine(`<span style="color:var(--text-faint);">[${t}]</span> ✅ <strong>${escapeHtml(e.filename)}</strong> done in ${e.elapsed_seconds}s${scoreTxt}`);
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> ✅ <strong>${escapeHtml(e.filename)}</strong> done in ${fmtElapsed(e.elapsed_seconds) || e.elapsed_seconds + 's'}${scoreTxt}`);
     } else if (e.type === 'file_failed') {
       logLine(`<span style="color:var(--text-faint);">[${t}]</span> ❌ <strong>${escapeHtml(e.filename)}</strong> — ${escapeHtml(e.error || 'failed')}`);
     } else if (e.type === 'batch_done') {
-      logLine(`<span style="color:var(--text-faint);">[${t}]</span> <strong>Batch complete in ${e.elapsed_seconds}s</strong> — ${e.saved} saved, ${e.failed} failed`);
+      logLine(`<span style="color:var(--text-faint);">[${t}]</span> <strong>Batch complete in ${fmtElapsed(e.elapsed_seconds) || e.elapsed_seconds + 's'}</strong> — ${e.saved} saved, ${e.failed} failed`);
       if (!settledByPoll) {
         settledByPoll = true;
         renderUploadBatchResults({results: e.results || [], saved: e.saved, failed: e.failed});
@@ -1924,6 +2104,7 @@ async function deleteCompany(companyId, companyName){
       return;
     }
     allCompaniesCache = allCompaniesCache.filter(c => c.id !== companyId);
+    settingsSelectedCompanyIds.delete(companyId);
     await renderSettingsCompaniesPanel();
   } catch (err) {
     console.error('Delete failed:', err);
@@ -2482,9 +2663,9 @@ async function renderSurveyReportPage(){
       </div>
       <div class="sr-kpi-strip">
         ${srKpi('📈', s && s.market_cap !== null && s.market_cap !== undefined ? escapeHtml(s.currency) + ' ' + fmtAmount(s.market_cap) + ' ' + escapeHtml(s.unit || '') : naSpan('Not filed in survey data'), 'Market Cap')}
-        ${srKpi('👤', s && s.turnover !== null && s.turnover !== undefined ? escapeHtml(s.currency) + ' ' + fmtAmount(s.turnover) : naSpan('Not filed in survey data'), 'Revenue / Turnover')}
-        ${srKpi('💰', s && s.net_profit !== null && s.net_profit !== undefined ? escapeHtml(s.currency) + ' ' + fmtAmount(s.net_profit) : naSpan('Not filed in survey data'), 'Net Profit')}
-        ${srKpi('📅', data.period_label ? escapeHtml(data.period_label) : naSpan('No financial period on file'), 'Reporting Period')}
+        ${srKpi('👤', s && s.turnover !== null && s.turnover !== undefined ? escapeHtml(s.currency) + ' ' + fmtAmount(s.turnover) + ' ' + escapeHtml(s.unit || '') : naSpan('Not filed in survey data'), 'Revenue / Turnover')}
+        ${srKpi('💰', s && s.net_profit !== null && s.net_profit !== undefined ? escapeHtml(s.currency) + ' ' + fmtAmount(s.net_profit) + ' ' + escapeHtml(s.unit || '') : naSpan('Not filed in survey data'), 'Net Profit')}
+        ${srKpi('📅', (s && s.fiscal_year) ? escapeHtml(s.fiscal_year) : (data.period_label ? escapeHtml(data.period_label) : naSpan('No financial period on file')), 'Reporting Period')}
       </div>
     </div>
     <div class="ir-tabbar">${SR_TABS.map(t =>
@@ -2562,7 +2743,12 @@ function srTabIsEmpty(tabId, data){
   if (tabId === 'directors-register') return !(data.survey_director_rows || []).length;
   if (tabId === 'remuneration') return !(data.director_rows || []).length;
   if (tabId === 'committees') return !(data.committees || []).length;
-  if (tabId === 'benefits') return !(s.ned_benefits && Object.keys(s.ned_benefits).length) && !(data.survey_director_benefits || []).length && !(data.benefit_categories || []).length;
+  if (tabId === 'benefits') {
+    // benefits also come from benefit-like columns of the filed pay rows (Retirement benefits, Other employee benefits, ...)
+    const pat = /housing|vehicle|car|medical|health|travel|pension|benefit|allowance|insurance|mortgage|fuel/i;
+    const inPay = (data.director_rows || []).some(r => { let c = r.components; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } } return Object.keys(c || {}).some(k => pat.test(k) && !/^total/i.test(k)); });
+    return !inPay && !(s.ned_benefits && Object.keys(s.ned_benefits).length) && !(data.survey_director_benefits || []).length && !(data.benefit_categories || []).length;
+  }
   return false;
 }
 function srEmptyBanner(tabId, data){
@@ -2570,10 +2756,10 @@ function srEmptyBanner(tabId, data){
   const task = SR_TAB_TASK[tabId];
   const st = (data.ai_items || {})[task] || {};
   let why;
-  if (st.done) why = `AI results for this tab are <b>ready to review</b> (${st.done}). Open <a href="#" onclick="currentPage='ai-extraction';renderNav();render();return false;">AI Extraction</a> and apply the verified items.`;
-  else if (st.pending || st.failed) why = `The rule-based readers found nothing here. The AI can read this report's pages - <b>${(st.pending || 0) + (st.failed || 0)} item(s) are waiting</b> in <a href="#" onclick="currentPage='ai-extraction';renderNav();render();return false;">AI Extraction</a> (the cost is shown before anything is sent).`;
-  else if (st.submitted) why = 'The AI extraction for this tab has been sent and is still processing. Check it in AI Extraction.';
-  else if (st.applied) why = 'The AI extraction ran for this tab but none of its items could be verified against the page text, so nothing was written. Open AI Extraction to see why.';
+  if (st.done) why = `AI results for this tab are <b>ready to review</b> (${st.done}). Open <a href="#" onclick="openReview('ai-results');return false;">Review › AI results</a> and apply the verified items.`;
+  else if (st.pending || st.failed) why = `The rule-based readers found nothing here. The AI can read this report's pages - <b>${(st.pending || 0) + (st.failed || 0)} item(s) are waiting</b> in <a href="#" onclick="openReview('ai-results');return false;">Review</a> (run them from the AI page - the cost is shown before anything is sent). You can also <a href="#" onclick="openReview('manual');return false;">type the values in</a>.`;
+  else if (st.submitted) why = 'The AI extraction for this tab has been sent and is still processing. Check it on the AI page.';
+  else if (st.applied) why = 'The AI extraction ran for this tab but none of its items could be verified against the page text, so nothing was written. Open Review › AI results to see why.';
   else why = 'The rule-based readers found nothing here and no page in this report is relevant enough to send to the AI, so the report most likely does not disclose it (or it was uploaded before AI extraction existed - re-upload to check).';
   return `<div class="status-banner warn" style="margin-bottom:12px">No data on this tab yet. ${why}</div>`;
 }
@@ -2596,13 +2782,33 @@ function srCompanyOverviewTab(data){
   if (!s && !data.has_director_data) {
     return `<div class="panel"><div class="empty">No survey or filed director data on record for ${escapeHtml(c.name)} yet.</div></div>`;
   }
+  // Same register fallback as srBoardCompositionTab: a filing that only
+  // gives a named director register (survey_director_rows) rather than
+  // its own separate "Board Composition" summary figures still lets
+  // these counts be shown, counted live from that register instead of
+  // left "Not available" - each marked with a (derived) note below
+  // rather than presented as if it were itself a filed figure.
+  const regRows = data.survey_director_rows || [];
+  const roleKnownRows = regRows.filter(d => d.role === 'executive' || d.role === 'non_executive');
+  const genderKnownRows = regRows.filter(d => d.gender);
+  const indepKnownRows = regRows.filter(d => d.independent === true || d.independent === false);
+  const derive = (statedVal, knownRows, counter) => {
+    if (statedVal !== null && statedVal !== undefined) return [statedVal, false];
+    if (!knownRows.length) return [statedVal, false];
+    return [counter(), true];
+  };
+  const [execVal, execDerived] = derive(s && s.executive_directors_count, roleKnownRows, () => regRows.filter(d => d.role === 'executive').length);
+  const [nonExecVal, nonExecDerived] = derive(s && s.non_executive_directors_count, roleKnownRows, () => regRows.filter(d => d.role === 'non_executive').length);
+  const [indepVal, indepDerived] = derive(s && s.independent_neds_count, indepKnownRows, () => regRows.filter(d => d.independent === true).length);
+  const [femaleVal, femaleDerived] = derive(s && s.directors_female, genderKnownRows, () => regRows.filter(d => (d.gender || '').toLowerCase() === 'female').length);
+
   const boardRows = [
-    ['Board Size', s && s.board_size, 'board_size'],
-    ['Executive Directors', s && s.executive_directors_count, 'executive_directors_count'],
-    ['Non-Executive Directors', s && s.non_executive_directors_count, 'non_executive_directors_count'],
-    ['Independent Directors', s && s.independent_neds_count, 'independent_neds_count'],
-    ['Female Directors', s && s.directors_female, 'directors_female'],
-    ['Board Meetings Held', s && s.board_meetings_per_year, 'board_meetings_per_year'],
+    ['Board Size', s && s.board_size, 'board_size', false],
+    ['Executive Directors', execVal, 'executive_directors_count', execDerived],
+    ['Non-Executive Directors', nonExecVal, 'non_executive_directors_count', nonExecDerived],
+    ['Independent Directors', indepVal, 'independent_neds_count', indepDerived],
+    ['Female Directors', femaleVal, 'directors_female', femaleDerived],
+    ['Board Meetings Held', s && s.board_meetings_per_year, 'board_meetings_per_year', false],
   ];
   return `
     <div class="row row-2" style="grid-template-columns:1.6fr 1fr;">
@@ -2621,8 +2827,8 @@ function srCompanyOverviewTab(data){
         <div class="panel" style="margin-bottom:14px;">
           <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">2. Board Composition</h2><span class="ov-panel-link" onclick="switchSRTab('board-composition')">View full board register &rarr;</span></div>
           <table><thead><tr><th>Item</th><th>Value</th><th>Confidence</th></tr></thead><tbody>
-            ${boardRows.map(([label, val, field]) => `
-              <tr><td>${escapeHtml(label)}</td><td>${val !== null && val !== undefined ? val : naSpan('Not filed in survey data')}</td><td>${srConfBadge(s, field)}</td></tr>`).join('')}
+            ${boardRows.map(([label, val, field, derived]) => `
+              <tr><td>${escapeHtml(label)}</td><td>${val !== null && val !== undefined ? val : naSpan('Not filed in survey data')}</td><td>${derived ? `<span style="font-size:10px;color:var(--text-faint);" title="Not itself stated in the filing - counted from the named director register">from register</span>` : srConfBadge(s, field)}</td></tr>`).join('')}
           </tbody></table>
         </div>
         <div class="panel">
@@ -2680,8 +2886,12 @@ function srCompanyOverviewTab(data){
 // sanity-check the summary numbers.
 function srCompanyOverviewRemunerationTable(s, fieldPairs){
   if (!s) return `<div class="empty">${naSpan('No survey data on file for this company yet')}</div>`;
+  // Pay figures are on the scale of this company's own pay table (director_figures_unit), which
+  // can differ from its headline unit - label anything that isn't plain raw currency.
+  const pu = surveyDirectorFiguresUnit(s);
+  const puSuffix = pu && pu.toLowerCase() !== 'units' ? ` (${escapeHtml(pu)})` : '';
   return `<table><tbody>
-    ${fieldPairs.map(([label, f]) => `<tr><td>${escapeHtml(label)}</td><td>${s[f] !== null && s[f] !== undefined ? escapeHtml(s.currency || '') + ' ' + fmtAmount(s[f]) : naSpan('Not filed')}</td><td>${srConfBadge(s, f)}</td></tr>`).join('')}
+    ${fieldPairs.map(([label, f]) => `<tr><td>${escapeHtml(label)}</td><td>${s[f] !== null && s[f] !== undefined ? escapeHtml(s.currency || '') + ' ' + fmtAmount(s[f]) + puSuffix : naSpan('Not filed')}</td><td>${srConfBadge(s, f)}</td></tr>`).join('')}
   </tbody></table>`;
 }
 // Panel 8 in the design: which SOURCE DOCUMENT/PAGE backs a handful of
@@ -2740,35 +2950,85 @@ const SR_BOARD_FIELD_ROWS = [
   ['Executive Directors', 'executive_directors_count'],
   ['Non-Executive Directors', 'non_executive_directors_count'],
   ['Independent Directors', 'independent_neds_count'],
+  ['Non-Independent NEDs', 'non_independent_neds_count'],
+  ['NEDs \u2014 Kenyan', 'neds_kenyan_count'],
+  ['NEDs \u2014 Non-Kenyan', 'neds_non_kenyan_count'],
   ['Female Directors', 'directors_female'],
   ['Male Directors', 'directors_male'],
-  ['Average Age', 'avg_age_executive_directors'],
+  ['Committees / Board', 'committees_per_board'],
+  ['Committee Meetings / Year', 'committee_meetings_per_year'],
+  ['Average Age \u2014 Executive Directors', 'avg_age_executive_directors'],
+  ['Average Age \u2014 Non-Executive Directors', 'avg_age_non_executive_directors'],
+  ['Average Age \u2014 Independent NEDs', 'avg_age_independent_neds'],
+  ['Average Age \u2014 Non-Independent NEDs', 'avg_age_non_independent_neds'],
   ['Board Meetings Held', 'board_meetings_per_year'],
 ];
 function srBoardCompositionTab(data){
   const s = data.survey;
   if (!s) return `<div class="panel"><div class="empty">${naSpan('No survey data on file for this company yet')}</div></div>`;
-  const exec = s.executive_directors_count, nonExec = s.non_executive_directors_count;
-  const female = s.directors_female, male = s.directors_male;
+
+  // The survey extraction fills executive_directors_count etc. only when
+  // the filing states them as their own labeled figure (e.g. a "Board
+  // Composition" summary table) - a filing that instead only gives a
+  // named director-by-director register (survey_director_rows, from the
+  // same document's board-composition pages, each row carrying its own
+  // extracted role/gender/independence) leaves those survey fields null
+  // even though the same counts are sitting right there in the register.
+  // Fall back to counting the register itself in that case, rather than
+  // showing "Not available" for something this company's own filing did
+  // provide - each count only fires once at least one director in the
+  // register actually has that attribute stated (never assumes the rest).
+  const regRows = data.survey_director_rows || [];
+  const roleKnownRows = regRows.filter(d => d.role === 'executive' || d.role === 'non_executive');
+  const genderKnownRows = regRows.filter(d => d.gender);
+  const indepKnownRows = regRows.filter(d => d.independent === true || d.independent === false);
+
+  let exec = s.executive_directors_count, execDerived = false;
+  if ((exec === null || exec === undefined) && roleKnownRows.length) {
+    exec = regRows.filter(d => d.role === 'executive').length; execDerived = true;
+  }
+  let nonExec = s.non_executive_directors_count, nonExecDerived = false;
+  if ((nonExec === null || nonExec === undefined) && roleKnownRows.length) {
+    nonExec = regRows.filter(d => d.role === 'non_executive').length; nonExecDerived = true;
+  }
+  let independentCount = s.independent_neds_count, independentDerived = false;
+  if ((independentCount === null || independentCount === undefined) && indepKnownRows.length) {
+    independentCount = regRows.filter(d => d.independent === true).length; independentDerived = true;
+  }
+  let female = s.directors_female, femaleDerived = false;
+  if ((female === null || female === undefined) && genderKnownRows.length) {
+    female = regRows.filter(d => (d.gender || '').toLowerCase() === 'female').length; femaleDerived = true;
+  }
+  let male = s.directors_male;
+  if ((male === null || male === undefined) && genderKnownRows.length) {
+    male = regRows.filter(d => (d.gender || '').toLowerCase() === 'male').length;
+  }
+  // If the register doesn't cover every board seat (e.g. 11 of 13 have a
+  // stated role), the derived exec+nonExec total can legitimately be
+  // less than board_size - not a bug, just an incomplete register; flag
+  // it rather than implying full coverage.
+  const registerIncomplete = (execDerived || nonExecDerived) && s.board_size
+    && (exec + nonExec) !== s.board_size;
 
   return `
-    <div class="panel" style="margin-bottom:14px;">
-      <div class="sa-panel-title">Board Composition</div>
+    <div style="margin-bottom:14px;">
+      <div class="sa-panel-title" style="margin-bottom:10px;">Board Composition</div>
+      ${registerIncomplete ? `<div class="status-banner warn" style="margin-bottom:10px;">Executive/Non-Executive counts below are derived from the ${regRows.length}-person director register on file, which covers ${exec + nonExec} of the ${s.board_size} board seats stated elsewhere in this filing - the remaining seat(s) have no stated role.</div>` : ''}
       <div class="sr-stat-grid">
-        ${srStat('👥', s.board_size, 'Board Size', s.board_size, 'board_size')}
-        ${srStat('👤', exec, 'Executive Directors', s.board_size, 'executive_directors_count')}
-        ${srStat('👥', nonExec, 'Non-Executive Directors', s.board_size, 'non_executive_directors_count')}
-        ${srStat('🛡️', s.independent_neds_count, 'Independent Directors', s.board_size, 'independent_neds_count')}
-        ${srStat('♀️', female, 'Female Directors', s.board_size, 'directors_female')}
-        ${srStat('📅', s.avg_age_executive_directors !== null ? Math.round(s.avg_age_executive_directors) : null, 'Average Age', null, 'avg_age_executive_directors')}
-        ${srStat('📅', s.board_meetings_per_year, 'Board Meetings (FY)', null, 'board_meetings_per_year')}
+        ${srStat('👥', s.board_size, 'Board Size', s.board_size, 'board_size', false, 'blue')}
+        ${srStat('👤', exec, 'Executive Directors', s.board_size, 'executive_directors_count', execDerived, 'green')}
+        ${srStat('👥', nonExec, 'Non-Executive Directors', s.board_size, 'non_executive_directors_count', nonExecDerived, 'purple')}
+        ${srStat('🛡️', independentCount, 'Independent Directors', s.board_size, 'independent_neds_count', independentDerived, 'teal')}
+        ${srStat('♀️', female, 'Female Directors', s.board_size, 'directors_female', femaleDerived, 'pink')}
+        ${srStat('📅', s.avg_age_executive_directors !== null ? Math.round(s.avg_age_executive_directors) : null, 'Average Age (Executive)', null, 'avg_age_executive_directors', false, 'amber')}
+        ${srStat('📅', s.board_meetings_per_year, 'Board Meetings (FY)', null, 'board_meetings_per_year', false, 'red')}
       </div>
     </div>
     <div class="row row-2">
       <div class="panel">
         <div class="sa-panel-title">Board Composition by Category</div>
         ${exec !== null && nonExec !== null && (exec+nonExec) > 0
-          ? saDonut2([['Executive Directors', Math.round(exec/(exec+nonExec)*100), 'var(--blue)'], ['Non-Executive Directors', Math.round(nonExec/(exec+nonExec)*100), '#8ab4ff']], `${exec+nonExec}`)
+          ? saDonut2([['Executive Directors', Math.round(exec/(exec+nonExec)*100), 'var(--blue)'], ['Non-Executive Directors', Math.round(nonExec/(exec+nonExec)*100), 'var(--amber)']], `${exec+nonExec}`)
           : `<div class="empty">${naSpan('Not filed in survey data')}</div>`}
       </div>
       <div class="panel">
@@ -2886,11 +3146,22 @@ function srBoardComparisonPanel(s){
       </tbody></table>` : `<div class="empty">${naSpan('Not enough matching data to compare')}</div>`}
     </div>`;
 }
-function srStat(icon, value, label, total, field){
+function srStat(icon, value, label, total, field, derived, tone){
   const s = srDataCache.survey;
-  return `<div class="sr-stat-card">
-    <div class="sr-stat-top"><div class="sr-stat-icon">${icon}</div><div class="sr-stat-label">${escapeHtml(label)}</div></div>
-    <div class="sr-stat-value">${value !== null && value !== undefined ? value : naSpan('Not filed in survey data')} ${srConfBadge(s, field)}</div>
+  // 'derived' means this value wasn't itself a field the filing's survey
+  // extraction stated - it's counted live from the named directors'
+  // register (data.survey_director_rows) because the survey field itself
+  // came back null. Real, not fabricated (every director counted was
+  // actually extracted with a stated role) - but it isn't "filed" in the
+  // sense the confidence badge means, so show a distinct note instead of
+  // srConfBadge, which would otherwise look up a confidence score that
+  // was never computed for this figure.
+  const badge = derived
+    ? `<span style="font-size:10px;color:var(--text-faint);" title="Not itself stated in the filing - counted from the named director register below">from register</span>`
+    : srConfBadge(s, field);
+  return `<div class="sr-stat-card" style="${toneVars(tone || 'blue')}">
+    <div class="sr-stat-top"><div class="sr-stat-icon" style="${statTone(tone || 'blue')}">${icon}</div><div class="sr-stat-label">${escapeHtml(label)}</div></div>
+    <div class="sr-stat-value">${value !== null && value !== undefined ? value : naSpan('Not filed in survey data')} ${badge}</div>
   </div>`;
 }
 
@@ -2931,11 +3202,11 @@ function srDirectorsRegisterTab(data){
 
   return `
     <div class="sr-stat-grid" style="margin-bottom:14px;">
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc65</div><div class="sr-stat-label">Total Directors</div></div><div class="sr-stat-value">${total}</div></div>
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc64</div><div class="sr-stat-label">Executive Directors</div></div><div class="sr-stat-value">${roleKnown ? execCount : naSpan('Role not stated for any director')}</div></div>
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udc65</div><div class="sr-stat-label">Non-Executive Directors</div></div><div class="sr-stat-value">${roleKnown ? nonExecCount : naSpan('Role not stated for any director')}</div></div>
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\ud83d\udee1\ufe0f</div><div class="sr-stat-label">Independent Directors</div></div><div class="sr-stat-value">${!independentKnown ? naSpan('Independence not stated for any director') : `${independentCount}`}${independentKnown && total ? ` <span style="font-size:11px;color:var(--text-faint);">(${Math.round(independentCount/total*100)}%)</span>` : ''}</div></div>
-      <div class="sr-stat-card"><div class="sr-stat-top"><div class="sr-stat-icon">\u2640\ufe0f</div><div class="sr-stat-label">Female Directors</div></div><div class="sr-stat-value">${genderKnown ? `${femaleCount} <span style="font-size:11px;color:var(--text-faint);">(${Math.round(femaleCount/genderKnown*100)}%)</span>` : naSpan('Gender not stated for any director')}</div></div>
+      <div class="sr-stat-card" style="${toneVars('blue')}"><div class="sr-stat-top"><div class="sr-stat-icon" style="${statTone('blue')}">\ud83d\udc65</div><div class="sr-stat-label">Total Directors</div></div><div class="sr-stat-value">${total}</div></div>
+      <div class="sr-stat-card" style="${toneVars('green')}"><div class="sr-stat-top"><div class="sr-stat-icon" style="${statTone('green')}">\ud83d\udc64</div><div class="sr-stat-label">Executive Directors</div></div><div class="sr-stat-value">${roleKnown ? execCount : naSpan('Role not stated for any director')}</div></div>
+      <div class="sr-stat-card" style="${toneVars('purple')}"><div class="sr-stat-top"><div class="sr-stat-icon" style="${statTone('purple')}">\ud83d\udc65</div><div class="sr-stat-label">Non-Executive Directors</div></div><div class="sr-stat-value">${roleKnown ? nonExecCount : naSpan('Role not stated for any director')}</div></div>
+      <div class="sr-stat-card" style="${toneVars('teal')}"><div class="sr-stat-top"><div class="sr-stat-icon" style="${statTone('teal')}">\ud83d\udee1\ufe0f</div><div class="sr-stat-label">Independent Directors</div></div><div class="sr-stat-value">${!independentKnown ? naSpan('Independence not stated for any director') : `${independentCount}`}${independentKnown && total ? ` <span style="font-size:11px;color:var(--text-faint);">(${Math.round(independentCount/total*100)}%)</span>` : ''}</div></div>
+      <div class="sr-stat-card" style="${toneVars('pink')}"><div class="sr-stat-top"><div class="sr-stat-icon" style="${statTone('pink')}">\u2640\ufe0f</div><div class="sr-stat-label">Female Directors</div></div><div class="sr-stat-value">${genderKnown ? `${femaleCount} <span style="font-size:11px;color:var(--text-faint);">(${Math.round(femaleCount/genderKnown*100)}%)</span>` : naSpan('Gender not stated for any director')}</div></div>
     </div>
     <div class="row row-2" style="grid-template-columns:1.7fr 1fr;">
       <div class="panel">
@@ -3032,7 +3303,7 @@ function srRemunerationTab(data){
           ${srPerDirectorRemunerationTable(nonExecRows, profileByName)}
         </div>
         <div class="panel" style="margin-bottom:14px;">
-          <div class="sa-panel-title">Company-Level Remuneration (Survey Data)</div>
+          <div class="sa-panel-title">Company-Level Remuneration (Survey Data)${s && surveyDirectorFiguresUnit(s) && surveyDirectorFiguresUnit(s).toLowerCase() !== 'units' ? ` (${escapeHtml(surveyDirectorFiguresUnit(s))})` : ''}</div>
           ${s ? `<table><thead><tr><th>Field</th><th>Value</th><th>Confidence</th></tr></thead><tbody>
             ${[
               ['Chairperson Annual Retainer','chairperson_annual_retainer'],
@@ -3121,12 +3392,21 @@ function srCeoRemunerationPanel(s){
   if (!s) return '';
   const ceoFields = ['ceo_monthly_salary','ceo_monthly_allowances','ceo_monthly_incentive_bonus',
     'ceo_monthly_deferred_incentive','ceo_monthly_non_cash_benefits','ceo_monthly_pension',
-    'ceo_monthly_gratuity','ceo_monthly_share_value','ceo_monthly_cost_of_employment'];
+    'ceo_monthly_gratuity','ceo_monthly_share_value','ceo_monthly_cost_of_employment',
+    'ceo_annual_salary_as_stated'];
   const anyCeoData = ceoFields.some(f => s[f] !== null && s[f] !== undefined);
   if (!anyCeoData) return '';
+  // The pay figures below are on whatever scale this company's OWN director pay table
+  // used (SurveyCompanyData.director_figures_unit - see app.py's to_pay_unit), which can
+  // differ from the company's headline Unit (confirmed real: KCB Group Plc states
+  // turnover in billions but director pay in thousands). Label it whenever it isn't
+  // plain raw currency, rather than showing a bare number that looks like whole
+  // currency when it may not be.
+  const payUnit = surveyDirectorFiguresUnit(s);
+  const payUnitSuffix = payUnit && payUnit.toLowerCase() !== 'units' ? `, ${escapeHtml(payUnit)}` : '';
   return `
     <div class="panel" style="margin-bottom:14px;">
-      <div class="sa-panel-title">CEO/MD Remuneration \u2014 Monthly (${escapeHtml(s.currency || 'KES')})</div>
+      <div class="sa-panel-title">CEO/MD Remuneration \u2014 Monthly (${escapeHtml(s.currency || 'KES')}${payUnitSuffix})</div>
       <table><thead><tr><th>Field</th><th>Value</th><th>Confidence</th></tr></thead><tbody>
         ${[
           ['Salary','ceo_monthly_salary'], ['Allowances','ceo_monthly_allowances'],
@@ -3135,6 +3415,8 @@ function srCeoRemunerationPanel(s){
           ['Gratuity','ceo_monthly_gratuity'], ['Share Value','ceo_monthly_share_value'],
           ['Total Cost of Employment','ceo_monthly_cost_of_employment'],
         ].map(([label,f]) => `<tr><td>${label}</td><td>${s[f] !== null && s[f] !== undefined ? escapeHtml(s.currency || 'KES') + ' ' + fmtAmount(s[f]) : naSpan('Not filed')}</td><td>${srConfBadge(s,f)}</td></tr>`).join('')}
+        <tr><td>Annual Salary (as stated in filing)</td><td>${s.ceo_annual_salary_as_stated !== null && s.ceo_annual_salary_as_stated !== undefined ? escapeHtml(s.currency || 'KES') + ' ' + fmtAmount(s.ceo_annual_salary_as_stated) + payUnitSuffix : naSpan('Not filed')}</td><td>${srConfBadge(s,'ceo_annual_salary_as_stated')}</td></tr>
+        <tr><td>Monthly Conversion Basis</td><td>${s.ceo_monthly_conversion_basis ? escapeHtml(s.ceo_monthly_conversion_basis) : naSpan('Not filed')}</td><td>${srConfBadge(s,'ceo_monthly_conversion_basis')}</td></tr>
       </tbody></table>
     </div>`;
 }
@@ -3549,16 +3831,6 @@ function srDocumentInsightsPanel(docs, s){
 // design mockup's "extracted-value-mapped-to-survey-field" workflow,
 // which would need a real field-mapping/review model this app doesn't
 // have - flagged in the panel caption below rather than faked.
-const SR_MAPPABLE_FIELDS = [
-  'board_size','board_meetings_per_year','committees_per_board','committee_meetings_per_year',
-  'directors_female','directors_male','executive_directors_count','non_executive_directors_count',
-  'independent_neds_count','non_independent_neds_count','chairperson_annual_retainer',
-  'other_ned_annual_retainer','chairperson_meeting_allowance','other_ned_meeting_allowance',
-  'executive_director_annual_retainer','executive_director_meeting_allowance',
-  'committee_chair_annual_retainer','committee_member_annual_retainer',
-  'committee_chair_meeting_allowance','committee_member_meeting_allowance',
-  'turnover','net_profit','market_cap',
-];
 let srMappingStatusFilter = 'all';
 let srMappingSectionFilter = 'all';
 let srMappingSearch = '';
@@ -4835,7 +5107,11 @@ function saMiniStat(value, label){
   return `<div class="sa-mini-stat"><div class="n">${value !== null && value !== undefined ? value : naSpan('Not enough data')}</div><div class="l">${escapeHtml(label)}</div></div>`;
 }
 function saSectorBarList(sectorComparison, fieldName){
-  const rows = (sectorComparison || []).map(s => ({name: s.sector, val: s[fieldName]})).filter(r => r.val !== null && r.val !== undefined);
+  const base = fieldName.replace(/^avg_/, '');
+  const rows = (sectorComparison || []).map(s => {
+    const one = (s[fieldName] === null || s[fieldName] === undefined) && s['avg_' + base + '_company_count'] === 1 ? s['single_' + base] : null;
+    return {name: s.sector + (one !== null && one !== undefined ? ' (1 company)' : ''), val: (one !== null && one !== undefined) ? one : s[fieldName]};
+  }).filter(r => r.val !== null && r.val !== undefined);
   if (!rows.length) return `<div class="empty">${naSpan('Not enough companies report this field by sector yet')}</div>`;
   rows.sort((a,b) => b.val - a.val);
   const max = Math.max(...rows.map(r => r.val));
@@ -4869,7 +5145,7 @@ function saBoardOverviewTab(ov){
         <div class="sa-panel-title">Board Composition</div>
         ${execPct !== null ? `
         <div class="row row-2">
-          <div>${saDonut2([['Executive', execPct, 'var(--blue)'], ['Non-Executive', 100-execPct, '#8ab4ff']], `${exec+nonExec}`)}</div>
+          <div>${saDonut2([['Executive', execPct, 'var(--blue)'], ['Non-Executive', 100-execPct, 'var(--amber)']], `${exec+nonExec}`)}</div>
           <div class="ir-kv-list" style="font-size:11.5px;align-self:center;">
             <div class="ir-kv-row"><span class="k">● Executive Directors</span><span style="font-weight:700;">${exec} (${execPct}%)</span></div>
             <div class="ir-kv-row"><span class="k">● Non-Executive Directors</span><span style="font-weight:700;">${nonExec} (${100-execPct}%)</span></div>
@@ -5057,15 +5333,17 @@ function saExecutiveDirectorsTab(ov){
   return `
     ${saHeader('Executive Directors', `Key insights and remuneration trends for Executive Directors across ${ov.companies_surveyed} surveyed companies`)}
     <div class="sa-stat-grid">
-      ${saStatCard('👤', execAvg !== null ? fmtAmount(execAvg) : naSpan('Not enough data'), 'Average Executive Director Annual Retainer', 'per year')}
-      ${saStatCard('📅', saMetricAvg(dr.executive_director_meeting_allowance, {raw:true}) !== null ? fmtAmount(dr.executive_director_meeting_allowance.average) : naSpan('Not enough data'), 'Average Board Meeting Allowance', 'per meeting')}
+      ${saStatCard('👤', execAvg !== null ? fmtAmount(execAvg) : saNotApplicable('Executive directors are normally paid a salary, not a separate board retainer, so most filings do not state one'), 'Average Executive Director Annual Retainer', 'per year')}
+      ${saStatCard('📅', saMetricAvg(dr.executive_director_meeting_allowance, {raw:true}) !== null ? fmtAmount(dr.executive_director_meeting_allowance.average) : saNotApplicable('Executive directors are normally not paid sitting allowances, so most filings do not state one'), 'Average Board Meeting Allowance', 'per meeting')}
       ${saStatCard('👤', saMetricAvg(bo.avg_age_executive_directors) !== null ? saMetricAvg(bo.avg_age_executive_directors) : naSpan('Not enough data'), 'Average Age of Executive Directors', 'years')}
       ${saStatCard('👥', bo.total_executive_directors !== null ? bo.total_executive_directors : naSpan('Not enough data'), 'Total Executive Directors', 'across survey')}
     </div>
     <div class="row row-2">
       <div class="panel">
         <div class="sa-panel-title">Executive Director Remuneration</div>
-        ${saPercentileChart(dr.executive_director_annual_retainer, dr.other_ned_annual_retainer, 'Executive Director', 'Other Directors')}
+        ${(dr.executive_director_annual_retainer && dr.executive_director_annual_retainer.average !== null && dr.executive_director_annual_retainer.average !== undefined)
+          ? saPercentileChart(dr.executive_director_annual_retainer, dr.other_ned_annual_retainer, 'Executive Director', 'Other Directors')
+          : `<div class="empty">${saNotApplicable('Executive directors are normally paid a salary, not a separate board retainer, so most filings do not state one')}</div>`}
       </div>
       <div class="panel">
         <div class="sa-panel-title">Key Insight</div>
@@ -5095,6 +5373,24 @@ function saExecutiveDirectorsTab(ov){
         <div class="sa-panel-title">Director Gender Representation</div>
         <div class="empty">${naSpan('Gender is tracked board-wide (all director types combined), not broken out separately for executive directors only')}</div>
       </div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">CEO/MD Remuneration — Monthly (${escapeHtml(ov.currency)})</div>
+      ${ov.ceo_remuneration ? `<div class="row row-2">
+        <div>
+          ${surveyMetricRow('Salary', ov.ceo_remuneration.ceo_monthly_salary)}
+          ${surveyMetricRow('Allowances', ov.ceo_remuneration.ceo_monthly_allowances)}
+          ${surveyMetricRow('Incentive / Bonus', ov.ceo_remuneration.ceo_monthly_incentive_bonus)}
+          ${surveyMetricRow('Deferred Incentive', ov.ceo_remuneration.ceo_monthly_deferred_incentive)}
+          ${surveyMetricRow('Pension', ov.ceo_remuneration.ceo_monthly_pension)}
+        </div>
+        <div>
+          ${surveyMetricRow('Non-Cash Benefits', ov.ceo_remuneration.ceo_monthly_non_cash_benefits)}
+          ${surveyMetricRow('Gratuity', ov.ceo_remuneration.ceo_monthly_gratuity)}
+          ${surveyMetricRow('Share Value', ov.ceo_remuneration.ceo_monthly_share_value)}
+          ${surveyMetricRow('Total Cost of Employment', ov.ceo_remuneration.ceo_monthly_cost_of_employment)}
+        </div>
+      </div>` : `<div class="empty">${naSpan('Not enough data on file yet')}</div>`}
     </div>
     <div class="panel">
       <div class="sa-panel-title">Key Takeaways</div>
@@ -5161,6 +5457,24 @@ function saNonExecutiveDirectorsTab(ov){
         <div class="sa-panel-title">Average NED Annual Retainer by Sector</div>
         ${saSectorBarList(ov.sector_comparison, 'avg_other_ned_annual_retainer')}
       </div>
+    </div>
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="sa-panel-title">NED Benefits Summary — % of Companies Providing Each Benefit</div>
+      ${ov.ned_benefits_summary ? `<div class="sa-bar-list">
+        ${[
+          ['MedicalCover', 'Medical Cover'], ['IndemnityInsurance', 'Indemnity Insurance'],
+          ['TravelAccommodation', 'Travel & Accommodation'], ['TelephoneAllowance', 'Telephone Allowance'],
+          ['TransportAllowance', 'Transport Allowance'], ['MealAllowance', 'Meal Allowance'],
+          ['ClubMembership', 'Club Membership'], ['DutyDayAllowance', 'Duty Day Allowance'],
+          ['GroupPersonalAccident', 'Group Personal Accident'], ['ShareSchemeParticipation', 'Share Scheme Participation'],
+        ].map(([key, label]) => {
+          const b = ov.ned_benefits_summary[key];
+          if (!b || b.percent_provided === null || b.percent_provided === undefined) {
+            return `<div class="ir-kv-row"><span class="k">${escapeHtml(label)}</span>${naSpan('Not enough companies have addressed this benefit yet' + (b && b.companies_addressing ? ` (${b.companies_addressing} of 2+ needed)` : ''))}</div>`;
+          }
+          return saBar(label, b.percent_provided + '%', 100);
+        }).join('')}
+      </div>` : `<div class="empty">${naSpan('Not enough data on file yet')}</div>`}
     </div>
     <div class="panel">
       <div class="sa-panel-title">Key Takeaways</div>
@@ -5275,18 +5589,31 @@ function saComparativeAnalysisTab(ov){
       ${saComparativeAnalysisTakeaways(ov, dr, cr, highest, lowest)}
     </div>
     <div class="panel">
-      <div class="sa-panel-title">Sector Comparison — Average NED Annual Retainer (${escapeHtml(ov.currency)})</div>
+      <div class="sa-panel-title">Sector Comparison — Average Pay Figures (${escapeHtml(ov.currency)})</div>
       <div style="overflow-x:auto;">
       <table>
-        <thead><tr><th>Sector</th><th>Companies</th><th>Avg. NED Retainer</th><th>Avg. Chairperson Retainer</th><th>Avg. Exec. Director Retainer</th></tr></thead>
+        <thead><tr><th>Sector</th><th>Companies</th><th>Avg. NED Retainer</th><th>Avg. Chairperson Retainer</th><th>Avg. Exec. Director Retainer</th>
+          <th>Avg. Chairperson Meeting Allow.</th><th>Avg. NED Meeting Allow.</th><th>Avg. Exec. Director Meeting Allow.</th>
+          <th>Avg. Committee Chair Retainer</th><th>Avg. Committee Member Retainer</th>
+          <th>Avg. Committee Chair Meeting Allow.</th><th>Avg. Committee Member Meeting Allow.</th>
+          <th>Avg. CEO Monthly Salary</th><th>Avg. CEO Monthly Cost of Employment</th></tr></thead>
         <tbody>
           ${sectorRows.map(s => `
             <tr>
               <td>${escapeHtml(s.sector)}</td>
               <td>${s.company_count}</td>
-              <td>${s.avg_other_ned_annual_retainer !== null ? fmtAmount(s.avg_other_ned_annual_retainer) : naSpan('Not enough data')}</td>
-              <td>${s.avg_chairperson_annual_retainer !== null ? fmtAmount(s.avg_chairperson_annual_retainer) : naSpan('Not enough data')}</td>
-              <td>${s.avg_executive_director_annual_retainer !== null ? fmtAmount(s.avg_executive_director_annual_retainer) : naSpan('Not enough data')}</td>
+              <td>${saSectorCell(s,'other_ned_annual_retainer')}</td>
+              <td>${saSectorCell(s,'chairperson_annual_retainer')}</td>
+              <td>${saSectorCell(s,'executive_director_annual_retainer')}</td>
+              <td>${saSectorCell(s,'chairperson_meeting_allowance')}</td>
+              <td>${saSectorCell(s,'other_ned_meeting_allowance')}</td>
+              <td>${saSectorCell(s,'executive_director_meeting_allowance')}</td>
+              <td>${saSectorCell(s,'committee_chair_annual_retainer')}</td>
+              <td>${saSectorCell(s,'committee_member_annual_retainer')}</td>
+              <td>${saSectorCell(s,'committee_chair_meeting_allowance')}</td>
+              <td>${saSectorCell(s,'committee_member_meeting_allowance')}</td>
+              <td>${saSectorCell(s,'ceo_monthly_salary')}</td>
+              <td>${saSectorCell(s,'ceo_monthly_cost_of_employment')}</td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -5307,13 +5634,9 @@ function saTwoMetricSectorBarChart(sectorRows, fieldA, fieldB, labelA, labelB){
       ${s[fieldB] !== null ? saBar(labelB, fmtAmount(s[fieldB]), max, 'var(--green)') : ''}
     </div>`).join('')}</div>`;
 }
-// Four premium comparisons - two use the real backend-computed ratio
-// fields (chairperson_vs_other_ned_annual_retainer_ratio,
-// chair_vs_member_annual_retainer_ratio - same fields their own tabs
-// use); the other two (board meeting allowance premium, total
-// remuneration premium) are computed live from real averages/sums,
-// the same legitimate-arithmetic approach used for the Chairperson/
-// Committee Premium callouts elsewhere on this page.
+// Premium comparisons: the retainer and committee ratios come from the backend
+// (computed over companies that report BOTH figures); the board meeting allowance
+// premium is computed live from the two averages. Only comparisons with data are drawn.
 function saChairPremiumDonuts(dr, cr){
   const items = [];
   const boardChair = saMetricAvg(dr.chairperson_meeting_allowance, {raw:true});
@@ -5321,17 +5644,17 @@ function saChairPremiumDonuts(dr, cr){
   if (boardChair !== null && boardNed !== null && boardNed > 0) {
     items.push(['Board Meeting Allowances', Math.round((boardChair/boardNed - 1)*100), '(Chair vs NED)']);
   }
+  if (cr && cr.chair_vs_member_meeting_allowance_ratio !== null && cr.chair_vs_member_meeting_allowance_ratio !== undefined) {
+    items.push(['Committee Meeting Allowances', Math.round((cr.chair_vs_member_meeting_allowance_ratio - 1)*100), '(Chair vs Member)']);
+  }
   if (cr && cr.chair_vs_member_annual_retainer_ratio !== null && cr.chair_vs_member_annual_retainer_ratio !== undefined) {
-    items.push(['Committee Meeting Allowances', Math.round((cr.chair_vs_member_annual_retainer_ratio - 1)*100), '(Chair vs Member)']);
+    items.push(['Committee Retainers', Math.round((cr.chair_vs_member_annual_retainer_ratio - 1)*100), '(Chair vs Member)']);
   }
   if (dr.chairperson_vs_other_ned_annual_retainer_ratio !== null && dr.chairperson_vs_other_ned_annual_retainer_ratio !== undefined) {
     items.push(['Annual Retainers', Math.round((dr.chairperson_vs_other_ned_annual_retainer_ratio - 1)*100), '(Chair vs NED)']);
   }
-  const chairTotal = (boardChair||0) + (saMetricAvg(dr.chairperson_annual_retainer, {raw:true})||0);
-  const nedTotal = (boardNed||0) + (saMetricAvg(dr.other_ned_annual_retainer, {raw:true})||0);
-  if (chairTotal > 0 && nedTotal > 0) {
-    items.push(['Total Remuneration', Math.round((chairTotal/nedTotal - 1)*100), '(Chair vs Member)']);
-  }
+  // 'Total Remuneration' (annual retainer + per-meeting allowance, chair vs member) was removed: it added a per-meeting
+  // figure to an annual one and, with meeting allowances missing (counted as 0), just repeated the retainer premium.
   if (!items.length) return `<div class="empty">${naSpan('Not enough data to compute chair/member premiums')}</div>`;
   return `<div class="row row-4">${items.map(([label, pct, sub]) => `
     <div style="text-align:center;">
@@ -5425,96 +5748,11 @@ function saAppendixHighestPayingSector(sectorRows){
   return fmtAmount(top.avg_other_ned_annual_retainer) + ' (' + escapeHtml(top.sector) + ')';
 }
 
-// ---------- Survey (old flat page - superseded by renderSurveyAnalyticsPage above,
-// kept only because renderSurveyBody's helper surveyMetricRow is reused by
-// nothing else currently but left in place rather than deleted outright) ----------
-
-async function renderSurveyPage(){
-  const app = document.getElementById('app');
-  const overview = await safeJson(
-    await fetch('/api/survey/overview' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : '')),
-    null
-  );
-
-  app.innerHTML = `
-    <div class="panel" data-perm="admin" style="margin-bottom:14px;">
-      <div class="panel-head"><h2>Add Company Data</h2></div>
-      <p style="color:var(--text-dim);font-size:12.5px;margin:0 0 12px;">
-        Upload one Survey Data file per company (see SURVEY_FORMAT_SPEC.md). Every figure on this
-        page is computed live across whichever companies have data on file for the selected fiscal
-        year — averages only appear once at least ${overview && overview.min_companies_for_average ? overview.min_companies_for_average : 2}
-        companies have supplied that specific figure, so a metric can stay "not enough data yet" even
-        after a company is added.
-      </p>
-      <input type="file" id="surveyUploadInput" accept="text/plain,.txt" multiple
-             style="display:block;width:100%;margin-bottom:12px;"
-             onchange="onSurveyFilesChosen(this.files)">
-      <div id="surveyUploadFileList" style="font-size:12.5px;margin-bottom:12px;"></div>
-      <button id="surveyUploadBtn" onclick="submitSurveyUpload()" disabled>Upload &amp; Add to Survey</button>
-      <div id="surveyUploadResult" style="margin-top:12px;font-size:12.5px;"></div>
-    </div>
-    <div id="surveyBody"></div>
-  `;
-
-  renderSurveyBody(overview);
-}
-
-function onSurveyFilesChosen(fileList){
-  surveyUploadFiles = Array.from(fileList);
-  const listEl = document.getElementById('surveyUploadFileList');
-  const btn = document.getElementById('surveyUploadBtn');
-  if (surveyUploadFiles.length === 0) {
-    listEl.innerHTML = '';
-    btn.disabled = true;
-    return;
-  }
-  listEl.innerHTML = surveyUploadFiles.map(f => `<div>📄 ${escapeHtml(f.name)}</div>`).join('');
-  btn.disabled = false;
-}
-
-async function submitSurveyUpload(){
-  const btn = document.getElementById('surveyUploadBtn');
-  const resultEl = document.getElementById('surveyUploadResult');
-  btn.disabled = true;
-  btn.textContent = 'Uploading...';
-  resultEl.innerHTML = '';
-
-  const outcomes = [];
-  for (const file of surveyUploadFiles) {
-    const fd = new FormData();
-    fd.append('file', file);
-    try {
-      const res = await fetch('/api/survey-data/import', {method: 'POST', body: fd});
-      const data = await safeJson(res, null);
-      if (res.ok && data) {
-        outcomes.push({file: file.name, ok: true, company: data.company.name, fiscalYear: data.survey_data.fiscal_year, updated: data.updated_existing});
-      } else {
-        outcomes.push({file: file.name, ok: false, error: (data && data.error) || `HTTP ${res.status}`});
-      }
-    } catch (e) {
-      outcomes.push({file: file.name, ok: false, error: String(e)});
-    }
-  }
-
-  resultEl.innerHTML = outcomes.map(o => o.ok
-    ? `<div style="color:var(--green);">✓ ${escapeHtml(o.file)} — ${escapeHtml(o.company)} (${escapeHtml(o.fiscalYear)})${o.updated ? ' — updated existing entry' : ''}</div>`
-    : `<div style="color:var(--red);">✗ ${escapeHtml(o.file)} — ${escapeHtml(o.error)}</div>`
-  ).join('');
-
-  btn.textContent = 'Upload & Add to Survey';
-  btn.disabled = false;
-  surveyUploadFiles = [];
-  document.getElementById('surveyUploadInput').value = '';
-  document.getElementById('surveyUploadFileList').innerHTML = '';
-
-  if (outcomes.some(o => o.ok)) {
-    const refreshed = await safeJson(
-      await fetch('/api/survey/overview' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : '')),
-      null
-    );
-    renderSurveyBody(refreshed);
-  }
-}
+// ---------- Shared survey helpers (kept from the removed old flat Survey page) ----------
+// surveyMetricRow: one avg + 25th/50th/75th percentile row, used by the Survey Analytics
+// Executive Directors tab's CEO/MD panel. surveyDetailRow/fmtSurveyAmount: label/value rows
+// used by the Directors' Register detail panel. surveyDirectorFiguresUnit: the unit label
+// for director/committee/CEO pay figures on the Survey Report Remuneration tab.
 
 function surveyMetricRow(label, metric, opts){
   opts = opts || {};
@@ -5538,186 +5776,6 @@ function surveyMetricRow(label, metric, opts){
   </div>`;
 }
 
-function renderSurveyBody(overview){
-  const bodyEl = document.getElementById('surveyBody');
-  if (!bodyEl) return;
-
-  if (!overview || !overview.has_data) {
-    const years = (overview && overview.available_fiscal_years) || [];
-    bodyEl.innerHTML = `
-      <div class="panel">
-        <div class="empty">
-          ${years.length
-            ? `No companies on file for fiscal year ${escapeHtml(surveyFiscalYear || '')}. Available: ${years.map(y => `<a href="#" onclick="surveyFiscalYear='${escapeHtml(y)}';renderSurveyPage();return false;">${escapeHtml(y)}</a>`).join(', ')}`
-            : 'No survey data uploaded yet. Upload a Survey Data file above to get started.'}
-        </div>
-      </div>`;
-    return;
-  }
-
-  surveyFiscalYear = overview.fiscal_year;
-  const es = overview.executive_summary;
-  const bo = overview.board_overview;
-  const dr = overview.directors_remuneration;
-  const cr = overview.committee_remuneration;
-  const cp = overview.ceo_remuneration;
-  const unitLabel = overview.unit || 'millions';
-  const yearPicker = overview.available_fiscal_years.length > 1
-    ? `<select onchange="surveyFiscalYear=this.value;renderSurveyPage();" style="margin-left:10px;">
-         ${overview.available_fiscal_years.map(y => `<option value="${escapeHtml(y)}" ${y === overview.fiscal_year ? 'selected' : ''}>${escapeHtml(y)}</option>`).join('')}
-       </select>`
-    : '';
-
-  bodyEl.innerHTML = `
-    <div class="panel" style="margin-bottom:14px;">
-      <div class="panel-head">
-        <h2>${escapeHtml(overview.fiscal_year)} ${yearPicker}</h2>
-        <span class="badge">${overview.companies_surveyed} compan${overview.companies_surveyed === 1 ? 'y' : 'ies'} on file</span>
-      </div>
-      <div class="stat-grid">
-        ${statCard('blue', '🏢', overview.companies_surveyed, 'Companies Surveyed')}
-        ${statCard('green', '💰', es.avg_turnover.average !== null ? fmtAmount(es.avg_turnover.average) : 'Not enough data', `Avg. Turnover (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
-        ${statCard('purple', '📈', es.avg_net_profit.average !== null ? fmtAmount(es.avg_net_profit.average) : 'Not enough data', `Avg. Net Profit (${escapeHtml(overview.currency)} ${escapeHtml(unitLabel)})`)}
-        ${statCard('amber', '%', es.avg_profit_margin.average !== null ? fmt(es.avg_profit_margin.average) + '%' : 'Not enough data', 'Avg. Profit Margin')}
-      </div>
-    </div>
-
-    <div class="row row-3">
-      <div class="panel">
-        <div class="ir-panel-title">Board Composition</div>
-        <div class="ir-kv-list">
-          ${surveyMetricRow('Average Board Size', bo.avg_board_size, {decimals: 1})}
-          ${surveyMetricRow('Avg. Board Meetings / Year', bo.avg_board_meetings_per_year, {decimals: 1})}
-          ${surveyMetricRow('Avg. Committees / Board', bo.avg_committees_per_board, {decimals: 1})}
-          ${surveyMetricRow('Avg. Committee Meetings / Year', bo.avg_committee_meetings_per_year, {decimals: 1})}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Gender & Independence</div>
-        <div class="ir-kv-list">
-          <div class="ir-kv-row"><span class="k">Female Directors (total)</span><span style="font-weight:700;">${bo.total_directors_female !== null ? bo.total_directors_female : '<span style="color:var(--text-faint);">-</span>'}</span></div>
-          <div class="ir-kv-row"><span class="k">Male Directors (total)</span><span style="font-weight:700;">${bo.total_directors_male !== null ? bo.total_directors_male : '<span style="color:var(--text-faint);">-</span>'}</span></div>
-          <div class="ir-kv-row"><span class="k">Independent NEDs (total)</span><span style="font-weight:700;">${bo.total_independent_neds !== null ? bo.total_independent_neds : '<span style="color:var(--text-faint);">-</span>'}</span></div>
-          <div class="ir-kv-row"><span class="k">Non-Independent NEDs (total)</span><span style="font-weight:700;">${bo.total_non_independent_neds !== null ? bo.total_non_independent_neds : '<span style="color:var(--text-faint);">-</span>'}</span></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Age Profile</div>
-        <div class="ir-kv-list">
-          ${surveyMetricRow('Avg. Age — Executive Directors', bo.avg_age_executive_directors)}
-          ${surveyMetricRow('Avg. Age — Non-Executive Directors', bo.avg_age_non_executive_directors)}
-          ${surveyMetricRow('Avg. Age — Independent NEDs', bo.avg_age_independent_neds)}
-          ${surveyMetricRow('Avg. Age — Non-Independent NEDs', bo.avg_age_non_independent_neds)}
-        </div>
-      </div>
-    </div>
-
-    <div class="row row-3">
-      <div class="panel">
-        <div class="ir-panel-title">Directors' Remuneration (${escapeHtml(overview.currency)})</div>
-        <div class="ir-kv-list">
-          ${surveyMetricRow('Chairperson Annual Retainer', dr.chairperson_annual_retainer, {decimals: 0})}
-          ${surveyMetricRow('Other NED Annual Retainer', dr.other_ned_annual_retainer, {decimals: 0})}
-          ${surveyMetricRow('Chairperson Meeting Allowance', dr.chairperson_meeting_allowance, {decimals: 0})}
-          ${surveyMetricRow('Other NED Meeting Allowance', dr.other_ned_meeting_allowance, {decimals: 0})}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Executive Directors (${escapeHtml(overview.currency)})</div>
-        <div class="ir-kv-list">
-          ${surveyMetricRow('Executive Director Annual Retainer', dr.executive_director_annual_retainer, {decimals: 0})}
-          ${surveyMetricRow('Executive Director Meeting Allowance', dr.executive_director_meeting_allowance, {decimals: 0})}
-          <div class="ir-kv-row"><span class="k">Total Executive Directors</span><span style="font-weight:700;">${bo.total_executive_directors !== null ? bo.total_executive_directors : '<span style="color:var(--text-faint);">-</span>'}</span></div>
-          <div class="ir-kv-row"><span class="k">Total Non-Executive Directors</span><span style="font-weight:700;">${bo.total_non_executive_directors !== null ? bo.total_non_executive_directors : '<span style="color:var(--text-faint);">-</span>'}</span></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">Committee Remuneration (${escapeHtml(overview.currency)})</div>
-        <div class="ir-kv-list">
-          ${surveyMetricRow('Committee Chair Annual Retainer', cr.committee_chair_annual_retainer, {decimals: 0})}
-          ${surveyMetricRow('Committee Member Annual Retainer', cr.committee_member_annual_retainer, {decimals: 0})}
-          ${surveyMetricRow('Committee Chair Meeting Allowance', cr.committee_chair_meeting_allowance, {decimals: 0})}
-          ${surveyMetricRow('Committee Member Meeting Allowance', cr.committee_member_meeting_allowance, {decimals: 0})}
-        </div>
-      </div>
-    </div>
-
-    <div class="row row-2">
-      <div class="panel">
-        <div class="ir-panel-title">CEO/MD Remuneration — Monthly (${escapeHtml(overview.currency)})</div>
-        <div class="ir-kv-list">
-          ${surveyMetricRow('Salary', cp.ceo_monthly_salary, {decimals: 0})}
-          ${surveyMetricRow('Allowances', cp.ceo_monthly_allowances, {decimals: 0})}
-          ${surveyMetricRow('Incentives / Bonus', cp.ceo_monthly_incentive_bonus, {decimals: 0})}
-          ${surveyMetricRow('Deferred Incentive', cp.ceo_monthly_deferred_incentive, {decimals: 0})}
-          ${surveyMetricRow('Non-Cash Benefits', cp.ceo_monthly_non_cash_benefits, {decimals: 0})}
-          ${surveyMetricRow('Pension', cp.ceo_monthly_pension, {decimals: 0})}
-          ${surveyMetricRow('Gratuity', cp.ceo_monthly_gratuity, {decimals: 0})}
-          ${surveyMetricRow('Share Value', cp.ceo_monthly_share_value, {decimals: 0})}
-          ${surveyMetricRow('Monthly Cost of Employment', cp.ceo_monthly_cost_of_employment, {decimals: 0})}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="ir-panel-title">NED Benefits — % of Companies Providing</div>
-        <div class="ir-kv-list">
-          ${Object.entries(overview.ned_benefits_summary || {}).map(([key, b]) => `
-            <div class="ir-kv-row"><span class="k">${escapeHtml(key.replace(/([A-Z])/g, ' $1').trim())}</span>${
-              b.percent_provided !== null
-                ? `<span style="font-weight:700;">${fmt(b.percent_provided, 1)}%</span>`
-                : naSpan(`No companies have addressed this benefit yet`)
-            }</div>`).join('')}
-        </div>
-      </div>
-    </div>
-
-    <div class="panel" style="margin-bottom:14px;">
-      <div class="panel-head"><h2>Comparative Analysis — by Sector</h2></div>
-      <div style="overflow-x:auto;">
-      <table>
-        <thead><tr>
-          <th>Sector</th><th>Companies</th>
-          <th>Avg. Chair Meeting Allowance</th>
-          <th>Avg. Other NED Meeting Allowance</th>
-          <th>Avg. Other NED Annual Retainer</th>
-          <th>Avg. CEO Monthly Salary</th>
-        </tr></thead>
-        <tbody>
-          ${overview.sector_comparison.map(s => `
-            <tr>
-              <td>${escapeHtml(s.sector)}</td>
-              <td>${s.company_count}</td>
-              ${['chairperson_meeting_allowance', 'other_ned_meeting_allowance', 'other_ned_annual_retainer', 'ceo_monthly_salary'].map(f => `
-                <td>${s[`avg_${f}`] !== null
-                  ? `${escapeHtml(overview.currency)} ${fmtAmount(s[`avg_${f}`])}`
-                  : naSpan(`Only ${s[`avg_${f}_company_count`]} of ${s.company_count} companies in this sector supplied this figure`)}</td>
-              `).join('')}
-            </tr>`).join('')}
-        </tbody>
-      </table>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h2>Companies in this Survey</h2>
-        <button onclick="exportSurveyPdf()">Export PDF</button>
-      </div>
-      <table>
-        <thead><tr><th>Company</th><th>Sector</th><th>Source File</th></tr></thead>
-        <tbody>
-          ${overview.companies.map(c => `
-            <tr style="cursor:pointer;" onclick="showSurveyCompanyDetail(${c.company_id}, '${escapeHtml(c.fiscal_year)}')">
-              <td>${escapeHtml(c.name)} <span style="color:var(--blue);font-size:11px;">view →</span></td>
-              <td>${escapeHtml(c.sector || '-')}</td>
-              <td style="color:var(--text-faint);font-size:11.5px;">${escapeHtml(c.source_filename || '-')}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-    <div id="surveyCompanyDetail"></div>
-  `;
-}
-
 function surveyDetailRow(label, value, opts){
   opts = opts || {};
   if (value === null || value === undefined) {
@@ -5730,12 +5788,12 @@ function surveyDetailRow(label, value, opts){
 }
 
 // Same rounding/thousands-separator behaviour as fmtAmount(), but lets
-// the Survey Companies page ask for decimal places - fmtAmount() itself
+// callers ask for decimal places - fmtAmount() itself
 // always rounds to 0 decimals, which is correct for the KES thousands/
 // millions figures used everywhere else in the app but silently drops
 // real precision on a billions-scale figure (e.g. KCB's turnover of
-// 211.8 rendering as "212"). Only the survey page passes a unit-aware
-// decimals value in; every other fmtAmount() call site is untouched.
+// 211.8 rendering as "212"). Only callers that pass isAmount to surveyDetailRow use this; every other
+// fmtAmount() call site is untouched.
 function fmtSurveyAmount(val, decimals){
   if (val === null || val === undefined || val === '') return '-';
   const num = Number(val);
@@ -5743,15 +5801,6 @@ function fmtSurveyAmount(val, decimals){
   const d = decimals || 0;
   const formatted = Math.abs(num).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
   return num < 0 ? `(${formatted})` : formatted;
-}
-
-// How many decimal places a survey figure should show, based on the
-// company's own stated Unit - "billions" figures are typically given
-// to 1 decimal place in the source filing (e.g. "Ksh 211.8 billion")
-// and rounding to a whole number throws that away; thousands/millions
-// figures round to whole numbers same as the rest of the app.
-function surveyAmountDecimals(unit){
-  return (unit || '').toLowerCase() === 'billions' ? 1 : 0;
 }
 
 // Director/committee/CEO pay and benefit figures can genuinely be at
@@ -5766,124 +5815,10 @@ function surveyAmountDecimals(unit){
 // since those are the headline figures director_figures_unit is
 // explicitly NOT for.
 function surveyDirectorFiguresUnit(sd){
-  return sd.director_figures_unit || sd.unit;
-}
-
-async function showSurveyCompanyDetail(companyId, fiscalYear){
-  const el = document.getElementById('surveyCompanyDetail');
-  el.innerHTML = `<div class="panel"><div class="empty">Loading...</div></div>`;
-  el.scrollIntoView({behavior: 'smooth', block: 'start'});
-
-  const data = await safeJson(await fetch(`/api/survey/companies/${companyId}/${encodeURIComponent(fiscalYear)}`), null);
-  if (!data) {
-    el.innerHTML = `<div class="panel"><div class="empty">Could not load this company's survey data.</div></div>`;
-    return;
-  }
-  const sd = data.survey_data;
-  const cur = sd.currency || 'KES';
-
-  el.innerHTML = `
-    <div class="panel" style="margin-top:14px;">
-      <div class="panel-head">
-        <h2>${escapeHtml(data.company.name)} — ${escapeHtml(sd.fiscal_year)}</h2>
-        <button class="secondary" onclick="document.getElementById('surveyCompanyDetail').innerHTML='';">Close</button>
-      </div>
-      <p style="color:var(--text-faint);font-size:11.5px;margin:0 0 12px;">
-        Source file: ${escapeHtml(sd.source_filename || '-')} — uploaded ${sd.uploaded_at ? new Date(sd.uploaded_at).toLocaleString() : '-'}.
-        This is exactly what this company submitted, before any cross-company averaging.
-      </p>
-
-      <div class="row row-3">
-        <div class="panel">
-          <div class="ir-panel-title">Performance</div>
-          <div class="ir-kv-list">
-            ${surveyDetailRow('Turnover', sd.turnover, {isAmount: true, prefix: cur + ' '})}
-            ${surveyDetailRow('Net Profit', sd.net_profit, {isAmount: true, prefix: cur + ' '})}
-            ${surveyDetailRow('Market Cap', sd.market_cap, {isAmount: true, prefix: cur + ' '})}
-          </div>
-        </div>
-        <div class="panel">
-          <div class="ir-panel-title">Board Composition</div>
-          <div class="ir-kv-list">
-            ${surveyDetailRow('Board Size', sd.board_size)}
-            ${surveyDetailRow('Board Meetings / Year', sd.board_meetings_per_year)}
-            ${surveyDetailRow('Committees / Board', sd.committees_per_board)}
-            ${surveyDetailRow('Committee Meetings / Year', sd.committee_meetings_per_year)}
-          </div>
-        </div>
-        <div class="panel">
-          <div class="ir-panel-title">Gender & Independence</div>
-          <div class="ir-kv-list">
-            ${surveyDetailRow('Female Directors', sd.directors_female)}
-            ${surveyDetailRow('Male Directors', sd.directors_male)}
-            ${surveyDetailRow('Executive Directors', sd.executive_directors_count)}
-            ${surveyDetailRow('Non-Executive Directors', sd.non_executive_directors_count)}
-            ${surveyDetailRow('Independent NEDs', sd.independent_neds_count)}
-            ${surveyDetailRow('Non-Independent NEDs', sd.non_independent_neds_count)}
-            ${surveyDetailRow('NEDs — Kenyan', sd.neds_kenyan_count)}
-            ${surveyDetailRow('NEDs — Non-Kenyan', sd.neds_non_kenyan_count)}
-          </div>
-        </div>
-      </div>
-
-      <div class="row row-3">
-        <div class="panel">
-          <div class="ir-panel-title">Age Profile</div>
-          <div class="ir-kv-list">
-            ${surveyDetailRow('Avg. Age — Executive Directors', sd.avg_age_executive_directors, {suffix: ' yrs', decimals: 1})}
-            ${surveyDetailRow('Avg. Age — Non-Executive Directors', sd.avg_age_non_executive_directors, {suffix: ' yrs', decimals: 1})}
-            ${surveyDetailRow('Avg. Age — Independent NEDs', sd.avg_age_independent_neds, {suffix: ' yrs', decimals: 1})}
-            ${surveyDetailRow('Avg. Age — Non-Independent NEDs', sd.avg_age_non_independent_neds, {suffix: ' yrs', decimals: 1})}
-          </div>
-        </div>
-        <div class="panel">
-          <div class="ir-panel-title">Directors' Remuneration (${escapeHtml(cur)})</div>
-          <div class="ir-kv-list">
-            ${surveyDetailRow('Chairperson Annual Retainer', sd.chairperson_annual_retainer, {isAmount: true})}
-            ${surveyDetailRow('Other NED Annual Retainer', sd.other_ned_annual_retainer, {isAmount: true})}
-            ${surveyDetailRow('Chairperson Meeting Allowance', sd.chairperson_meeting_allowance, {isAmount: true})}
-            ${surveyDetailRow('Other NED Meeting Allowance', sd.other_ned_meeting_allowance, {isAmount: true})}
-            ${surveyDetailRow('Executive Director Annual Retainer', sd.executive_director_annual_retainer, {isAmount: true})}
-            ${surveyDetailRow('Executive Director Meeting Allowance', sd.executive_director_meeting_allowance, {isAmount: true})}
-          </div>
-        </div>
-        <div class="panel">
-          <div class="ir-panel-title">Committee Remuneration (${escapeHtml(cur)})</div>
-          <div class="ir-kv-list">
-            ${surveyDetailRow('Committee Chair Annual Retainer', sd.committee_chair_annual_retainer, {isAmount: true})}
-            ${surveyDetailRow('Committee Member Annual Retainer', sd.committee_member_annual_retainer, {isAmount: true})}
-            ${surveyDetailRow('Committee Chair Meeting Allowance', sd.committee_chair_meeting_allowance, {isAmount: true})}
-            ${surveyDetailRow('Committee Member Meeting Allowance', sd.committee_member_meeting_allowance, {isAmount: true})}
-          </div>
-        </div>
-      </div>
-
-      ${sd.source_notes ? `
-        <div class="panel">
-          <div class="ir-panel-title">Source Notes</div>
-          <pre style="white-space:pre-wrap;font-family:inherit;font-size:11.5px;color:var(--text-dim);margin:0;">${escapeHtml(sd.source_notes)}</pre>
-        </div>` : ''}
-
-      <div style="margin-top:12px;">
-        <button class="secondary" data-perm="admin" style="color:var(--red);" onclick="deleteSurveyCompanyData(${companyId}, '${escapeHtml(fiscalYear)}')">Remove this company from the survey</button>
-      </div>
-    </div>
-  `;
-}
-
-async function deleteSurveyCompanyData(companyId, fiscalYear){
-  if (!confirm('Remove this company\'s survey data? This cannot be undone.')) return;
-  const res = await fetch(`/api/survey/companies/${companyId}/${encodeURIComponent(fiscalYear)}`, {method: 'DELETE'});
-  if (res.ok) {
-    document.getElementById('surveyCompanyDetail').innerHTML = '';
-    renderSurveyPage();
-  } else {
-    alert('Could not remove this entry.');
-  }
-}
-
-function exportSurveyPdf(){
-  window.open('/api/survey/export/report.pdf' + (surveyFiscalYear ? `?fiscal_year=${encodeURIComponent(surveyFiscalYear)}` : ''), '_blank');
+  // A missing director_figures_unit means the pay figures were stored as raw currency
+  // (app.py's to_pay_unit defaults to 1.0 the same way) - NOT that they share the
+  // headline unit, so never fall back to sd.unit here.
+  return sd.director_figures_unit || 'units';
 }
 
 // ---------- Survey Mapping tab (shared by Company Survey Data's
@@ -5902,10 +5837,14 @@ function exportSurveyPdf(){
 
 // Every SurveyCompanyData field this view covers, with a human label
 // and which drill-down tab it "belongs" to (the mockup's Section
-// column) - deliberately the SAME field list as SCALAR_SURVEY_FIELDS
-// in app.py (kept in sync by hand; there's no single shared source of
-// truth between Python and this template), so Survey Mapping's totals
-// always match what _survey_row_completeness() there already counts.
+// column). This is the single source of truth for "which fields
+// count" on both the Survey Mapping and Data Quality tabs (both call
+// renderMappingTab, which reads this list) - there is no equivalent
+// Python-side list to keep in sync with; adding a new SurveyCompanyData
+// column means adding it here too, or it silently never appears on
+// either tab (this is exactly how ceo_annual_salary_as_stated and
+// ceo_monthly_conversion_basis went missing until the 2026-09-26 fix
+// below added them).
 const MAPPING_FIELDS = [
   {field: 'turnover', label: 'Turnover', section: 'Company Overview'},
   {field: 'net_profit', label: 'Net Profit', section: 'Company Overview'},
@@ -5945,6 +5884,8 @@ const MAPPING_FIELDS = [
   {field: 'ceo_monthly_gratuity', label: 'CEO Monthly Gratuity', section: 'CEO/MD Remuneration'},
   {field: 'ceo_monthly_share_value', label: 'CEO Monthly Share Value', section: 'CEO/MD Remuneration'},
   {field: 'ceo_monthly_cost_of_employment', label: 'CEO Total Cost of Employment', section: 'CEO/MD Remuneration'},
+  {field: 'ceo_annual_salary_as_stated', label: 'CEO Annual Salary (as stated)', section: 'CEO/MD Remuneration'},
+  {field: 'ceo_monthly_conversion_basis', label: 'CEO Monthly Conversion Basis', section: 'CEO/MD Remuneration'},
 ];
 
 const MAPPING_HIGH_CONFIDENCE_THRESHOLD = 0.75;
@@ -6083,58 +6024,321 @@ function renderMappingTab(sd, opts){
 
 
 // ---------------------------------------------------------------------------
-// AI Extraction page (ai_extract.py): pending pages -> estimate -> batch run ->
-// collect -> review verification -> apply. Nothing is sent until "Run" is clicked.
+// Settings > AI  and  Settings > Review (Uploads | AI results | Conflicts | Manual entry | Issues)
+// The AI is the last resort and is never called until "Run" is clicked; nothing from an upload reaches the
+// Survey Report until it is approved; anything neither the rules nor the AI could read can be typed in.
 // ---------------------------------------------------------------------------
-async function renderAIExtractionPage(){
-  const app = document.getElementById('app');
-  if (window.currentUser.role !== 'admin') {
-    app.innerHTML = `<div class="panel"><div class="empty">AI Extraction is only available to admin accounts.</div></div>`;
-    return;
-  }
-  const [st, items] = await Promise.all([
-    fetch('/api/ai/status').then(r => r.json()),
-    fetch('/api/ai/items').then(r => r.json()),
-  ]);
+const aiPill = i => ({pending:'⏳ waiting for AI', submitted:'📤 sent', done:'✅ ready to review', applied:'✔ applied', failed:'❌ failed', discarded:'🗑 discarded', skipped:'⏭ rules filled it - not sent'}[i.status] || i.status);
+function openReview(sub){
+  // "manual" used to be a Review sub-tab - it is now its own top-level
+  // Manual Entry page, so route there instead of into Review's own tabbar.
+  if (sub === 'manual') { currentPage = 'manual-entry'; renderNav(); render(); return; }
+  currentPage = 'review'; reviewSub = sub || 'uploads'; renderNav(); render();
+}
+
+async function dhSchemaCheck(){
+  const out = document.getElementById('dataHealthOut'); out.innerHTML = 'Checking…';
+  const d = await fetch('/api/system/schema-check').then(r => r.json());
+  if (d.ok) { out.innerHTML = `<div class="status-banner ok">✓ Schema complete (${escapeHtml(d.engine)}) - every column the code uses exists.</div>`; return; }
+  out.innerHTML = `<div class="status-banner warn">⚠ ${d.gaps.length} missing column(s)/table(s) in the live database:</div>
+    <ul>${d.gaps.map(g => `<li><code>${escapeHtml(g.table)}${g.column ? '.' + escapeHtml(g.column) : ''}</code> ${g.missing_table ? '(table missing)' : escapeHtml(g.type || '')}</li>`).join('')}</ul>
+    <button class="btn primary" onclick="dhSchemaFix()">Add the missing columns (additive only)</button>`;
+}
+async function dhSchemaFix(){
+  const d = await fetch('/api/system/schema-fix', {method:'POST'}).then(r => r.json());
+  document.getElementById('dataHealthOut').innerHTML = `<div class="status-banner ${d.failed.length ? 'warn' : 'ok'}">Added ${d.fixed.length} column(s).${d.failed.length ? ' Failed: ' + escapeHtml(JSON.stringify(d.failed)) : ''} Now re-upload or press "Rebuild tabs".</div>`;
+}
+async function dhReconcileAll(){
+  const out = document.getElementById('dataHealthOut'); out.innerHTML = 'Rebuilding…';
+  const d = await fetch('/api/tabs/reconcile-all', {method:'POST'}).then(r => r.json());
+  out.innerHTML = `<div class="status-banner ok">Checked ${d.companies} company-year(s): added ${d.register_added} director(s) to registers, enriched ${d.register_enriched}, filled ${d.fields} board-composition field(s).</div>`;
+}
+
+async function renderAITab(body){
+  const [st, items] = await Promise.all([fetch('/api/ai/status').then(r => r.json()), fetch('/api/ai/items').then(r => r.json())]);
   const c = st.items || {};
   const pending = items.filter(i => i.status === 'pending' || i.status === 'failed');
   const banner = st.configured
     ? `<div class="status-banner ok">✓ API key configured · model ${escapeHtml(st.model)}</div>`
     : `<div class="status-banner warn">⚠ ANTHROPIC_API_KEY is not set - add it in the project secrets to run extraction. You can still see what would be sent.</div>`;
-  const statusPill = i => ({pending:'⏳ waiting for AI', submitted:'📤 sent', done:'✅ ready to review', applied:'✔ applied', failed:'❌ failed', discarded:'🗑 discarded', skipped:'⏭ rules filled it - not sent'}[i.status] || i.status);
-  const sum = i => i.summary ? `${i.summary.verified}/${i.summary.items} verified` + (i.summary.checks_failed ? ` · ⚠ ${i.summary.checks_failed} check(s) failed` : '') : '-';
-  const rows = items.map(i => `
-    <tr>
-      <td>${escapeHtml(i.company || '')}<div class="muted">${escapeHtml(i.fiscal_year)}</div></td>
-      <td>${escapeHtml(i.task)}<div class="muted">pages ${escapeHtml((i.pages || []).join(', '))}</div>${(i.gaps || []).length ? `<div class="muted">rules left empty: ${escapeHtml(i.gaps.join(', '))}</div>` : ''}</td>
-      <td>${statusPill(i)}${i.error ? `<div class="muted">${escapeHtml(i.error)}</div>` : ''}</td>
-      <td>${escapeHtml(sum(i))}</td>
-      <td>${i.status === 'done' || i.status === 'applied' ? `<button class="btn" onclick="aiViewItem(${i.id})">View</button> <button class="btn primary" onclick="aiApplyItem(${i.id})">${i.status === 'applied' ? 'Re-apply' : 'Apply verified'}</button>` : ''}</td>
-    </tr>`).join('') || `<tr><td colspan="5" class="muted">No pages queued yet. Upload annual reports first - the pages the AI will read are stored at upload.</td></tr>`;
   const jobs = (st.jobs || []).map(j => `
     <tr><td>#${j.id} ${escapeHtml(j.mode)}</td><td>${escapeHtml(j.model || '')}</td><td>${j.n_items}</td>
     <td>${escapeHtml(j.status)}</td><td>$${(j.actual_cost_usd != null ? j.actual_cost_usd : j.est_cost_usd || 0).toFixed(3)}${j.actual_cost_usd != null ? '' : ' (est.)'}</td>
     <td>${j.mode === 'batch' && j.status !== 'ended' ? `<button class="btn" onclick="aiCollect(${j.id})">Check / collect</button>` : ''}</td></tr>`).join('');
-  app.innerHTML = `
+  body.innerHTML = `
     ${banner}
-    <div class="panel">
-      <h3>Run</h3>
-      <p class="muted"><b>The AI is the last resort.</b> Rule-based readers run first at upload; only what they left empty is listed here, and the AI is asked for those items alone. Anything the rules fill in the meantime is dropped before sending. ${pending.length} item(s) waiting (${c.pending || 0} pending, ${c.failed || 0} failed) · ${c.done || 0} ready to review · ${c.applied || 0} applied.
-      Batch is half price and returns within about an hour; direct runs the first 6 items now at full price.</p>
+    <div class="panel"><h3>Run AI extraction</h3>
+      <p class="muted"><b>The AI is the last resort.</b> Rule-based readers run first at upload and tabs are reconciled from each other; only what is still empty is queued, and the AI is asked for those items alone.
+      ${pending.length} item(s) waiting · ${c.done || 0} ready to review · ${c.applied || 0} applied. Results are reviewed in <a href="#" onclick="openReview('ai-results');return false;">Review › AI results</a>.</p>
+      <p class="muted">Batch is half price and returns within about an hour; direct runs the first 6 items now at full price.</p>
       <div id="aiEstimate" class="muted">Press Estimate to see the cost before anything is sent.</div>
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button class="btn" onclick="aiEstimate()">Estimate</button>
         <label>Spend cap $ <input id="aiCap" type="number" step="0.5" min="0" value="5" style="width:70px"></label>
         <button class="btn primary" onclick="aiRun('batch')" ${st.configured && pending.length ? '' : 'disabled'}>Run AI extraction (batch)</button>
         <button class="btn" onclick="aiRun('direct')" ${st.configured && pending.length ? '' : 'disabled'}>Run now (direct, 6 max)</button>
-      </div>
-    </div>
-    ${jobs ? `<div class="panel"><h3>Jobs</h3><table class="tbl"><thead><tr><th>Job</th><th>Model</th><th>Items</th><th>Status</th><th>Cost</th><th></th></tr></thead><tbody>${jobs}</tbody></table></div>` : ''}
-    <div class="panel"><h3>Items</h3>
-      <table class="tbl"><thead><tr><th>Report</th><th>Task</th><th>Status</th><th>Verification</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-    </div>
-    <div id="aiDetail"></div>`;
+      </div></div>
+    <div class="panel"><h3>Jobs and cost</h3>
+      ${jobs ? `<table class="tbl"><thead><tr><th>Job</th><th>Model</th><th>Items</th><th>Status</th><th>Cost</th><th></th></tr></thead><tbody>${jobs}</tbody></table>` : '<div class="muted">No AI runs yet.</div>'}</div>`;
 }
+
+let reviewSub = 'uploads';
+// "Manual entry" moved out to its own top-level nav page (see PAGES /
+// renderManualEntryPage above) and is no longer one of Review's own tabs.
+const REVIEW_SUBS = [{id:'uploads', label:'Uploads', k:'up'}, {id:'ai-results', label:'AI results', k:'ai'}, {id:'conflicts', label:'Conflicts', k:'cf'},
+                     {id:'issues', label:'Issues', k:'is'}];
+async function renderReviewTab(body){
+  let sum = {};
+  try { sum = await fetch('/api/review/summary').then(r => r.json()); } catch (e) {}
+  const count = {up: (sum.uploads_ready || 0) + (sum.uploads_processing || 0), ai: sum.ai_ready || 0, cf: sum.conflicts_open || 0, is: sum.issues_open || 0};
+  body.innerHTML = `
+    <div class="ir-tabbar">${REVIEW_SUBS.map(t => `<button class="ir-tab-btn ${reviewSub === t.id ? 'active' : ''}" onclick="reviewSub='${t.id}';renderReviewTab(document.getElementById('app'))">${t.label}${t.k && count[t.k] ? ` <span class="sr-conf-badge sr-conf-med">${count[t.k]}</span>` : ''}</button>`).join('')}</div>
+    <div id="reviewBody" style="margin-top:12px"></div>`;
+  const box = document.getElementById('reviewBody');
+  if (reviewSub === 'uploads') await renderReviewUploads(box);
+  else if (reviewSub === 'ai-results') await renderReviewAIResults(box);
+  else if (reviewSub === 'conflicts') await renderReviewConflicts(box);
+  else await renderReviewIssues(box);
+}
+// Re-renders whichever of the three pages (AI / Review / Manual Entry) is
+// currently on screen - callers like aiRun()/aiApplyItem() run from the AI
+// page as often as from Review, so this can't just always jump to Review.
+async function reviewRefresh(){
+  if (currentPage === 'ai') await renderAIPage();
+  else if (currentPage === 'manual-entry') await renderManualEntryPage();
+  else await renderReviewPage();
+}
+
+// ---- Uploads awaiting approval (the review gate)
+let reviewPollTimer = null;
+async function renderReviewUploads(box){
+  const drafts = await fetch('/api/review/drafts').then(r => r.json());
+  const pill = d => ({processing:'⏳ reading…', ready:'🟢 imported', approved:'✅ approved', failed:'❌ failed'}[d.status] || d.status);
+  const co = d => { const c = d.company || {}; return c.matched ? escapeHtml(c.matched.name) : c.will_create ? `<b>NEW:</b> ${escapeHtml(c.new_name || c.detected || '')}` : escapeHtml(c.detected || '-'); };
+  const rows = drafts.map(d => `<tr>
+      <td>${escapeHtml(d.filename)}<div class="muted">${(d.size / 1048576).toFixed(1)} MB</div></td>
+      <td>${d.status === 'processing' ? '-' : co(d)}</td><td>${escapeHtml(d.period || '-')}</td>
+      <td>${pill(d)}${d.error ? `<div class="muted">${escapeHtml(d.error)}</div>` : ''}</td>
+      <td>${d.status === 'processing' ? '' : (d.checks_failed ? `<span style="color:var(--red,#c0392b)">⚠ ${d.checks_failed} check(s) failed</span>` : '✓ checks pass') + (d.warnings ? ` · ${d.warnings} note(s)` : '')}</td>
+      <td>${d.status !== 'processing' ? `<button class="btn" onclick="reviewViewDraft(${d.id})">View</button> ${d.status !== 'approved' && d.status !== 'failed' ? `<button class="btn primary" id="apprBtn${d.id}" onclick="reviewApprove(${d.id})">Approve</button> ` : ''}${d.source_document_id ? `<button class="btn danger" onclick="reviewReject(${d.id})">Reject</button>` : `<button class="btn" onclick="reviewDiscard(${d.id})">Discard</button>`}` : ''}</td></tr>`).join('');
+  const ready = drafts.filter(d => d.status === 'ready').length;
+  box.innerHTML = `<div class="panel">
+      <p class="muted">Every uploaded PDF is parsed and saved to the Survey Report immediately. This list is for confirming that afterward: <b>Approve</b> marks a report as checked, <b>Reject</b> deletes everything it saved (removing it from the Survey Report page). Typed survey files are already human-made and are never listed here.</p>
+      ${ready > 1 ? `<button class="btn primary" onclick="reviewApproveAll()">Approve all ${ready}</button>` : ''}
+      <table class="tbl" style="margin-top:10px"><thead><tr><th>File</th><th>Company</th><th>Period</th><th>Status</th><th>Checks</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" class="muted">No uploads yet. Upload reports from the Overview page; they will appear here once saved.</td></tr>'}</tbody></table></div>
+    <div id="reviewDraftDetail"></div>`;
+  clearTimeout(reviewPollTimer);
+  if (drafts.some(d => d.status === 'processing')) {
+    reviewPollTimer = setTimeout(() => { if (currentPage === 'review' && reviewSub === 'uploads') renderReviewTab(document.getElementById('app')); }, 4000);
+  }
+}
+async function reviewViewDraft(id){
+  const d = await fetch(`/api/review/drafts/${id}`).then(r => r.json());
+  const pv = d.preview || {}, kf = pv.key_figures || {}, b = pv.board || {}, c = pv.company || {};
+  const fmt = v => v === undefined || v === null ? '<span class="muted">-</span>' : Number(v).toLocaleString(undefined, {maximumFractionDigits: 2});
+  const checks = (pv.checks || []).map(x => `<li>${x.ok ? '✅' : '⚠'} ${escapeHtml(x.check)} <span class="muted">(${escapeHtml(x.detail || '')})</span></li>`).join('');
+  const warns = (pv.warnings || []).map(w => `<li>⚠ ${escapeHtml(w)}</li>`).join('');
+  const stm = Object.entries(pv.statements || {}).map(([k, v]) => `${escapeHtml(k)}: ${v.items} lines (avg confidence ${v.avg_confidence ?? '-'})`).join(' · ');
+  const people = (b.sample || []).map(p => `${escapeHtml(p.name)}${p.role && p.role !== 'unknown' ? ` <span class="muted">(${escapeHtml(p.role.replace('_', '-'))})</span>` : ''}`).join(', ');
+  document.getElementById('reviewDraftDetail').innerHTML = `<div class="panel">
+    <h3>${escapeHtml(d.filename)}</h3>
+    <p>Will be saved to: <b>${c.matched ? escapeHtml(c.matched.name) : c.will_create ? 'a NEW company "' + escapeHtml(c.new_name || c.detected || '') + '"' : '?'}</b>
+      · period <b>${escapeHtml(pv.period || '-')}</b>${pv.prior_period ? ` (+ comparative ${escapeHtml(pv.prior_period)})` : ''} · unit ${escapeHtml(pv.unit || 'not stated')} · ${pv.pages || '?'} pages${pv.survey_only ? ' · <b>survey-only (no statements)</b>' : ''}</p>
+    ${warns ? `<ul>${warns}</ul>` : ''}
+    <h4>Financial statements</h4><div class="muted">${stm || 'none found'}</div>
+    <table class="tbl" style="max-width:520px"><tbody>${['revenue','profit_before_tax','tax_expense','net_income','total_assets','total_liabilities','total_equity'].map(k => `<tr><td>${k.replace(/_/g, ' ')}</td><td style="text-align:right">${fmt(kf[k])}</td></tr>`).join('')}</tbody></table>
+    ${checks ? `<h4>Checks</h4><ul>${checks}</ul>` : ''}
+    <h4>Board and pay</h4>
+    <div>Directors: <b>${b.directors || 0}</b> (${b.roles_known || 0} with a stated role) · read from: ${escapeHtml(b.register_kind || 'nothing found')}</div>
+    <div class="muted">${people}</div>
+    <div>Committees from attendance table: ${(b.attendance_committees || []).length} · from sentences: ${(pv.prose_committees || []).length}</div>
+    <div>Director pay rows: <b>${(pv.pay || {}).rows || 0}</b>${((pv.pay || {}).grand_totals || []).length ? ' · printed total ' + fmt(pv.pay.grand_totals[0]) : ''}</div>
+    <div>CEO pay block: ${pv.ceo ? escapeHtml(pv.ceo.name) : 'not found'} · NED fee fields: ${(pv.policy_fields || []).length} · NED benefits found: ${Object.keys(pv.benefits || {}).length}</div>
+    <p class="muted" style="margin-top:10px">Anything still missing after approval can be typed in under Manual Entry, or sent to the AI (the AI page) if a page in the report can answer it.</p></div>`;
+  document.getElementById('reviewDraftDetail').scrollIntoView({behavior: 'smooth'});
+}
+async function reviewApprove(id){
+  const btn = document.getElementById('apprBtn' + id); if (btn) { btn.disabled = true; btn.textContent = 'Approving…'; }
+  const r = await fetch(`/api/review/drafts/${id}/approve`, {method:'POST'});
+  const d = await r.json();
+  if (!r.ok) alert(d.error || (d.result && d.result.error) || 'Approve failed');
+  await reviewRefresh();
+}
+async function reviewApproveAll(){
+  const drafts = (await fetch('/api/review/drafts').then(r => r.json())).filter(d => d.status === 'ready');
+  if (!drafts.length) return;
+  for (const d of drafts) {
+    const btn = document.getElementById('apprBtn' + d.id); if (btn) { btn.disabled = true; btn.textContent = 'Approving…'; }
+    await fetch(`/api/review/drafts/${d.id}/approve`, {method:'POST'});
+  }
+  await reviewRefresh();
+}
+async function reviewReject(id){
+  if (!confirm('Reject this report? Everything it saved will be deleted from the Survey Report page - this cannot be undone.')) return;
+  await fetch(`/api/review/drafts/${id}/reject`, {method:'POST'});
+  await reviewRefresh();
+}
+async function reviewDiscard(id){
+  if (!confirm('Discard this upload? The file is deleted and nothing is saved.')) return;
+  await fetch(`/api/review/drafts/${id}/discard`, {method:'POST'});
+  await reviewRefresh();
+}
+
+// ---- AI results
+async function renderReviewAIResults(box){
+  const items = await fetch('/api/ai/items').then(r => r.json());
+  const sum = i => i.summary ? `${i.summary.verified}/${i.summary.items} verified` + (i.summary.checks_failed ? ` · ⚠ ${i.summary.checks_failed} check(s) failed` : '') : '-';
+  const rows = items.map(i => `<tr>
+      <td>${escapeHtml(i.company || '')}<div class="muted">${escapeHtml(i.fiscal_year)}</div></td>
+      <td>${escapeHtml(i.task)}<div class="muted">pages ${escapeHtml((i.pages || []).join(', '))}</div>${(i.gaps || []).length ? `<div class="muted">rules left empty: ${escapeHtml(i.gaps.join(', '))}</div>` : ''}</td>
+      <td>${aiPill(i)}${i.error ? `<div class="muted">${escapeHtml(i.error)}</div>` : ''}</td>
+      <td>${escapeHtml(sum(i))}</td>
+      <td>${i.status === 'done' || i.status === 'applied' ? `<button class="btn" onclick="aiViewItem(${i.id})">View</button> <button class="btn primary" onclick="aiApplyItem(${i.id})">${i.status === 'applied' ? 'Re-apply' : 'Apply verified'}</button>` : ''}</td></tr>`).join('');
+  box.innerHTML = `<div class="panel"><p class="muted">Apply only fills fields the rule-based readers left empty; a value the AI disagrees with goes to Conflicts and is never overwritten. Run items from the AI tab.</p>
+    <table class="tbl"><thead><tr><th>Report</th><th>Task</th><th>Status</th><th>Verification</th><th></th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="5" class="muted">No AI items. Reports the rules read completely queue nothing.</td></tr>'}</tbody></table></div><div id="aiDetail"></div>`;
+}
+
+// ---- Conflicts
+async function renderReviewConflicts(box){
+  const list = await fetch('/api/review/conflicts').then(r => r.json());
+  const rows = list.map(c => `<tr style="${c.resolution ? 'opacity:.55' : ''}">
+      <td>${escapeHtml(c.company || '')}<div class="muted">${escapeHtml(c.fiscal_year)}</div></td><td>${escapeHtml(c.field_name)}</td>
+      <td>${c.candidate_a_value ?? '-'}<div class="muted">${escapeHtml((c.candidate_a_source_text || '').slice(0, 110))}</div></td>
+      <td>${c.candidate_b_value ?? '-'}${c.candidate_b_page ? ` <span class="muted">p.${c.candidate_b_page}</span>` : ''}<div class="muted">${escapeHtml((c.candidate_b_source_text || '').slice(0, 110))}</div></td>
+      <td>${c.resolution ? escapeHtml(c.resolution.replace('candidate_a', 'kept stored').replace('candidate_b', 'used other value')) :
+        `<button class="btn" onclick="reviewResolve(${c.id},'candidate_a')">Keep stored</button> <button class="btn" onclick="reviewResolve(${c.id},'candidate_b')">Use AI value</button> <button class="btn" onclick="reviewResolve(${c.id},'neither')">Neither</button>`}</td></tr>`).join('');
+  box.innerHTML = `<div class="panel"><p class="muted">Two sources gave different values for one field. Nothing changes until you choose.</p>
+    <table class="tbl"><thead><tr><th>Report</th><th>Field</th><th>Stored value</th><th>Other value</th><th>Decision</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="5" class="muted">No conflicts.</td></tr>'}</tbody></table></div>`;
+}
+async function reviewResolve(id, resolution){
+  await fetch(`/api/review/conflicts/${id}/resolve`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({resolution})});
+  await reviewRefresh();
+}
+
+// ---- Issues (extraction steps that raised)
+async function renderReviewIssues(box){
+  const list = await fetch('/api/review/issues').then(r => r.json());
+  const rows = list.map(i => `<tr style="${i.resolved ? 'opacity:.5' : ''}"><td>${escapeHtml(i.company || '-')}<div class="muted">${escapeHtml(i.fiscal_year || '')} · ${escapeHtml(i.filename || '')}</div></td>
+      <td>${escapeHtml(i.step)}</td><td><code style="white-space:pre-wrap">${escapeHtml(i.error || '')}</code></td>
+      <td>${i.resolved ? 'resolved' : `<button class="btn" onclick="reviewIssueResolve(${i.id})">Mark resolved</button>`}</td></tr>`).join('');
+  box.innerHTML = `<div class="panel"><p class="muted">A step that raised during import used to disappear ("non-fatal") and leave a tab empty. They are listed here with the error. A "column … does not exist" error means the live database schema is behind the code - run <b>Settings › Overview › Data health › Schema check</b>.</p>
+    <table class="tbl"><thead><tr><th>Report</th><th>Step</th><th>Error</th><th></th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="4" class="muted">No extraction problems recorded.</td></tr>'}</tbody></table></div>`;
+}
+async function reviewIssueResolve(id){ await fetch(`/api/review/issues/${id}/resolve`, {method:'POST'}); await reviewRefresh(); }
+
+// ---- Manual entry: for data that is in the report but that no reader could extract
+let manualCtx = {companyId: null, fy: null};
+async function renderReviewManual(box){
+  const companies = await fetch('/api/companies').then(r => r.json());
+  if (!manualCtx.companyId && companies.length) manualCtx.companyId = companies[0].id;
+  box.innerHTML = `<div class="panel">
+    <p class="muted">Type in what the report contains but the app could not read. Values entered here are marked <b>entered manually</b> and are never overwritten by a re-upload or by the AI.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <select id="manCo" onchange="manualCtx.companyId=+this.value;manualLoadYears()">${companies.map(c => `<option value="${c.id}" ${c.id === manualCtx.companyId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+      <select id="manFy"></select> <input id="manFyNew" placeholder="or new year, e.g. FY2025" style="width:170px">
+      <button class="btn primary" onclick="manualLoad()">Open</button>
+    </div></div><div id="manualBody"></div>`;
+  await manualLoadYears();
+}
+async function manualLoadYears(){
+  if (!manualCtx.companyId) return;
+  const d = await fetch(`/api/manual/${manualCtx.companyId}/years`).then(r => r.json());
+  const sel = document.getElementById('manFy');
+  sel.innerHTML = (d.years || []).map(y => `<option>${escapeHtml(y)}</option>`).join('') || '<option value="">(no year yet)</option>';
+  if (manualCtx.fy && (d.years || []).includes(manualCtx.fy)) sel.value = manualCtx.fy;
+}
+async function manualLoad(){
+  const fy = (document.getElementById('manFyNew').value || '').trim() || document.getElementById('manFy').value;
+  if (!fy) { alert('Choose or type a fiscal year first.'); return; }
+  manualCtx.fy = fy;
+  const d = await fetch(`/api/manual/${manualCtx.companyId}/${encodeURIComponent(fy)}`).then(r => r.json());
+  const chips = Object.values(d.status).map(t => `<span class="sr-conf-badge ${t.filled >= t.total ? 'sr-conf-high' : 'sr-conf-med'}" title="missing: ${escapeHtml(t.missing.join(', '))}">${escapeHtml(t.label)} ${t.filled}/${t.total}</span>`).join(' ');
+  const metricRow = m => `<tr><td>${escapeHtml(m.label)}</td><td><input class="manMetric" data-key="${m.key}" value="${m.value ?? ''}" style="width:130px"></td><td class="muted">${escapeHtml((m.source || '').slice(0, 90))}</td></tr>`;
+  const groups = d.groups.map(g => `<details ${g.metrics.some(m => m.value === null) ? 'open' : ''}><summary><b>${escapeHtml(g.label)}</b> <span class="muted">(${g.metrics.filter(m => m.value !== null).length}/${g.metrics.length} filled)</span></summary>
+      <table class="tbl"><tbody>${g.metrics.map(metricRow).join('')}</tbody></table></details>`).join('');
+  const dirRows = d.directors.map(x => manualDirRow(x)).join('') + manualDirRow({});
+  const comRows = d.committees.map(x => manualComRow(x)).join('') + manualComRow({});
+  const payRows = d.pay_rows.map(x => manualPayRow(x)).join('') + manualPayRow({});
+  const ben = d.benefit_keys.map(k => { const v = d.ned_benefits[k]; const st = v ? (v.provided ? 'yes' : 'no') : '';
+    return `<tr><td>${k}</td><td><select class="manBen" data-key="${k}"><option value="" ${st === '' ? 'selected' : ''}>not stated</option><option value="yes" ${st === 'yes' ? 'selected' : ''}>provided</option><option value="no" ${st === 'no' ? 'selected' : ''}>not provided</option></select></td><td><input class="manBenD" data-key="${k}" value="${escapeHtml((v && v.detail) || '')}" placeholder="detail / page" style="width:240px"></td></tr>`; }).join('');
+  document.getElementById('manualBody').innerHTML = `
+    <div class="panel"><div>${chips}</div>
+      <p style="margin-top:8px"><button class="btn" onclick="manualReconcile()">Rebuild tabs from what is stored</button> <span class="muted">(fills the Register from the pay tables and Board Composition from the Register)</span></p></div>
+    <div class="panel"><h3>Metrics</h3>${groups}
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <label>Unit of pay figures <select id="manUnit"><option value="">(unchanged${d.unit ? ': ' + d.unit : ''})</option><option value="units">units (Shs)</option><option value="thousands">thousands</option><option value="millions">millions</option></select></label>
+        <input id="manNote" placeholder="source note, e.g. p.88" style="width:200px"><button class="btn primary" onclick="manualSaveMetrics()">Save metrics</button></div></div>
+    <div class="panel"><h3>Directors' register</h3><table class="tbl"><thead><tr><th>Name</th><th>Role</th><th>Independent</th><th>Gender</th><th>Nationality</th><th>Appointed</th><th></th></tr></thead><tbody>${dirRows}</tbody></table></div>
+    <div class="panel"><h3>Committees</h3><table class="tbl"><thead><tr><th>Name</th><th>Chair</th><th>Meetings</th><th>Members (comma separated)</th><th></th></tr></thead><tbody>${comRows}</tbody></table></div>
+    <div class="panel"><h3>Director pay rows</h3><p class="muted">Amounts as printed, in the unit chosen above. Components as <code>Fees=5000, Allowances=1200</code>. Tick "total row" for the table's printed grand total.</p>
+      <table class="tbl"><thead><tr><th>Name</th><th>Role</th><th>Total</th><th>Components</th><th>Total row</th><th></th></tr></thead><tbody>${payRows}</tbody></table></div>
+    <div class="panel"><h3>NED benefits</h3><table class="tbl"><tbody>${ben}</tbody></table><button class="btn primary" style="margin-top:8px" onclick="manualSaveBenefits()">Save benefits</button></div>`;
+}
+const _sel = (opts, cur, cls, extra='') => `<select class="${cls}" ${extra}>${opts.map(([v, l]) => `<option value="${v}" ${String(cur ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+function manualDirRow(x){
+  const id = x.id || '';
+  return `<tr data-id="${id}" class="manDir"><td><input class="dn" value="${escapeHtml(x.director_name || '')}" style="width:170px"></td>
+    <td>${_sel([['unknown','?'],['executive','executive'],['non_executive','non-executive']], x.role, 'dr')}</td>
+    <td>${_sel([['','?'],['true','yes'],['false','no']], x.independent === true ? 'true' : x.independent === false ? 'false' : '', 'di')}</td>
+    <td>${_sel([['','?'],['Male','Male'],['Female','Female']], x.gender, 'dg')}</td>
+    <td><input class="dnat" value="${escapeHtml(x.nationality || '')}" style="width:100px"></td><td><input class="dap" value="${escapeHtml(x.appointed_date || '')}" style="width:100px"></td>
+    <td><button class="btn" onclick="manualSaveDir(this)">${id ? 'Save' : 'Add'}</button>${id ? ` <button class="btn" onclick="manualDel('directors',${id})">✕</button>` : ''}</td></tr>`;
+}
+function manualComRow(x){
+  const id = x.id || '';
+  return `<tr data-id="${id}" class="manCom"><td><input class="cn" value="${escapeHtml(x.name || '')}" style="width:190px"></td><td><input class="cc" value="${escapeHtml(x.chairperson_name || '')}" style="width:140px"></td>
+    <td><input class="cm" value="${x.meetings_held ?? ''}" style="width:60px"></td><td><input class="cmem" value="${escapeHtml((x.members || []).join(', '))}" style="width:300px"></td>
+    <td><button class="btn" onclick="manualSaveCom(this)">${id ? 'Save' : 'Add'}</button>${id ? ` <button class="btn" onclick="manualDel('committees',${id})">✕</button>` : ''}</td></tr>`;
+}
+function manualPayRow(x){
+  const id = x.id || '';
+  let comps = x.components; if (typeof comps === 'string') { try { comps = JSON.parse(comps); } catch (e) { comps = {}; } }
+  const cs = Object.entries(comps || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+  return `<tr data-id="${id}" class="manPay"><td><input class="pn" value="${escapeHtml(x.director_name || '')}" style="width:170px"></td>
+    <td>${_sel([['unknown','?'],['executive','executive'],['non_executive','non-executive']], x.role, 'pr')}</td>
+    <td><input class="pt" value="${x.total ?? ''}" style="width:110px"></td><td><input class="pc" value="${escapeHtml(cs)}" style="width:260px"></td>
+    <td><input type="checkbox" class="pg" ${x.is_grand_total ? 'checked' : ''}></td>
+    <td><button class="btn" onclick="manualSavePay(this)">${id ? 'Save' : 'Add'}</button>${id ? ` <button class="btn" onclick="manualDel('pay-rows',${id})">✕</button>` : ''}</td></tr>`;
+}
+async function _manualPost(kind, body){
+  const r = await fetch(`/api/manual/${manualCtx.companyId}/${encodeURIComponent(manualCtx.fy)}/${kind}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json(); if (!r.ok) { alert(d.error || 'Could not save'); return false; } await manualLoad(); return true;
+}
+async function manualSaveDir(btn){
+  const tr = btn.closest('tr'), q = c => tr.querySelector(c).value;
+  await _manualPost('directors', {id: +tr.dataset.id || undefined, director_name: q('.dn'), role: q('.dr'), independent: q('.di') === '' ? null : q('.di') === 'true', gender: q('.dg') || null, nationality: q('.dnat'), appointed_date: q('.dap')});
+}
+async function manualSaveCom(btn){
+  const tr = btn.closest('tr'), q = c => tr.querySelector(c).value;
+  await _manualPost('committees', {id: +tr.dataset.id || undefined, name: q('.cn'), chairperson_name: q('.cc'), meetings_held: q('.cm'), members: q('.cmem')});
+}
+async function manualSavePay(btn){
+  const tr = btn.closest('tr'), q = c => tr.querySelector(c);
+  const comps = {}; q('.pc').value.split(',').forEach(p => { const [k, v] = p.split('='); if (k && v !== undefined) comps[k.trim()] = v.trim(); });
+  await _manualPost('pay-rows', {id: +tr.dataset.id || undefined, director_name: q('.pn').value, role: q('.pr').value, total: q('.pt').value, components: comps, is_grand_total: q('.pg').checked});
+}
+async function manualDel(kind, id){
+  if (!confirm('Delete this row?')) return;
+  await fetch(`/api/manual/${kind}/${id}`, {method:'DELETE'}); await manualLoad();
+}
+async function manualSaveMetrics(){
+  const fields = {}; document.querySelectorAll('.manMetric').forEach(i => { fields[i.dataset.key] = i.value.trim() === '' ? null : i.value; });
+  const r = await fetch(`/api/manual/${manualCtx.companyId}/${encodeURIComponent(manualCtx.fy)}/metrics`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({fields, note: document.getElementById('manNote').value, unit: document.getElementById('manUnit').value || undefined})});
+  const d = await r.json(); if (!r.ok) { alert(d.error || 'Could not save'); return; } await manualLoad();
+}
+async function manualSaveBenefits(){
+  const b = {}; document.querySelectorAll('.manBen').forEach(s => { if (s.value) b[s.dataset.key] = {provided: s.value === 'yes', detail: document.querySelector(`.manBenD[data-key="${s.dataset.key}"]`).value || null}; });
+  await fetch(`/api/manual/${manualCtx.companyId}/${encodeURIComponent(manualCtx.fy)}/benefits`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ned_benefits: b})});
+  await manualLoad();
+}
+async function manualReconcile(){
+  await fetch(`/api/tabs/${manualCtx.companyId}/${encodeURIComponent(manualCtx.fy)}/reconcile`, {method:'POST'}); await manualLoad();
+}
+
 async function aiEstimate(){
   const r = await fetch('/api/ai/estimate', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
   const e = await r.json();
@@ -6147,21 +6351,24 @@ async function aiRun(mode){
   const r = await fetch('/api/ai/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode, max_cost_usd: isNaN(cap) ? null : cap})});
   const d = await r.json();
   if (!r.ok) { alert(d.error || 'Could not start'); return; }
-  await renderAIExtractionPage();
+  await reviewRefresh();
 }
 async function aiCollect(id){
   const r = await fetch(`/api/ai/jobs/${id}/collect`, {method:'POST'});
   const d = await r.json();
   if (d.status && d.status !== 'ended') alert('Still processing (' + d.status + '). Try again in a few minutes.');
-  await renderAIExtractionPage();
+  await reviewRefresh();
 }
 async function aiApplyItem(id){
-  if (!confirm('Write the VERIFIED values from this item into the survey tables? Unverified items are never written.')) return;
+  if (!confirm('Write the VERIFIED values from this item into the survey tables? Only fields the rules left empty are filled; unverified items are never written.')) return;
   const r = await fetch(`/api/ai/items/${id}/apply`, {method:'POST'});
   const d = await r.json();
   if (!r.ok) { alert(d.error || 'Could not apply'); return; }
-  alert('Applied: ' + JSON.stringify(d.applied));
-  await renderAIExtractionPage();
+  const a = d.applied || {};
+  alert(`Applied: ${(a.fields || []).length} field(s), ${a.directors || 0} director(s), ${a.committees || 0} committee(s), ${a.pay_rows || 0} pay row(s), ${a.benefits || 0} benefit(s).` +
+        ((a.conflicts || []).length ? `\n${a.conflicts.length} value(s) disagreed with what was stored - see Review › Conflicts.` : '') +
+        ((a.skipped || []).length ? `\nSkipped: ${a.skipped.join('; ')}` : ''));
+  await reviewRefresh();
 }
 async function aiViewItem(id){
   const it = await fetch(`/api/ai/items/${id}`).then(r => r.json());
@@ -6187,6 +6394,8 @@ async function aiViewItem(id){
 // styling the Survey Report and Intelligence Report pages already use) so
 // each data category gets its own screen. "Overview" (the database/health
 // numbers - what you'd check first) is the default/first tab.
+// AI, Review and Manual Entry used to be tabs here too - promoted to their
+// own top-level nav items (see PAGES above), so they are no longer listed.
 const SETTINGS_TABS = [
   {id:'overview', label:'Overview'},
   {id:'companies', label:'Companies'},
@@ -6245,6 +6454,12 @@ function renderSettingsTabBody(){
           ${statCard('green', '📄', status.counts.source_documents, 'Source Documents')}
           ${statCard('amber', '📥', status.counts.import_jobs, 'Import Jobs')}
         </div>
+      </div>
+      <div class="panel" id="dataHealthPanel">
+        <div class="panel-head"><h2>Data health</h2></div>
+        <p class="muted">Two checks for "the data is there but a tab is empty". <b>Schema check</b> finds columns the code expects that your live database does not have (a missing column makes every save that touches it fail, and the only symptom is an empty tab). <b>Rebuild tabs</b> fills a tab from what other tabs already hold (e.g. the Directors' Register from the pay tables) for every company.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="dhSchemaCheck()">Schema check</button><button class="btn" onclick="dhReconcileAll()">Rebuild tabs for all companies</button></div>
+        <div id="dataHealthOut" style="margin-top:10px"></div>
       </div>`;
   } else if (settingsTab === 'companies') {
     body.innerHTML = `
@@ -6252,6 +6467,7 @@ function renderSettingsTabBody(){
         <div class="panel-head"><h2>Companies</h2>
           <button class="btn-primary-cta" style="margin:0;" onclick="openAddCompanyModal()">+ Add Company</button>
         </div>
+        <div id="settingsCompaniesToolbar" class="co-toolbar"></div>
         <div id="settingsCompaniesBody"><div class="empty">Loading...</div></div>
       </div>`;
     renderSettingsCompaniesPanel();
@@ -6272,6 +6488,44 @@ function renderSettingsTabBody(){
   }
 }
 
+// ---------------------------------------------------------------------------
+// AI / Review / Manual Entry - promoted from Settings tabs to their own
+// top-level nav pages (2026-09-25). Each is a thin wrapper around the same
+// render function Settings used to call directly into its own tab body -
+// the underlying renderAITab/renderReviewTab/renderReviewManual functions
+// are unchanged and just get the page's own <div id="app"> instead of
+// Settings' #settingsTabBody.
+// ---------------------------------------------------------------------------
+async function renderAIPage(){
+  const app = document.getElementById('app');
+  if (window.currentUser.role !== 'admin') {
+    app.innerHTML = `<div class="panel"><div class="empty">AI extraction is only available to admin accounts.</div></div>`;
+    return;
+  }
+  app.innerHTML = '';
+  await renderAITab(app);
+}
+
+async function renderReviewPage(){
+  const app = document.getElementById('app');
+  if (window.currentUser.role !== 'admin') {
+    app.innerHTML = `<div class="panel"><div class="empty">Review is only available to admin accounts.</div></div>`;
+    return;
+  }
+  app.innerHTML = '';
+  await renderReviewTab(app);
+}
+
+async function renderManualEntryPage(){
+  const app = document.getElementById('app');
+  if (window.currentUser.role !== 'admin') {
+    app.innerHTML = `<div class="panel"><div class="empty">Manual entry is only available to admin accounts.</div></div>`;
+    return;
+  }
+  app.innerHTML = '';
+  await renderReviewManual(app);
+}
+
 // Companies now only manage from here (the standalone Companies page
 // was deleted per user's request - every other part of the app that
 // used to link into it or into a per-company detail page now goes
@@ -6280,23 +6534,103 @@ function renderSettingsTabBody(){
 // delete button - not the old page's full filter/sort/column-picker
 // table, since browsing/analyzing companies now happens from Survey
 // Report's own company picker.
+let settingsSelectedCompanyIds = new Set();
+let settingsCompaniesList = [];
+
 async function renderSettingsCompaniesPanel(){
   const body = document.getElementById('settingsCompaniesBody');
   if (!body) return; // Companies tab isn't the active Settings tab right now - nothing to refresh
   const res = await fetch('/api/companies');
   const companies = await res.json();
+  settingsCompaniesList = companies;
+  // Drop selections for companies that no longer exist (e.g. just deleted)
+  const live = new Set(companies.map(c => c.id));
+  settingsSelectedCompanyIds = new Set([...settingsSelectedCompanyIds].filter(id => live.has(id)));
   if (!companies.length) {
     body.innerHTML = `<div class="empty">No companies yet.</div>`;
+    renderCompaniesToolbar();
     return;
   }
   body.innerHTML = companies.map(c => `
     <div class="data-summary-row">
-      <div class="ds-label">
-        <span class="clickable" onclick="goToCompanySurveyData(${c.id})">${escapeHtml(c.name)}</span>
-        ${c.sector ? `<span style="color:var(--text-faint);"> — ${escapeHtml(c.sector)}</span>` : ''}
-      </div>
+      <label style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;cursor:pointer;">
+        <input type="checkbox" class="co-check" data-id="${c.id}" ${settingsSelectedCompanyIds.has(c.id) ? 'checked' : ''} onchange="toggleCompanySelected(${c.id}, this.checked)">
+        <span class="ds-label" style="min-width:0;">
+          <span class="clickable" onclick="event.preventDefault();goToCompanySurveyData(${c.id})">${escapeHtml(c.name)}</span>
+          ${c.sector ? `<span style="color:var(--text-faint);"> — ${escapeHtml(c.sector)}</span>` : ''}
+        </span>
+      </label>
       <button class="secondary" style="color:var(--red);" onclick="deleteCompany(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
     </div>`).join('');
+  renderCompaniesToolbar();
+}
+
+function renderCompaniesToolbar(){
+  const bar = document.getElementById('settingsCompaniesToolbar');
+  if (!bar) return;
+  const total = settingsCompaniesList.length;
+  const n = settingsSelectedCompanyIds.size;
+  if (!total) { bar.innerHTML = ''; return; }
+  bar.innerHTML = `
+    <label class="co-selectall"><input type="checkbox" id="coSelectAll" ${n === total ? 'checked' : ''} onchange="toggleSelectAllCompanies(this.checked)"> Select all</label>
+    <span class="co-count">${n ? `${n} of ${total} selected` : `${total} companies`}</span>
+    <span style="flex:1;"></span>
+    <button class="secondary" style="color:var(--red);" ${n ? '' : 'disabled'} onclick="deleteSelectedCompanies()">Delete selected${n ? ` (${n})` : ''}</button>
+    <button class="secondary" style="color:var(--red);border-color:var(--red-line);" onclick="deleteAllCompanies()">Delete all</button>`;
+  const all = document.getElementById('coSelectAll');
+  if (all) all.indeterminate = n > 0 && n < total;
+}
+
+function toggleCompanySelected(id, on){
+  if (on) settingsSelectedCompanyIds.add(id); else settingsSelectedCompanyIds.delete(id);
+  renderCompaniesToolbar();
+}
+function toggleSelectAllCompanies(on){
+  settingsSelectedCompanyIds = on ? new Set(settingsCompaniesList.map(c => c.id)) : new Set();
+  document.querySelectorAll('.co-check').forEach(cb => { cb.checked = on; });
+  renderCompaniesToolbar();
+}
+
+async function bulkDeleteCompanies(payload, confirmMsg){
+  if (!confirm(confirmMsg)) return;
+  try {
+    const res = await fetch('/api/companies/bulk-delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && !(data.deleted && data.deleted.length)) {
+      const firstErr = data.failed && data.failed[0] ? data.failed[0].error : '';
+      alert(data.error || firstErr || `Delete failed (status ${res.status}).`);
+      return;
+    }
+    const gone = new Set(data.deleted || []);
+    allCompaniesCache = allCompaniesCache.filter(c => !gone.has(c.id));
+    if (gone.has(srCompanyId)) { srCompanyId = null; srFiscalYear = null; }
+    settingsSelectedCompanyIds = new Set();
+    if (data.failed && data.failed.length) {
+      alert(`Deleted ${gone.size}. ${data.failed.length} could not be deleted:\n` +
+            data.failed.map(f => `#${f.id}: ${f.error}`).join('\n'));
+    }
+    await renderSettingsCompaniesPanel();
+  } catch (err) {
+    console.error('Bulk delete failed:', err);
+    alert('Delete failed — check the browser console for details.');
+  }
+}
+function deleteSelectedCompanies(){
+  const ids = [...settingsSelectedCompanyIds];
+  if (!ids.length) return;
+  const names = settingsCompaniesList.filter(c => settingsSelectedCompanyIds.has(c.id)).map(c => c.name);
+  const preview = names.slice(0, 8).join(', ') + (names.length > 8 ? `, and ${names.length - 8} more` : '');
+  bulkDeleteCompanies({ids}, `Delete ${ids.length} ${ids.length === 1 ? 'company' : 'companies'} (${preview}) and all of their saved data? This can't be undone.`);
+}
+function deleteAllCompanies(){
+  const total = settingsCompaniesList.length;
+  if (!total) return;
+  const typed = prompt(`This permanently deletes ALL ${total} companies and every survey, director, remuneration and import record attached to them. This can't be undone.\n\nType DELETE ALL to confirm.`);
+  if (typed === null) return;
+  if (typed.trim() !== 'DELETE ALL') { alert('Not deleted — you need to type DELETE ALL exactly.'); return; }
+  bulkDeleteCompanies({all: true}, `Last check: delete all ${total} companies now?`);
 }
 
 // Import Activity - inlined here from the old standalone Reports page
@@ -6555,6 +6889,19 @@ async function saveBuilderReport(){
 
 function fmt(val, decimals = 1){
   return (val === null || val === undefined) ? '-' : Number(val).toFixed(decimals);
+}
+function saSectorCell(s, key){
+  // A sector average needs 2+ reporting companies (survey_aggregate.MIN_COMPANIES_FOR_AVERAGE). A sector with
+  // exactly one reporting company still shows that company's figure, clearly labelled, instead of "Not available".
+  const v = s['avg_' + key];
+  if (v !== null && v !== undefined) return fmtAmount(v);
+  const one = s['single_' + key];
+  if (s['avg_' + key + '_company_count'] === 1 && one !== null && one !== undefined)
+    return `${fmtAmount(one)} <span style="color:var(--text-faint);font-size:10px;" title="Only one company in this sector reports this figure, so it is not an average">(1 company)</span>`;
+  return naSpan('No company in this sector reports this figure');
+}
+function saNotApplicable(label){
+  return `<span style="color:var(--text-faint);font-style:italic;" title="${escapeHtml(label || 'Not applicable')}">Not applicable</span>`;
 }
 function naSpan(label){
   // Shared "genuinely not computable from filed data" marker - used

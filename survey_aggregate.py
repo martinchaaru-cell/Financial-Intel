@@ -19,11 +19,14 @@ MIN_COMPANIES_FOR_AVERAGE = 2  # below this, an "average" is just one company's 
 
 # Canonical scale every company's PERFORMANCE figures (turnover, net_profit,
 # market_cap) are normalized to before any cross-company average is computed.
-# These three fields are the only ones affected by Unit - board counts,
-# ages, and all remuneration figures are already stated in raw currency
-# regardless of what a company's Unit says, so they need no conversion.
-# Without this, a company reporting in "billions" alongside one reporting
-# in "millions" gets averaged as if the numbers were on the same scale.
+# Board counts and ages are never affected by any Unit (they're plain counts).
+# Remuneration/CEO/committee-fee figures ARE affected too, by a SEPARATE field
+# (SurveyCompanyData.director_figures_unit, not this Unit) - see _pay_scale and
+# the long comment above PAY_FIELDS further down for why and how those get
+# normalized. Without either normalization, a company reporting in "billions"
+# alongside one reporting in "millions" (Unit), or one whose pay tables are in
+# "thousands" alongside one in raw currency (director_figures_unit), gets
+# averaged as if the numbers were on the same scale.
 UNIT_SCALE = {
     'units': 1, 'ones': 1, '': 1,
     'thousands': 1_000,
@@ -38,6 +41,38 @@ def _unit_scale(unit):
     units, or None if unrecognized - callers must treat None as 'cannot
     safely normalize', never guess a scale."""
     return UNIT_SCALE.get((unit or '').strip().lower())
+
+
+# 2026-09-26 fix: remuneration/CEO/committee-fee figures are NOT always stored in raw
+# currency the way this module originally assumed (see the UNIT_SCALE comment above,
+# which explicitly said so) - app.py's import pipeline scales extract_ned_policy's and
+# extract_ceo_pay's whole-currency output DOWN to match SurveyCompanyData.
+# director_figures_unit, so that a company's own per-director filed pay table and its
+# survey-level policy figures sit on the same scale next to each other on the Survey
+# Report page (confirmed real: KCB Group Plc states turnover in billions but its
+# director pay tables in thousands). Averaging those un-normalized across companies -
+# which is exactly what every metric() call on a pay field below did - silently mixes
+# scales whenever two companies have different director_figures_unit values. Same fix
+# shape as _unit_scale/normalized_perf above, applied to the pay fields instead of the
+# performance fields.
+PAY_FIELDS = [
+    'chairperson_annual_retainer', 'other_ned_annual_retainer',
+    'chairperson_meeting_allowance', 'other_ned_meeting_allowance',
+    'executive_director_annual_retainer', 'executive_director_meeting_allowance',
+    'committee_chair_annual_retainer', 'committee_member_annual_retainer',
+    'committee_chair_meeting_allowance', 'committee_member_meeting_allowance',
+    'ceo_monthly_salary', 'ceo_monthly_allowances', 'ceo_monthly_incentive_bonus',
+    'ceo_monthly_deferred_incentive', 'ceo_monthly_non_cash_benefits', 'ceo_monthly_pension',
+    'ceo_monthly_gratuity', 'ceo_monthly_share_value', 'ceo_monthly_cost_of_employment',
+]
+
+
+def _pay_scale(r):
+    """Multiplier to convert a SurveyCompanyData row's pay-scale fields (PAY_FIELDS)
+    into raw currency units. Unlike _unit_scale, a missing director_figures_unit means
+    'was stored as raw currency' (app.py's own to_pay_unit defaults the same way when
+    nothing was detected), not 'unrecognized' - so this defaults to 1 rather than None."""
+    return UNIT_SCALE.get((r.director_figures_unit or 'units').strip().lower(), 1)
 
 
 def _avg(values):
@@ -148,6 +183,10 @@ def build_survey_overview(fiscal_year=None):
             return None
         return raw * perf_scale[r.id]
 
+    def normalized_pay(r, field_name):
+        raw = getattr(r, field_name)
+        return None if raw is None else raw * _pay_scale(r)
+
     def field(name):
         return [getattr(r, name) for r in rows]
 
@@ -162,6 +201,36 @@ def build_survey_overview(fiscal_year=None):
             'p75': _percentile(vals, 75) if enough else None,
             'company_count': len(present),
         }
+
+    def pay_metric(name):
+        """Same shape as metric(), but normalizes each row through
+        _pay_scale first - use this instead of metric() for any field in
+        PAY_FIELDS."""
+        vals = [normalized_pay(r, name) for r in rows]
+        present = [v for v in vals if v is not None]
+        enough = len(present) >= MIN_COMPANIES_FOR_AVERAGE
+        return {
+            'average': _avg(vals) if enough else None,
+            'p25': _percentile(vals, 25) if enough else None,
+            'p50': _percentile(vals, 50) if enough else None,
+            'p75': _percentile(vals, 75) if enough else None,
+            'company_count': len(present),
+        }
+
+    def paired_ratio(hi_field, lo_field):
+        """Average of hi_field / average of lo_field over ONLY the companies that report BOTH. The old
+        ratio divided one field's average over its own companies by another field's average over a
+        different set (e.g. chairperson retainer from 2 companies vs NED retainer from 6), so the premium
+        reflected which companies happened to disclose what, not how much more a chair earns. Needs at
+        least MIN_COMPANIES_FOR_AVERAGE paired companies, else None (never a single company's ratio
+        dressed up as a market figure)."""
+        pairs = [(normalized_pay(r, hi_field), normalized_pay(r, lo_field)) for r in rows]
+        pairs = [(h, l) for h, l in pairs if h is not None and l]
+        if len(pairs) < MIN_COMPANIES_FOR_AVERAGE:
+            return None
+        hi_avg = sum(h for h, _ in pairs) / len(pairs)
+        lo_avg = sum(l for _, l in pairs) / len(pairs)
+        return round(hi_avg / lo_avg, 2) if lo_avg else None
 
     # ---- Executive Summary ----
     turnover_vals = [normalized_perf(r, 'turnover') for r in rows if normalized_perf(r, 'turnover') is not None]
@@ -217,41 +286,41 @@ def build_survey_overview(fiscal_year=None):
 
     # ---- Directors' Remuneration / NED / Executive Directors ----
     directors_remuneration = {
-        'chairperson_annual_retainer': metric('chairperson_annual_retainer'),
-        'other_ned_annual_retainer': metric('other_ned_annual_retainer'),
-        'chairperson_meeting_allowance': metric('chairperson_meeting_allowance'),
-        'other_ned_meeting_allowance': metric('other_ned_meeting_allowance'),
-        'executive_director_annual_retainer': metric('executive_director_annual_retainer'),
-        'executive_director_meeting_allowance': metric('executive_director_meeting_allowance'),
+        'chairperson_annual_retainer': pay_metric('chairperson_annual_retainer'),
+        'other_ned_annual_retainer': pay_metric('other_ned_annual_retainer'),
+        'chairperson_meeting_allowance': pay_metric('chairperson_meeting_allowance'),
+        'other_ned_meeting_allowance': pay_metric('other_ned_meeting_allowance'),
+        'executive_director_annual_retainer': pay_metric('executive_director_annual_retainer'),
+        'executive_director_meeting_allowance': pay_metric('executive_director_meeting_allowance'),
     }
-    directors_remuneration['chairperson_vs_other_ned_annual_retainer_ratio'] = _compa_ratio(
-        directors_remuneration['chairperson_annual_retainer'], directors_remuneration['other_ned_annual_retainer'])
-    directors_remuneration['chairperson_vs_other_ned_meeting_allowance_ratio'] = _compa_ratio(
-        directors_remuneration['chairperson_meeting_allowance'], directors_remuneration['other_ned_meeting_allowance'])
+    directors_remuneration['chairperson_vs_other_ned_annual_retainer_ratio'] = paired_ratio(
+        'chairperson_annual_retainer', 'other_ned_annual_retainer')
+    directors_remuneration['chairperson_vs_other_ned_meeting_allowance_ratio'] = paired_ratio(
+        'chairperson_meeting_allowance', 'other_ned_meeting_allowance')
 
     # ---- Committee Remuneration ----
     committee_remuneration = {
-        'committee_chair_annual_retainer': metric('committee_chair_annual_retainer'),
-        'committee_member_annual_retainer': metric('committee_member_annual_retainer'),
-        'committee_chair_meeting_allowance': metric('committee_chair_meeting_allowance'),
-        'committee_member_meeting_allowance': metric('committee_member_meeting_allowance'),
+        'committee_chair_annual_retainer': pay_metric('committee_chair_annual_retainer'),
+        'committee_member_annual_retainer': pay_metric('committee_member_annual_retainer'),
+        'committee_chair_meeting_allowance': pay_metric('committee_chair_meeting_allowance'),
+        'committee_member_meeting_allowance': pay_metric('committee_member_meeting_allowance'),
     }
-    committee_remuneration['chair_vs_member_annual_retainer_ratio'] = _compa_ratio(
-        committee_remuneration['committee_chair_annual_retainer'], committee_remuneration['committee_member_annual_retainer'])
-    committee_remuneration['chair_vs_member_meeting_allowance_ratio'] = _compa_ratio(
-        committee_remuneration['committee_chair_meeting_allowance'], committee_remuneration['committee_member_meeting_allowance'])
+    committee_remuneration['chair_vs_member_annual_retainer_ratio'] = paired_ratio(
+        'committee_chair_annual_retainer', 'committee_member_annual_retainer')
+    committee_remuneration['chair_vs_member_meeting_allowance_ratio'] = paired_ratio(
+        'committee_chair_meeting_allowance', 'committee_member_meeting_allowance')
 
     # ---- CEO/MD Remuneration ----
     ceo_remuneration = {
-        'ceo_monthly_salary': metric('ceo_monthly_salary'),
-        'ceo_monthly_allowances': metric('ceo_monthly_allowances'),
-        'ceo_monthly_incentive_bonus': metric('ceo_monthly_incentive_bonus'),
-        'ceo_monthly_deferred_incentive': metric('ceo_monthly_deferred_incentive'),
-        'ceo_monthly_non_cash_benefits': metric('ceo_monthly_non_cash_benefits'),
-        'ceo_monthly_pension': metric('ceo_monthly_pension'),
-        'ceo_monthly_gratuity': metric('ceo_monthly_gratuity'),
-        'ceo_monthly_share_value': metric('ceo_monthly_share_value'),
-        'ceo_monthly_cost_of_employment': metric('ceo_monthly_cost_of_employment'),
+        'ceo_monthly_salary': pay_metric('ceo_monthly_salary'),
+        'ceo_monthly_allowances': pay_metric('ceo_monthly_allowances'),
+        'ceo_monthly_incentive_bonus': pay_metric('ceo_monthly_incentive_bonus'),
+        'ceo_monthly_deferred_incentive': pay_metric('ceo_monthly_deferred_incentive'),
+        'ceo_monthly_non_cash_benefits': pay_metric('ceo_monthly_non_cash_benefits'),
+        'ceo_monthly_pension': pay_metric('ceo_monthly_pension'),
+        'ceo_monthly_gratuity': pay_metric('ceo_monthly_gratuity'),
+        'ceo_monthly_share_value': pay_metric('ceo_monthly_share_value'),
+        'ceo_monthly_cost_of_employment': pay_metric('ceo_monthly_cost_of_employment'),
     }
 
     # ---- Comparative Analysis: by sector ----
@@ -277,11 +346,14 @@ def build_survey_overview(fiscal_year=None):
     for sec, sec_rows in sorted(sectors.items()):
         sector_entry = {'sector': sec, 'company_count': len(sec_rows)}
         for fname in SECTOR_METRIC_FIELDS:
-            vals = [getattr(r, fname) for r in sec_rows]
+            vals = [normalized_pay(r, fname) for r in sec_rows]
             present = [v for v in vals if v is not None]
             enough = len(present) >= MIN_COMPANIES_FOR_AVERAGE
             sector_entry[f'avg_{fname}'] = _avg(vals) if enough else None
             sector_entry[f'avg_{fname}_company_count'] = len(present)
+            # a sector with exactly one reporting company: keep the average gated (it is not a benchmark) but
+            # expose the lone figure so the UI can show it labelled "1 company" instead of "Not available"
+            sector_entry[f'single_{fname}'] = present[0] if len(present) == 1 else None
         sector_comparison.append(sector_entry)
 
     # ---- NED Benefits: % of companies providing each benefit ----
@@ -408,10 +480,13 @@ def build_company_rows(fiscal_year=None):
     """One row per company with SurveyCompanyData for the given fiscal
     year (defaults like build_survey_overview), each carrying its own
     raw board/pay figures plus _governance_score() - the per-company
-    comparison unit the Intelligence Layer's tabs need. NOT filtered by
-    currency/unit the way build_survey_overview's PERFORMANCE averages
-    are (each row stands alone; no cross-company arithmetic happens
-    here), so every row with any data is included."""
+    comparison unit the Intelligence Layer's tabs need. Board composition
+    counts are never Unit-scaled (they're plain counts), but the pay
+    figures ARE run through _pay_scale (see the long comment above
+    PAY_FIELDS) - the Benchmarking and Company Rankings tabs sort and
+    compare these numbers ACROSS companies, so leaving one company's
+    figures in thousands next to another's in raw currency would rank
+    them wrong even though nothing here does arithmetic on its own."""
     if not fiscal_year:
         fiscal_year = default_fiscal_year()
         if not fiscal_year:
@@ -425,18 +500,20 @@ def build_company_rows(fiscal_year=None):
     out = []
     for r, c in row_pairs:
         gov = _governance_score(r)
+        pay_scale = _pay_scale(r)
+        chair = r.chairperson_annual_retainer * pay_scale if r.chairperson_annual_retainer is not None else None
+        other_ned = r.other_ned_annual_retainer * pay_scale if r.other_ned_annual_retainer is not None else None
+        exec_dir = r.executive_director_annual_retainer * pay_scale if r.executive_director_annual_retainer is not None else None
         out.append({
             'company_id': c.id, 'name': c.name, 'sector': r.sector or c.sector, 'ticker': c.ticker,
             'fiscal_year': r.fiscal_year, 'currency': r.currency, 'unit': r.unit,
             'board_size': r.board_size, 'board_meetings_per_year': r.board_meetings_per_year,
             'independent_neds_count': r.independent_neds_count, 'non_independent_neds_count': r.non_independent_neds_count,
             'directors_female': r.directors_female, 'directors_male': r.directors_male,
-            'chairperson_annual_retainer': r.chairperson_annual_retainer,
-            'other_ned_annual_retainer': r.other_ned_annual_retainer,
-            'executive_director_annual_retainer': r.executive_director_annual_retainer,
-            'total_director_remuneration': _sum_or_none([
-                r.chairperson_annual_retainer, r.other_ned_annual_retainer, r.executive_director_annual_retainer,
-            ]),
+            'chairperson_annual_retainer': chair,
+            'other_ned_annual_retainer': other_ned,
+            'executive_director_annual_retainer': exec_dir,
+            'total_director_remuneration': _sum_or_none([chair, other_ned, exec_dir]),
             'governance': gov,
         })
     return {

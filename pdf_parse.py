@@ -1911,13 +1911,22 @@ def _page_word_groups(page) -> list:
     on extract_director_remuneration (above) noted couldn't be reliably
     self-corrected without this: that was true before this fix existed,
     not after."""
+    # A rotated vertical side-tab label ("Overview", "Sustainability", ...) is never real
+    # table content in any filer - pdfplumber's extract_words() still returns these (its
+    # vertical-text handling reads them top-to-bottom as ordinary "words"), and they land
+    # far enough into a page's real column band to get mis-treated as a stray column/cell
+    # ("SECURITY" from a wrapped "PENSION/ SOCIAL SECURITY" header, or a reversed-looking
+    # word) rather than caught by normalize_extracted_line's mirror-repair, which only
+    # fixes characters within a single already-identified upright word. Confirmed on a
+    # real filing: Bamburi Cement Plc's 2025 Annual Report's rotated section tabs bleeding
+    # into its own Directors' Remuneration Report page.
     width, height = page.width, page.height
     if height == 0 or width / height < 1.4:
-        words = page.extract_words()
+        words = [w for w in page.extract_words() if w.get('upright', True)]
         for w in words:
             w['text'] = normalize_extracted_line(w['text'])
         return [words]
-    words = page.extract_words()
+    words = [w for w in page.extract_words() if w.get('upright', True)]
     for w in words:
         w['text'] = normalize_extracted_line(w['text'])
     if not words:
@@ -3132,11 +3141,32 @@ def clean_director_detail_rows(rows: list, fiscal_year: int | None = None) -> li
     return kept
 
 
+def _is_pay_row_name(row: dict) -> bool:
+    """A named pay row must be a person or a role (2+ words); a filing's own printed total rows are kept as-is.
+    2026-09-28: Kenya Airways' AGM vote table ("Against", "For", "Abstain", "397") and a column heading
+    ("SECURITY" in Bamburi) were stored as directors' pay rows and then became register "directors"."""
+    if row.get('is_total_row') or row.get('is_grand_total'):
+        return True
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z'\u2019.\-]+", str(row.get('director_name') or '')) if len(w.strip('.')) >= 2]
+    return len(words) >= 2
+
+
 def extract_director_remuneration_detail(pdf_bytes: bytes, target_period_label: str | None = None) -> list:
     """See _extract_director_remuneration_detail_raw for the extraction
     itself; this wrapper applies clean_director_detail_rows to its output
     so every caller gets validated rows."""
-    raw = _extract_director_remuneration_detail_raw(pdf_bytes, target_period_label)
+    raw = [r for r in _extract_director_remuneration_detail_raw(pdf_bytes, target_period_label) if _is_pay_row_name(r)]
+    # Fallback (2026-09-28): the word-position extractor above finds nothing for several real filer layouts
+    # (BOC, Liberty, Sameer, KPLC, Bamburi all print a per-director NED table it can't follow). When it found
+    # no named non-executive row, try the plain-text table reader in pay_rows_text.py before giving up.
+    if not any(r.get('role') == 'non_executive' and not r.get('is_total_row') for r in raw):
+        try:
+            from pay_rows_text import extract_ned_pay_rows_text
+            text_rows = extract_ned_pay_rows_text(pdf_bytes, target_period_label=target_period_label)
+        except Exception:
+            text_rows = []
+        if text_rows:
+            raw = text_rows
     fy = None
     if target_period_label:
         m = re.search(r"((?:19|20)\d\d)", target_period_label)

@@ -27,6 +27,7 @@ retrieval hit still tells you which page to open.
 
 from dataclasses import dataclass, field
 from typing import Optional
+import re
 import pdfplumber
 
 # Corrects two PDF-authoring/rendering artifacts confirmed on real filings
@@ -59,62 +60,92 @@ def _body_font_size(page) -> float:
     return max(set(sizes), key=sizes.count)
 
 
-def _detect_column_split(page, chars) -> Optional[float]:
-    """Returns an x-coordinate to split this page into left/right
-    columns, or None if the page looks single-column. Detection: bin
-    character x0 positions into a coarse histogram across the page
-    width and look for a local dip in the middle third of the page -
-    the visual gutter between two text columns has noticeably fewer
-    characters starting there than its own immediate neighbors, even
-    though real body text (indentation, justified-text overhang, a
-    stray hyphen) means the gutter is rarely a literal zero-count bin.
-    Compares each middle bin to the bins just outside the search
-    window (its true left/right column neighbors) rather than a
-    whole-page average, since the two columns can differ in width/
-    density and a global average dilutes a real gutter's contrast."""
+def _detect_column_splits(page, chars, max_columns: int = 4) -> list[float]:
+    """Returns 0+ x-coordinates that split this page into columns (2+
+    columns == 1+ splits), or [] if the page looks single-column.
+
+    Generalizes the original single-gutter version, which only ever
+    found ONE split and only searched the middle third of the page.
+    Both limits were confirmed wrong on a real filing: a landscape
+    page holding what a reader sees as two physical report pages side
+    by side, each ITSELF two-column, so the true layout is 3 columns
+    with gutters at roughly 27% and 50% of page width - not 1 gutter
+    near center. The narrower gutter sat outside the old middle-third
+    search window and would have been missed even alone. Restricting
+    to the middle third was a reasonable guess for a plain magazine-
+    style 2-column page, but it silently assumed every column split is
+    both singular and centered - true often enough to look right in
+    testing, but not a real constraint of the document format.
+
+    Detection itself is unchanged: bin character x0 positions into a
+    coarse histogram and look for a run of bins whose density is
+    <60% of its own immediate left/right neighbors (a local, not
+    whole-page, comparison - see the old docstring's reasoning, which
+    still holds). What's new:
+      - the search band is now most of the page width (8%-92%), not
+        just 35%-65%, so off-center and/or multiple gutters are found;
+      - a run must be at least min_gutter_bins wide to count - a real
+        inter-column gutter persists across several consecutive bins
+        at this resolution, whereas the whitespace between two
+        adjacent headers in a wide numeric table (e.g. "Sitting
+        allowance" | "Other allowances" in a fee table) is usually
+        only a bin or two, which this width floor excludes so that
+        table doesn't get misread as several one-column tables;
+      - when more candidate gutters are found than max_columns - 1
+        allows, only the deepest+widest ones are kept (depth * width
+        score), so a handful of incidental wide-whitespace moments in
+        body text can't fragment a page into dozens of slivers.
+    """
     if not chars:
-        return None
+        return []
     width = page.width
-    bins = 60
+    bins = 80
     bin_width = width / bins
     counts = [0] * bins
     for c in chars:
         idx = min(bins - 1, max(0, int(c['x0'] / bin_width)))
         counts[idx] += 1
 
-    middle_lo, middle_hi = int(bins * 0.35), int(bins * 0.65)
-    # Neighbor density: the average of a few bins just left of the
-    # search window and a few bins just right of it - a much more
-    # local, robust baseline than averaging every non-middle bin
-    # (which can include page-margin zeros or a much narrower second
-    # column and skew the comparison).
+    search_lo, search_hi = int(bins * 0.08), int(bins * 0.92)
     neighbor_span = 4
-    left_neighbors = [n for n in counts[max(0, middle_lo - neighbor_span):middle_lo] if n > 0]
-    right_neighbors = [n for n in counts[middle_hi + 1:middle_hi + 1 + neighbor_span] if n > 0]
-    neighbors = left_neighbors + right_neighbors
-    if not neighbors:
-        return None
-    neighbor_avg = sum(neighbors) / len(neighbors)
-    if neighbor_avg <= 0:
-        return None
-    dip_threshold = neighbor_avg * 0.6   # a gutter bin has <60% of its immediate neighbors' density
+    min_gutter_bins = 2
 
-    best_run = None
+    def neighbors_of(lo, hi):
+        left = [n for n in counts[max(0, lo - neighbor_span):lo] if n > 0]
+        right = [n for n in counts[hi + 1:hi + 1 + neighbor_span] if n > 0]
+        return left + right
+
+    runs = []
     run_start = None
-    for i in range(middle_lo, middle_hi + 1):
-        if counts[i] <= dip_threshold:
+    for i in range(search_lo, search_hi + 1):
+        neighbors = neighbors_of(i, i)
+        neighbor_avg = sum(neighbors) / len(neighbors) if neighbors else 0
+        is_dip = neighbor_avg > 0 and counts[i] <= neighbor_avg * 0.6
+        if is_dip:
             if run_start is None:
                 run_start = i
         else:
-            if run_start is not None:
-                best_run = (run_start, i - 1)
+            if run_start is not None and i - run_start >= min_gutter_bins:
+                runs.append((run_start, i - 1))
             run_start = None
-    if run_start is not None:
-        best_run = (run_start, middle_hi)
-    if best_run is None:
-        return None
-    gap_center_bin = (best_run[0] + best_run[1]) / 2
-    return gap_center_bin * bin_width
+    if run_start is not None and search_hi + 1 - run_start >= min_gutter_bins:
+        runs.append((run_start, search_hi))
+
+    if not runs:
+        return []
+
+    def run_score(run):
+        lo, hi = run
+        neighbors = neighbors_of(lo, hi)
+        neighbor_avg = sum(neighbors) / len(neighbors) if neighbors else 1
+        run_avg = sum(counts[lo:hi + 1]) / (hi - lo + 1)
+        return (neighbor_avg - run_avg) * (hi - lo + 1)
+
+    runs.sort(key=run_score, reverse=True)
+    runs = runs[:max(0, max_columns - 1)]
+    runs.sort(key=lambda r: r[0])
+
+    return [((lo + hi) / 2) * bin_width for lo, hi in runs]
 
 
 def _line_groups(page):
@@ -123,14 +154,15 @@ def _line_groups(page):
     each carrying its own average font size. Returns a list of
     (text, avg_size, top) tuples in proper reading order.
 
-    Two-column layouts (common in annual reports/governance sections)
-    are detected via _detect_column_split and read top-to-bottom
-    through the LEFT column in full, then top-to-bottom through the
-    RIGHT column - not interleaved by raw y-position across the whole
-    page width, which is what naive top-coordinate grouping does and
-    is exactly what garbles a two-column filing (a left-column
-    sentence and an unrelated right-column sentence at the same
-    vertical height get concatenated into one nonsense "line").
+    Multi-column layouts (common in annual reports/governance
+    sections, and not always just 2 columns - see
+    _detect_column_splits) are detected and read top-to-bottom through
+    each column in full, left to right, one column at a time - not
+    interleaved by raw y-position across the whole page width, which
+    is what naive top-coordinate grouping does and is exactly what
+    garbles a multi-column filing (a left-column sentence and an
+    unrelated right-column sentence at the same vertical height get
+    concatenated into one nonsense "line").
 
     Also drops characters that look like a small-font navigational
     banner (a breadcrumb/table-of-contents strip repeated near the top
@@ -148,10 +180,10 @@ def _line_groups(page):
         if not (c['top'] < top_band_cutoff and c.get('size', body_size) < body_size * 0.85)
     ]
 
-    # Column-split detection should only look at the two-column BODY
+    # Column-split detection should only look at the multi-column BODY
     # region, not a page-width running title/header banner - such a
     # banner is wide and its own visual middle is sparse (spaces
-    # between words at a large font), which _detect_column_split's
+    # between words at a large font), which _detect_column_splits'
     # gutter-dip heuristic can mistake for a real column gutter and
     # then use to cut the banner's text in half mid-word.
     #
@@ -188,23 +220,28 @@ def _line_groups(page):
     header_chars = [c for c in real_chars if c['top'] <= header_bottom]
     body_chars = [c for c in real_chars if c['top'] > header_bottom]
 
-    split_x = _detect_column_split(page, body_chars)
-    if split_x is None:
+    split_xs = _detect_column_splits(page, body_chars)
+    if not split_xs:
         column_char_sets = [header_chars + body_chars] if header_chars else [body_chars]
     else:
         # The header band is kept as its own always-single-column
-        # group rather than assigned to a side of the split: a
+        # group rather than assigned to a side of any split: a
         # page-width header line's characters straddle whatever x0
-        # the BODY region's split point lands on, so applying that
-        # split_x to header_chars too would still slice a header
-        # line in half mid-word even though header_bottom already
-        # kept it out of split-point *detection*. Put it first so it
-        # still reads before the two body columns.
+        # the BODY region's split points land on, so applying those
+        # splits to header_chars too would still slice a header line
+        # in half mid-word even though header_bottom already kept it
+        # out of split-point *detection*. Put it first so it still
+        # reads before the body columns.
+        #
+        # split_xs can now hold more than one boundary (see
+        # _detect_column_splits) - e.g. a landscape page that's really
+        # two physical report pages side by side, each itself
+        # two-column, needs 2 splits to read as 3 separate columns
+        # rather than blending two of them into one scrambled bucket.
         column_char_sets = [header_chars] if header_chars else []
-        column_char_sets += [
-            [c for c in body_chars if c['x0'] < split_x],
-            [c for c in body_chars if c['x0'] >= split_x],
-        ]
+        boundaries = [float('-inf')] + split_xs + [float('inf')]
+        for lo, hi in zip(boundaries[:-1], boundaries[1:]):
+            column_char_sets.append([c for c in body_chars if lo <= c['x0'] < hi])
 
     all_lines = []
     for chars_in_column in column_char_sets:
@@ -229,6 +266,35 @@ def _line_groups(page):
                 avg_size = sum(ch.get('size', 0) for ch in current_chars) / len(current_chars)
                 all_lines.append((text, avg_size, current_chars[0]['top']))
     return all_lines
+
+
+def _table_row_quality(table: list) -> int:
+    """Counts rows that have BOTH a real number-looking cell and a
+    real label-looking cell (3+ letters) - i.e. rows that actually
+    read as "this row is about X and its value is Y", which is what
+    intelligence_extractor.py's table-lookup strategy needs.
+
+    Used to choose between pdfplumber's two table-extraction
+    strategies (see below) rather than a plain filled-cell ratio: a
+    text-position-based extraction can produce MORE non-empty cells
+    overall (word-wrap artifacts split one header into many small
+    fragment columns) while still being the BETTER result, because
+    what matters isn't how full the grid looks but whether a number
+    ever ends up in the same row as the label that names it.
+    Confirmed on a real filing (KCB Group Plc): the default
+    line-ruled-based strategy left every per-director row's name
+    cell empty (0 qualifying rows here) while a text-based re-extract
+    correctly paired every director's name with their fee amounts
+    (13 qualifying rows) despite scoring lower on raw fill ratio."""
+    numeric_re = re.compile(r'-?[0-9,]+(\.[0-9]+)?')
+    label_re = re.compile(r'[A-Za-z]{3,}')
+    count = 0
+    for row in table:
+        has_num = any(c and numeric_re.fullmatch(c.strip()) for c in row)
+        has_label = any(c and label_re.search(c) for c in row)
+        if has_num and has_label:
+            count += 1
+    return count
 
 
 def chunk_pdf(path: str, start_page: int = 1, end_page: Optional[int] = None) -> list[DocumentChunk]:
@@ -317,6 +383,30 @@ def chunk_pdf(path: str, start_page: int = 1, end_page: Optional[int] = None) ->
                 tables = pdf.pages[page_num - 1].extract_tables()
             except Exception:
                 tables = []
+
+            # The default strategy relies on pdfplumber finding ruled
+            # gridlines between columns. Several real filings shade
+            # alternating rows instead of ruling them, which leaves
+            # that strategy's cells mostly empty except for whichever
+            # column happens to sit against an actual rule (confirmed
+            # on a real filing: every per-director row in KCB Group
+            # Plc's Non-Executive Directors' fee table came back with
+            # the name cell empty, only the rightmost "Total" column
+            # populated - useless for pairing a number with who it
+            # belongs to). When the default result looks that sparse,
+            # retry with a text-position-based strategy (splits
+            # columns by whitespace gaps between characters, not
+            # gridlines) and keep whichever of the two actually pairs
+            # numbers with labels better - see _table_row_quality.
+            if tables and _table_row_quality(tables[0]) == 0:
+                try:
+                    text_tables = pdf.pages[page_num - 1].extract_tables(
+                        {'vertical_strategy': 'text', 'horizontal_strategy': 'text'}
+                    )
+                except Exception:
+                    text_tables = []
+                if text_tables and _table_row_quality(text_tables[0]) > 0:
+                    tables = text_tables
 
             current_heading = running_heading
             current_lines = []

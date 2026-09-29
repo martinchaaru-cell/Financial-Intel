@@ -1,0 +1,62 @@
+name: CI
+
+# Runs on every push and PR. This checks the code — it does not deploy.
+# Deployment can stay on Replit's own autoscale flow for now; wiring
+# this workflow up to also push a built image somewhere (GHCR, etc.)
+# is a separate, later step once Docker is in regular use.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: findev
+          POSTGRES_PASSWORD: findev
+          POSTGRES_DB: financial_intelligence_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U findev -d financial_intelligence_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Run tests (sqlite, fast path)
+        run: pytest --cov=. --cov-report=term-missing
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+          SESSION_SECRET: "ci-test-secret"
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t financial-intelligence:ci .
+        # Build-only for now — confirms the Dockerfile stays valid as
+        # dependencies change. Add a push step (to GHCR or another
+        # registry) once there's a deployment target that consumes it.

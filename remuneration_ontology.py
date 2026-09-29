@@ -25,6 +25,8 @@ SAME chunk - e.g. a field for an actual LTIP shouldn't score highly on
 a chunk whose own text says "the Group does not operate an LTIP".
 """
 
+import re
+
 # canonical field (SurveyCompanyData column name, or a
 # RemunerationPolicy/GovernancePolicy column name) -> {
 #   'synonyms': [phrase, ...],        # scored wherever found (heading or body)
@@ -280,6 +282,58 @@ def _normalize_quotes(s: str) -> str:
     )
 
 
+# Small, deliberately generic stopword list for _tokenize() below - just
+# enough to keep filler words ("report", "the", "for") from diluting a
+# coverage score, not a real NLP stopword list.
+_SECTION_HINT_STOPWORDS = {
+    'the', 'and', 'for', 'of', 'to', 'a', 'an', 'on', 'in', 'report',
+    'statement', 'note', 'notes',
+}
+
+# A section_hints phrase counts as matched by _phrase_coverage() once at
+# least this fraction of its meaningful words appear in the target text -
+# below this, two headings are considered unrelated rather than a loose
+# paraphrase of each other.
+_SECTION_HINT_COVERAGE_THRESHOLD = 0.6
+
+
+def _tokenize(s: str) -> set:
+    """Lowercase alphabetic words (3+ letters), digits and punctuation
+    dropped entirely, minus a small stopword list. Used only for the
+    fuzzy section_hints comparison below - deliberately not used for
+    synonym matching, which stays exact substring matching as before.
+
+    Dropping digits is what makes this robust to the "apostrophe decoded
+    as a literal 9" font-encoding bug seen on some filings (e.g.
+    "directors9" -> tokenizes to {"directors"}, same as "directors'" or
+    "directors" would) - not a fix for that bug itself, just a side
+    effect of not caring about digits when comparing section titles.
+    """
+    words = re.findall(r"[a-z]+", s.lower())
+    return {w for w in words if len(w) >= 3 and w not in _SECTION_HINT_STOPWORDS}
+
+
+def _phrase_coverage(hint_tokens: set, target_tokens: set) -> float:
+    """Fraction of hint_tokens present in target_tokens (0.0-1.0), or 0.0
+    if hint_tokens is empty or coverage falls below the threshold above.
+
+    This is what lets a section_hints phrase like "directors' remuneration
+    report" match a real filing's own heading even when that heading isn't
+    the exact phrase - e.g. "Directors Remuneration" (apostrophe and the
+    word "report" both dropped) or "Non-Executive Directors Remuneration
+    and Privileges Policy" (extra words added) both cover 100% of the
+    hint's meaningful words ({"directors", "remuneration"} once "report"
+    is filtered as a stopword) even though neither is a substring match.
+    A heading that's been truncated badly enough to lose the words
+    entirely (a separate, known chunk-heading-extraction bug) still won't
+    match here - this only recovers rewordings, not missing words.
+    """
+    if not hint_tokens:
+        return 0.0
+    coverage = len(hint_tokens & target_tokens) / len(hint_tokens)
+    return coverage if coverage >= _SECTION_HINT_COVERAGE_THRESHOLD else 0.0
+
+
 def score_chunk(chunk_text: str, chunk_heading: str, canonical_field: str) -> float:
     """Score in [0, 1]-ish range (not strictly capped - see below) for
     how well one chunk matches one canonical field's ontology entry.
@@ -309,9 +363,35 @@ def score_chunk(chunk_text: str, chunk_heading: str, canonical_field: str) -> fl
             score += 0.5
         elif phrase in text_lower:
             score += 0.15
+
+    # section_hints: try an exact substring match first (cheap, and still
+    # the strongest possible signal when a filing happens to use the
+    # ontology's exact wording), then fall back to fuzzy word-coverage
+    # against the heading, then - since chunk headings are sometimes
+    # missing or truncated by the heading extractor rather than merely
+    # reworded - against the chunk's own body text at a reduced weight.
+    # Real section titles are reworded ("Directors Remuneration" instead
+    # of "directors' remuneration report") far more often than they're
+    # quoted verbatim, so treating exact match as the ONLY way to earn
+    # this weight meant it almost never fired in practice.
+    heading_tokens = _tokenize(heading_lower)
+    text_tokens = None  # computed lazily, only if needed
     for phrase in entry.get('section_hints', []):
         if phrase in heading_lower:
             score += 0.8
+            continue
+        heading_coverage = _phrase_coverage(_tokenize(phrase), heading_tokens)
+        if heading_coverage > 0:
+            score += 0.8 * heading_coverage
+            continue
+        if phrase in text_lower:
+            score += 0.3
+            continue
+        if text_tokens is None:
+            text_tokens = _tokenize(text_lower)
+        text_coverage = _phrase_coverage(_tokenize(phrase), text_tokens)
+        if text_coverage > 0:
+            score += 0.3 * text_coverage
     return score
 
 

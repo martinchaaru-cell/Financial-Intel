@@ -32,8 +32,9 @@ SOURCE section already does for every figure they type in):
 
 import re
 from typing import Optional
+from collections import Counter
 from document_chunk import chunk_pdf, DocumentChunk
-from remuneration_ontology import ONTOLOGY, rank_chunks, score_chunk
+from remuneration_ontology import ONTOLOGY, rank_chunks, score_chunk, _tokenize, _phrase_coverage
 
 # Country -> the ONE local currency this app is willing to infer for
 # that country when nothing in the document itself states a currency.
@@ -62,6 +63,13 @@ _CURRENCY_MARKERS = {
     'UGX': [r'uganda\s+shillings?', r'\bugx\b'],
     'ZAR': [r'south\s+african\s+rand', r'\bzar\b'],
     'NGN': [r'nigerian\s+naira', r'\bngn\b'],
+    # BK Group (Rwanda) states "FRW" ~156 times but no marker existed for it, so its 28 "$" marks made the whole
+    # filing USD. Only currencies whose codes are unambiguous in running text are listed.
+    'RWF': [r'\bfrw\b', r'\brwf\b', r'rwandan?\s+francs?'],
+    'GHS': [r'\bghs\b', r'ghana\s+cedis?'],
+    'ZMW': [r'\bzmw\b', r'zambian\s+kwacha'],
+    'ETB': [r'\betb\b', r'ethiopian\s+birr'],
+    'MUR': [r'\bmur\b', r'mauritian\s+rupees?'],
 }
 
 
@@ -230,7 +238,7 @@ _NUMBER_RE = re.compile(r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)')
 # further away in the sentence - a real but rare miss, and a much
 # safer default than the false positives it replaces.
 _COUNT_NEAR_KEYWORD_RE = re.compile(
-    r'(\d{1,3})\s*(?:of\s+)?(?:non-executive\s+)?(?:\w+\s+){0,2}?(directors?|members?|non-executive|executive)',
+    r'(?<![\d,.$/])(\d{1,3})(?!\d|/|[,.]\d)\s*(?:of\s+)?(?:non-executive\s+)?(?:\w+\s+){0,2}?(directors?|members?|non-executive|executive)',
     re.IGNORECASE
 )
 
@@ -328,7 +336,7 @@ def _extract_board_roster_counts(chunk: DocumentChunk) -> Optional[dict]:
     if numbers[0] != 1 or numbers[-1] - numbers[0] + 1 > len(numbers) + 2:
         return None
     board_size = numbers[-1]
-    if board_size < 3 or board_size > 25:   # sanity bound for a board specifically
+    if board_size < 5 or board_size > 25:   # sanity bound for a board specifically (Equity 2025: a 3-person photo spread was read as the board)
         return None
 
     # The decisive check: a genuine board roster caption has an actual
@@ -386,6 +394,40 @@ def _extract_board_roster_counts(chunk: DocumentChunk) -> Optional[dict]:
     return result
 
 
+# board_size only: the bare "<number> ... directors" pattern also fires on agenda numbers ("Agenda Item 3 ...
+# Directors' Report"), clause/note numbers, page furniture and running headers ("31 DECEMBER ... DIRECTORS
+# REMUNERATION" with the month cut short). Confirmed wrong on real filings: BOC 2025 read board_size = 3 and
+# Sameer 2025 read 31. A board's SIZE is only accepted when the number sits right after a sentence verb that
+# states a headcount ("comprises", "consists of", "composed of", "made up of", "has", "had", "is", "are",
+# "total of", "of"), the sentence also talks about the board, the words after the number are not a
+# possessive/section-heading form ("Directors' Report"), and the line is not an ALL-CAPS heading.
+_BOARD_SIZE_VERB_BEFORE_RE = re.compile(
+    r"(?:comprise[sd]?(?:\s+of)?|consist(?:s|ed)?(?:\s+of)?|composed\s+of|made\s+up\s+of|constitut\w+\s+of|"
+    r"has|had|have|is|are|was|were|total(?:l?ing)?(?:\s+of)?|of|with|by)\s*(?:a\s+total\s+of\s+|currently\s+)?$", re.I)
+_BOARD_SIZE_BAD_PREFIX_RE = re.compile(
+    r"(?:item|agenda|note|notes|section|page|pages|clause|paragraph|resolution|table|figure|schedule|annex\w*|"
+    r"appendix|no\.?|number|ref\.?|article|principle|rule)\s*[:.\-]?\s*$", re.I)
+
+
+def _plausible_board_size_match(text: str, m) -> bool:
+    before = text[max(0, m.start() - 60):m.start()]
+    if _BOARD_SIZE_BAD_PREFIX_RE.search(before):
+        return False
+    if not _BOARD_SIZE_VERB_BEFORE_RE.search(before):
+        return False
+    line_start = text.rfind('\n', 0, m.start()) + 1
+    line_end = text.find('\n', m.end())
+    line = text[line_start: line_end if line_end != -1 else len(text)]
+    letters = [ch for ch in line if ch.isalpha()]
+    if len(letters) > 8 and sum(1 for ch in letters if ch.isupper()) / len(letters) > 0.85:
+        return False                      # an ALL-CAPS running header / heading, not a sentence
+    after = text[m.end(): m.end() + 14]
+    if re.match(r"\s*(?:['\u2019]s?\b|report\b|remuneration\b|statement\b)", after, re.I):
+        return False                      # "3 Directors' Report" / "31 Directors Remuneration"
+    sentence_window = text[max(0, line_start - 200): m.end() + 200]
+    return bool(re.search(r"\b(?:board|directors|composition|constitut\w+)\b", sentence_window, re.I))
+
+
 def _extract_count(chunk: DocumentChunk, canonical_field: str):
     """For an integer-count field (board_size, directors_female, ...):
     look for a "<number> <role word>" pattern (see
@@ -414,7 +456,12 @@ def _extract_count(chunk: DocumentChunk, canonical_field: str):
         if value == 0 or value > 200:   # sanity bound - a board isn't 0 or 200+ people
             continue
 
+        if canonical_field == 'board_size' and not _plausible_board_size_match(text, m):
+            continue
+
         match_text = m.group(0).lower()
+        if re.search(r"\b(?:years?|yrs?|aged?|months?|days?|per\s*cent|percent)\b", match_text):
+            continue   # an age / duration / percentage sits between the number and the role word
         if required_terms and not any(
             re.search(r'\b' + re.escape(term), match_text) for term in required_terms
         ):
@@ -465,7 +512,221 @@ def _nearest_preceding_heading_line(text: str, position: int) -> str:
     return ''
 
 
-def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currency_known: bool):
+_NUMERIC_CELL_RE = re.compile(r'-?[0-9,]+(\.[0-9]+)?')
+_LABEL_CELL_RE = re.compile(r'[A-Za-z]{3,}')
+
+# Fields whose ontology synonyms genuinely describe a company-wide
+# aggregate rather than one board role's individual rate - see
+# _extract_from_table_total's own docstring for why this matters.
+_TABLE_AGGREGATE_FIELDS = {'total_director_remuneration', 'key_management_compensation_total'}
+
+
+def _extract_from_table_total(chunk: DocumentChunk, canonical_field: str,
+                               document_currency_known: bool):
+    """Strategy 3 for _extract_amount, tried only for the fields in
+    _TABLE_AGGREGATE_FIELDS: read a company-wide total straight out of
+    a grid table's own "Total" column and "Grand Total"/"Total" row,
+    instead of trying to find a number glued to a matching label in
+    running prose (Strategies 1/2 above).
+
+    Necessary on a real filing (KCB Group Plc): the Non-Executive
+    Directors' fee table's figures sit in table cells with no label
+    text glued to them at all - each row is a director's name, each
+    column a fee type, and the number that means "total remuneration"
+    is identified by its ROW and COLUMN position (the bottom row,
+    the rightmost column), never by a word next to it. Strategies 1
+    and 2 can never find a number that way no matter how the ontology's
+    synonym list is worded, because there is no label text adjacent to
+    match against.
+
+    Deliberately narrow in what it will match:
+      - only reads the header row (first row in the table with 3+
+        non-empty cells) and only accepts a column whose header cell
+        is exactly "total" (case-insensitive) - not a fuzzy or partial
+        match, since a table can legitimately have other columns
+        whose headers merely contain that substring elsewhere, and
+        the whole point of this strategy is to point at one
+        unambiguous cell, not to guess;
+      - only reads a row whose non-numeric cells (the "label" side of
+        the row, e.g. a director's name or "GRAND TOTAL") contain
+        "total" - again a plain substring check, but scoped to cells
+        that already excluded pure numbers, so a data cell that
+        happens to read "100" can't trigger it;
+      - never used for a per-role field (chairperson_annual_retainer,
+        other_ned_meeting_allowance, etc.): a "Total" row and column
+        describe the whole board's combined pay, never one director's
+        or one role's individual figure, and this function has no way
+        to know which data row corresponds to "the chairman" - that
+        would require cross-referencing this table against the board
+        register's own stated roles by name, which this pipeline does
+        not attempt. Restricting to _TABLE_AGGREGATE_FIELDS is what
+        keeps this safe rather than a source of wrong-role figures.
+    """
+    if canonical_field not in _TABLE_AGGREGATE_FIELDS:
+        return None, None
+    if not document_currency_known:
+        return None, None
+    if not chunk.is_table or not chunk.table_rows:
+        return None, None
+
+    rows = chunk.table_rows
+    # The header row can be many rows into the table on a messy
+    # multi-column page (confirmed on a real filing: KCB's fee table
+    # has over a dozen unrelated rows - page furniture, a policy
+    # paragraph running in a neighboring column - ahead of the actual
+    # "Director's fees / Sitting allowance / ... / Total" header row),
+    # so this scans every row for one whose cells include an exact
+    # "total" header, rather than assuming the header sits near the
+    # top of the table.
+    header_idx = None
+    for i, row in enumerate(rows):
+        if sum(1 for c in row if c and c.strip()) >= 3 and \
+           any(c and c.strip().lower() == 'total' for c in row):
+            header_idx = i
+            break
+    if header_idx is None:
+        return None, None
+    header_row = rows[header_idx]
+
+    total_col = None
+    for col_idx, cell in enumerate(header_row):
+        if cell and cell.strip().lower() == 'total':
+            total_col = col_idx
+    if total_col is None:
+        return None, None
+
+    for row in rows[header_idx + 1:]:
+        if total_col >= len(row) or not row[total_col]:
+            continue
+        label_cells = [c for c in row if c and not _NUMERIC_CELL_RE.fullmatch(c.strip())]
+        row_label = ' '.join(label_cells).strip().lower()
+        if 'total' not in row_label:
+            continue
+        # A "Total ..." row for a balance-sheet or investment line is not a director/key-management total
+        # (Equity 2025: "Total financial assets at fair value ... 567,612" became key_management_compensation_total).
+        if re.search(r"assets?|liabilit|equity|loans?|advances|deposits?|investments?|securities|borrowings|"
+                     r"receivables?|payables?|income|expenses?|cash|fair\s+val|impairment|provisions?", row_label):
+            continue
+        raw = row[total_col].strip().replace(',', '')
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        chunk_scale = _detect_chunk_scale(chunk.text)
+        if chunk_scale:
+            value *= chunk_scale
+        source = ' '.join(c for c in row if c)
+        return value, source
+    return None, None
+
+
+_ROLE_COLUMN_HEADERS = {'position', 'role', 'category', 'designation'}
+_CHAIR_ROLE_TOKENS = {'chairman', 'chairperson', 'chair'}
+_NED_ROLE_TOKENS = {'ned', 'ined', 'non-executive', 'nonexecutive', 'independent'}
+
+# Only the two ANNUAL RETAINER fields - see _extract_from_table_by_role's
+# own docstring for why a per-role table lookup is safe for these two
+# but deliberately not extended to meeting/sitting-allowance fields.
+_ROLE_TABLE_FIELDS = {'chairperson_annual_retainer': 'chair', 'other_ned_annual_retainer': 'ned'}
+
+
+def _extract_from_table_by_role(chunk: DocumentChunk, canonical_field: str,
+                                 document_currency_known: bool):
+    """Strategy 4 for _extract_amount, tried only for the two fields in
+    _ROLE_TABLE_FIELDS: reads a per-director table where each row states
+    that director's board Position (Chairman/NED/INED/ED) directly, and
+    picks the retainer value by matching that Position column - rather
+    than Strategy 3's grand-total row, which only ever gives a whole-
+    board aggregate, never one role's individual rate.
+
+    Confirmed on a real filing (Britam Holdings PLC): its Directors'
+    Remuneration Report table has a "Position" column stating Chairman/
+    NED/INED/ED per row and a flat "Annual Retainer" column - unlike KCB
+    Group Plc's fee table (no Position column at all, just director
+    names), which is why chairperson_annual_retainer could never be
+    extracted there no matter how this function is written: the role
+    simply isn't stated anywhere in that specific table.
+
+    Deliberately NOT used for chairperson_meeting_allowance /
+    other_ned_meeting_allowance, even though the very same table usually
+    also has a "Sitting Allowance" column: that column is each
+    director's TOTAL sitting allowance PAID for the year (which varies
+    person to person by how many meetings they actually attended), not a
+    flat per-meeting RATE - pulling a number out of it under a
+    "meeting_allowance" field name would misrepresent what the figure
+    means, so this function doesn't attempt it. The "Annual Retainer"
+    column is safe because a retainer genuinely is a flat rate by
+    definition, not an attendance-dependent total.
+
+    For the NED/INED case, several rows can legitimately match (every
+    non-chair director) and don't always agree, e.g. a director who
+    joined partway through the year in a filing's comparative table
+    might show a prorated or blank figure - this takes the MODE (most
+    common non-blank value) among matching rows as the standard policy
+    rate, rather than the first match or an average, so one partial-year
+    outlier can't skew or silently override the rate most directors
+    actually receive.
+    """
+    if canonical_field not in _ROLE_TABLE_FIELDS:
+        return None, None
+    if not document_currency_known:
+        return None, None
+    if not chunk.is_table or not chunk.table_rows:
+        return None, None
+    role_kind = _ROLE_TABLE_FIELDS[canonical_field]
+
+    rows = chunk.table_rows
+    header_idx = position_col = retainer_col = None
+    for i, row in enumerate(rows):
+        cells = [(c or '').replace('\n', ' ').strip().lower() for c in row]
+        pos_idx = next((j for j, c in enumerate(cells) if c in _ROLE_COLUMN_HEADERS), None)
+        ret_idx = next((j for j, c in enumerate(cells) if 'retainer' in c), None)
+        if pos_idx is not None and ret_idx is not None:
+            header_idx, position_col, retainer_col = i, pos_idx, ret_idx
+            break
+    if header_idx is None:
+        return None, None
+
+    values = []
+    for row in rows[header_idx + 1:]:
+        if position_col >= len(row) or retainer_col >= len(row):
+            continue
+        role_cell = (row[position_col] or '').strip().lower()
+        if role_cell in ('', 'total'):
+            continue
+        matches_role = (role_cell in _CHAIR_ROLE_TOKENS if role_kind == 'chair'
+                         else role_cell in _NED_ROLE_TOKENS)
+        if not matches_role:
+            continue
+        raw = (row[retainer_col] or '').strip().replace(',', '')
+        if not raw or _NUMERIC_CELL_RE.fullmatch(raw) is None:
+            continue   # blank/dash cell (a director who joined partway, etc.) - skip rather than misread as 0
+        values.append(float(raw))
+
+    if not values:
+        return None, None
+    if role_kind == 'chair':
+        value = values[0]   # exactly one chair expected; take the first rather than average if somehow >1 matched
+    else:
+        value = Counter(values).most_common(1)[0][0]
+    chunk_scale = _detect_chunk_scale(chunk.text)
+    if chunk_scale:
+        value *= chunk_scale
+    source = f"table Position/Retainer columns (role={role_kind})"
+    return value, source
+
+
+# Labels that name a figure no board/pay/performance field tracks. A number glued right after one of these is that
+# label's number, whatever else the paragraph mentions (see the multi-match branch of _extract_amount).
+_AMOUNT_DISTRACTOR_LABELS = (
+    'total assets', 'total liabilities', 'total equity', 'customer deposits', 'total deposits', 'loan book',
+    'gross loans', 'net loans', 'market capitalisation', 'market capitalization', 'closing price', 'share price',
+    'opening price', 'dividend', 'borrowings', 'cash and cash equivalents', 'capital expenditure',
+    'impairment', 'provision', 'expected credit loss', 'write-off', 'written off', 'grants', 'donations',
+)
+
+
+def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currency_known: bool, document_currency: str = None):
     """For a currency-amount field (chairperson_annual_retainer, etc.):
     look for a clean amount in the chunk text, and return
     (value, source_sentence) or (None, None). Two matching strategies,
@@ -500,10 +761,15 @@ def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currenc
     text = chunk.text
     text_lower = text.lower()
     marked_amount_re = re.compile(
-        r'(?:kshs?\.?|kes|shs\.?|\$|usd)\s*([\d,]+(?:\.\d+)?)\s*(million|mn|m\b|billion|bn)?',
+        r'(?:kshs?\.?|kes|shs\.?|\$|usd)\s*([\d,]+(?:\.\d+)?)\s*(million|mn|m\b|billion|bn|b\b)?',
         re.IGNORECASE,
     )
     matches = list(marked_amount_re.finditer(text))
+    if document_currency and document_currency.upper() != 'USD':
+        # Equity 2025 read net_profit = 1.69bn and market_cap = 0.59bn from "(USD 1.69 BN)" convenience
+        # conversions printed beside the KES figures. When the filing reports in another currency, a USD-marked
+        # amount is a translation of the real figure, so it is never taken as the survey value.
+        matches = [m for m in matches if not re.match(r"(?:usd|\$)", m.group(0), re.I)]
     if len(matches) == 1:
         # Even the SOLE marked amount in a chunk can genuinely be
         # about something else entirely if the chunk is long enough to
@@ -606,9 +872,68 @@ def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currenc
                                    default=-1)
                 if nearest_competing > nearest_own:
                     return None, None
-        return _finish_amount_match(text, matches[0])
+        return _finish_amount_match(text, matches[0], field=canonical_field)
     if len(matches) > 1:
-        return None, None   # multiple marked amounts in one chunk - ambiguous, don't guess
+        # Multiple marked amounts in one chunk - try to disambiguate by
+        # which single one has THIS field's own synonym/section-hint
+        # wording closest before it, AND no COMPETING field's synonym
+        # in that same immediate window, before giving up. Confirmed
+        # necessary on a real filing (Absa Bank Kenya PLC): one
+        # paragraph states "...Board Chairman is entitled to an annual
+        # retainer of Shs 10,650,400...", then a few sentences later
+        # "...retainer of Shs 4,113,800..." / "...Shs 3,428,100 paid to
+        # other non-executive..." for other roles - three legitimate,
+        # clearly-labeled figures in the same chunk, previously always
+        # rejected outright the moment a second marked amount appeared
+        # anywhere in the chunk, with no attempt to use which label sits
+        # next to which number.
+        #
+        # Uses the same fuzzy word-coverage test as remuneration_ontology.py's
+        # section_hints matching (not a literal substring) for the "own"
+        # check, since a real sentence ("entitled to an annual retainer
+        # of") rarely quotes an ontology synonym ("annual retainer fee
+        # for the chairman") word-for-word - but stays a literal
+        # substring check for "competing", which only needs to catch an
+        # exact, unambiguous overlap, not a loose paraphrase.
+        entry_for_multi = ONTOLOGY.get(canonical_field, {})
+        own_terms = entry_for_multi.get('synonyms', []) + entry_for_multi.get('section_hints', [])
+        # Short, generic synonyms (2 words or fewer - e.g. retainer_fee's
+        # own "annual retainer") are excluded from the COMPETING list:
+        # confirmed on a real filing (Absa Bank Kenya PLC) that "annual
+        # retainer" alone sits right in front of the chairman's OWN
+        # figure too ("...is entitled to an annual retainer of Shs
+        # 10,650,400"), so treating it as evidence the amount belongs to
+        # a DIFFERENT field wrongly vetoed the chairman's own, correctly
+        # identified match. A short phrase like that is a fine signal
+        # that a sentence is ABOUT retainers generally (useful for its
+        # own field's ranking), but too generic to reliably mean "this
+        # specific number is some OTHER field's, not this one's."
+        competing_terms = [s for f, e in ONTOLOGY.items() if f != canonical_field
+                            for s in e.get('synonyms', []) if len(s.split()) >= 3]
+        good_matches = []
+        for m in matches:
+            pre_window = text_lower[max(0, m.start() - 80):m.start()]
+            pre_tokens = _tokenize(pre_window)
+            own_hit = any(t in pre_window for t in own_terms) or \
+                any(_phrase_coverage(_tokenize(t), pre_tokens) >= 0.6 for t in own_terms)
+            competing_hit = any(t in pre_window for t in competing_terms)
+            # The label glued right before the number decides what the number IS. The 80-char window above
+            # can pick up this field's synonym from the PREVIOUS sentence ("...Group revenue rose 5%.
+            # Total assets of the Group stood at KShs 3.08 billion" - confirmed on Uchumi 2025, where a
+            # total-assets figure became turnover). If a known unrelated label (total assets, deposits,
+            # market capitalisation, share price, ...) sits in the last 45 characters and none of this
+            # field's own terms sits after it, the number belongs to that label.
+            near = pre_window[-45:]
+            distractor_pos = max((near.rfind(lbl) for lbl in _AMOUNT_DISTRACTOR_LABELS if lbl in near), default=-1)
+            if distractor_pos >= 0:
+                own_after = any(t in near[distractor_pos:] for t in own_terms)
+                if not own_after:
+                    continue
+            if own_hit and not competing_hit:
+                good_matches.append(m)
+        if len(good_matches) == 1:
+            return _finish_amount_match(text, good_matches[0], field=canonical_field)
+        return None, None   # zero, or more than one, equally-good match - still refuse to guess
 
     if not document_currency_known:
         return None, None   # no chunk-local marker AND no document-wide currency to fall back on
@@ -628,6 +953,25 @@ def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currenc
         for m in re.finditer(re.escape(label) + r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\b', text_lower):
             if len(m.group(1).replace(',', '').replace('.', '')) < 2:
                 continue   # a single stray digit glued to a label (e.g. a footnote marker) isn't a real amount
+            # A qualifier right before the label turns it into a different line item: "Defered Revenue35"
+            # (a balance-sheet liability) was read as turnover = 35 on Uchumi 2025. "revenue" only means
+            # the income-statement figure when nothing like deferred/unearned/other/interest/contract sits in front.
+            if canonical_field in _PER_PERSON_FIELDS and re.search(
+                    r"(?:fees\s+for\s+non[\s\-]?executive\s+directors|as\s+executives|directors['\u2019]?\s+emoluments|"
+                    r"total\s+directors|key\s+management)\s*$", text_lower[max(0, m.start(1) - 45):m.start(1)]):
+                continue   # "Fees for non-executive directors77" = ALL NEDs' fees, not one NED's retainer (Equity 2025: 77m)
+            run = re.match(r"[\d,]+(?:\.\d+)?", text_lower[m.start(1):m.start(1) + 40])
+            if run and not re.fullmatch(r"\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?", run.group(0).rstrip(',')):
+                continue           # digits keep running past a valid figure: two table columns fused by extraction
+            lead = text_lower[max(0, m.start() - 22):m.start()]
+            if re.search(r"(?:defer+ed|defe?red|unearned|other|interest|contract|accrued|prepaid|deposit|"
+                         r"insurance|reinsurance|non[\s\-]?|cost\s+of|net\s+of|share\s+of|finance)\s*$", lead):
+                continue
+            # For income-statement headline figures a glued 1-2 digit number with no thousands separator is the
+            # NOTE REFERENCE column ("Insurance revenue11" = revenue, note 11), not an amount (BK Group 2025
+            # read turnover = 11). Director-pay lines ("Fees for non-executive directors77") are not affected.
+            if canonical_field in ('turnover', 'net_profit', 'market_cap') and re.fullmatch(r"\d{1,2}", m.group(1)):
+                continue
             candidates.append(m)
     if len(candidates) != 1:
         # More than one match for this field's label - before giving
@@ -648,9 +992,9 @@ def _extract_amount(chunk: DocumentChunk, canonical_field: str, document_currenc
                 if is_parent and not is_subsidiary:
                     parent_matches.append(m)
             if len(parent_matches) == 1:
-                return _finish_amount_match(text, parent_matches[0], group_index=1)
+                return _finish_amount_match(text, parent_matches[0], group_index=1, field=canonical_field)
         return None, None   # this field's own label wasn't found exactly once - don't guess between 0 or several
-    return _finish_amount_match(text, candidates[0], group_index=1)
+    return _finish_amount_match(text, candidates[0], group_index=1, field=canonical_field)
 
 
 # A table/section-wide scale header - "Shs' millions", "KES billions",
@@ -684,7 +1028,15 @@ def _detect_chunk_scale(text: str):
             'billion': 1_000_000_000, 'bn': 1_000_000_000}.get(word)
 
 
-def _finish_amount_match(text: str, m, group_index: int = 1):
+_PER_PERSON_FIELDS = {'chairperson_annual_retainer', 'other_ned_annual_retainer', 'chairperson_meeting_allowance',
+                      'other_ned_meeting_allowance', 'executive_director_annual_retainer', 'retainer_fee',
+                      'committee_chair_fee', 'committee_chair_annual_retainer', 'committee_member_annual_retainer',
+                      'ceo_monthly_salary', 'ceo_monthly_cost_of_employment'}
+_AGGREGATE_AMOUNT_FIELDS = {'turnover', 'net_profit', 'market_cap', 'total_director_remuneration',
+                            'key_management_compensation_total'}
+_MAX_PER_PERSON_AMOUNT = 1_000_000_000
+
+def _finish_amount_match(text: str, m, group_index: int = 1, field: str = None):
     """Shared tail end of _extract_amount's two matching strategies -
     turns a regex Match into (value, source_sentence), applying any
     million/billion scale word found in the SAME match (group 2) if
@@ -696,12 +1048,18 @@ def _finish_amount_match(text: str, m, group_index: int = 1):
         value = float(raw)
     except ValueError:
         return None, None
+    # A comparative is not this year's figure: "(2024: Kes 15.5 million)", "compared to KShs 3.2 billion",
+    # "previously KES ..." (confirmed: Bamburi 2025 read net_profit = 15.5m from a prior-year clause).
+    lead = text[max(0, m.start() - 40):m.start()].lower()
+    if re.search(r"(?:\(\s*|\b)(?:20\d\d|fy\s?\d{2,4}|prior\s+year|previous\s+year|last\s+year|restated)\s*[:\-\u2013,]?\s*$", lead) \
+            or re.search(r"(?:compared\s+(?:to|with)|versus|\bvs\.?|previously|increased\s+from|decreased\s+from|up\s+from|down\s+from)\s*(?:the\s+)?(?:\w+\s+){0,2}$", lead):
+        return None, None
     scale = ''
     if m.lastindex and m.lastindex >= 2 and m.group(2):
         scale = m.group(2).lower()
     if scale in ('million', 'mn', 'm'):
         value *= 1_000_000
-    elif scale in ('billion', 'bn'):
+    elif scale in ('billion', 'bn', 'b'):
         value *= 1_000_000_000
     else:
         # No scale word on this specific match - fall back to a
@@ -710,6 +1068,28 @@ def _finish_amount_match(text: str, m, group_index: int = 1):
         chunk_scale = _detect_chunk_scale(text)
         if chunk_scale:
             value *= chunk_scale
+    if field:
+        # (1) The label AFTER a number can name a different figure: "Shs 7.9 billion Profit Before Tax" was read as
+        # turnover on Britam 2025 because "revenue" sat earlier in the paragraph. If a known other label follows
+        # within 35 characters and none of this field's own terms does, the number is that label's.
+        trailing = text[m.end(): m.end() + 35].lower()
+        own = ONTOLOGY.get(field, {})
+        own_terms = own.get('synonyms', []) + own.get('section_hints', [])
+        other_terms = [t for f, e in ONTOLOGY.items() if f != field for t in e.get('synonyms', []) if len(t) > 6] + \
+            list(_AMOUNT_DISTRACTOR_LABELS) + ['profit before tax', 'profit after tax', 'profit for the year', 'operating profit']
+        if any(t in trailing for t in other_terms) and not any(t in trailing for t in own_terms):
+            return None, None
+        # (1b) the label glued right BEFORE the number: "cumulative impairment provision of Shs 4,150,839,000" was
+        # read as net_profit (Britam 2025). A known unrelated label in the last 50 characters with none of this
+        # field's own terms after it means the number belongs to that label.
+        lead50 = text[max(0, m.start() - 50):m.start()].lower()
+        dpos = max((lead50.rfind(t) for t in _AMOUNT_DISTRACTOR_LABELS if t in lead50), default=-1)
+        if dpos >= 0 and not any(t in lead50[dpos:] for t in own_terms):
+            return None, None
+        # (2) plausibility: one director's fee / allowance / benefit is never billions (KPLC 2025 read
+        # leave_allowance = KShs 4.4bn from an expected-credit-loss sentence). Aggregates and headline figures are exempt.
+        if field not in _AGGREGATE_AMOUNT_FIELDS and value > _MAX_PER_PERSON_AMOUNT:
+            return None, None
     start = text.rfind('\n', 0, m.start()) + 1
     end = text.find('\n', m.end())
     end = end if end != -1 else len(text)
@@ -803,7 +1183,16 @@ def extract_survey_schema(pdf_path: str, start_page: int = 1, end_page=None,
     for canonical_field in ONTOLOGY:
         if canonical_field in roster_fields_found:
             continue   # already set directly from the roster scan above - a fuzzier keyword-ranked match shouldn't override it
-        candidates = rank_chunks(chunks, canonical_field, top_n=3)
+        # top_n=5 rather than 3: confirmed on a real filing (KCB Group
+        # Plc) that the chunk actually holding a table figure can rank
+        # BELOW several prose chunks that merely repeat this field's
+        # own heading words more often (a policy-explanation section
+        # split across multiple headed chunks scores well on keyword
+        # repetition alone) - the data-bearing chunk still needs to be
+        # in the candidate window for _extract_from_table_total or
+        # _extract_amount to ever see it, even though its own
+        # heading-match score is lower.
+        candidates = rank_chunks(chunks, canonical_field, top_n=5)
         if not candidates:
             continue
 
@@ -818,13 +1207,81 @@ def extract_survey_schema(pdf_path: str, start_page: int = 1, end_page=None,
                 value, sentence = _extract_count(chunk, canonical_field)
                 extraction_is_precise = value is not None   # count extraction is always this specific
             else:
-                value, sentence = _extract_amount(chunk, canonical_field, document_currency_known=bool(currency_code))
+                value, sentence = _extract_amount(chunk, canonical_field, document_currency_known=bool(currency_code), document_currency=currency_code)
                 extraction_is_precise = value is not None   # _extract_amount only ever returns a value when it found an unambiguous, specifically-labeled match
+                if value is None:
+                    # Strategy 3: a grid table where the figure sits in
+                    # its own cell with no label glued to it at all -
+                    # only ever for a whole-board aggregate (see
+                    # _extract_from_table_total).
+                    value, sentence = _extract_from_table_total(chunk, canonical_field, document_currency_known=bool(currency_code))
+                    extraction_is_precise = value is not None
+                if value is None:
+                    # Strategy 4: same shape of table, but read by
+                    # matching a stated Position/Role column instead of
+                    # a Total row - for a per-role rate, not an aggregate
+                    # (see _extract_from_table_by_role).
+                    value, sentence = _extract_from_table_by_role(chunk, canonical_field, document_currency_known=bool(currency_code))
+                    extraction_is_precise = value is not None
             if value is None:
                 continue
             heading_score = score_chunk(chunk.text, chunk.heading, canonical_field)
             if best_value is None or heading_score > best_heading_score:
                 best_value, best_sentence, best_chunk, best_heading_score = value, sentence, chunk, heading_score
+
+        if best_value is None:
+            # Last resort: the ranked top-5 window can miss the one
+            # chunk that actually states a figure, when several OTHER
+            # chunks repeat this field's own heading words more often
+            # without ever stating a number at all. Confirmed on a real
+            # filing (Absa Bank Kenya PLC): the actual sentence - "The
+            # Board Chairman is entitled to an annual retainer of Shs
+            # 10,650,400" - sat in a chunk that scored 0.6, while four
+            # OTHER chunks that just repeat "Directors' remuneration
+            # report" as their heading with no figure in them at all
+            # scored higher and filled every top-5 slot.
+            #
+            # Rather than raise top_n further for every field (more
+            # compute, and more risk of a wrong-but-plausible chunk
+            # edging out the right one in the normal case), this scans
+            # every remaining chunk in the document for an EXACT (not
+            # fuzzy) synonym match - a strong, specific signal on its
+            # own - and only resorts to it once the normal ranked
+            # candidates have already all failed to yield a value, so
+            # the extra pass only ever runs on fields that would
+            # otherwise return nothing anyway.
+            # (a synonym match here uses the same fuzzy word-coverage
+            # test as remuneration_ontology.py's section_hints matching,
+            # not a literal substring - Absa Bank Kenya PLC's real
+            # sentence is worded "entitled to an annual retainer of Shs
+            # 10,650,400", which shares no exact synonym phrase from the
+            # ontology's list word-for-word, but does share enough of
+            # "annual retainer fee for the chairman"'s meaningful words
+            # to count as the same thing being said differently)
+            synonyms = ONTOLOGY.get(canonical_field, {}).get('synonyms', [])
+            candidate_ids = {id(c) for c in candidates}
+            for chunk in chunks:
+                if id(chunk) in candidate_ids:
+                    continue
+                text_lower = (chunk.text or '').lower()
+                text_tokens = _tokenize(text_lower)
+                matched = any(s in text_lower for s in synonyms) or \
+                    any(_phrase_coverage(_tokenize(s), text_tokens) > 0 for s in synonyms)
+                if not matched:
+                    continue
+                if is_int_field:
+                    value, sentence = _extract_count(chunk, canonical_field)
+                else:
+                    value, sentence = _extract_amount(chunk, canonical_field, document_currency_known=bool(currency_code), document_currency=currency_code)
+                    if value is None:
+                        value, sentence = _extract_from_table_total(chunk, canonical_field, document_currency_known=bool(currency_code))
+                    if value is None:
+                        value, sentence = _extract_from_table_by_role(chunk, canonical_field, document_currency_known=bool(currency_code))
+                if value is not None:
+                    best_value, best_sentence, best_chunk = value, sentence, chunk
+                    best_heading_score = score_chunk(chunk.text, chunk.heading, canonical_field)
+                    extraction_is_precise = True   # the fallback's own extraction strategies are exactly as precise as the first loop's - this was left at whatever the LAST failed top-5 candidate set it to, silently dragging confidence below the 0.45 threshold even after finding the right value (confirmed on a real filing: Absa Bank Kenya PLC's chairperson_annual_retainer)
+                    break
 
         if best_value is None:
             continue   # every candidate chunk scored on keywords, but none contained an extractable value

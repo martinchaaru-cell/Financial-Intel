@@ -48,6 +48,14 @@ class User(db.Model):
     email = db.Column(db.String(150), nullable=False, unique=True)
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), nullable=False, default='user')  # 'admin' | 'user'
+    # Profile fields - all optional at the DB level (nullable) so existing
+    # rows created before this change stay valid without a backfill. The
+    # register endpoint still requires organization + job_title from new
+    # signups (enforced in app.py, not here) so every account created going
+    # forward has a real profile to show once the user logs in.
+    organization = db.Column(db.String(150))
+    job_title = db.Column(db.String(120))
+    phone = db.Column(db.String(30))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def set_password(self, password):
@@ -60,6 +68,9 @@ class User(db.Model):
         return {
             'id': self.id, 'name': self.name, 'email': self.email,
             'role': self.role,
+            'organization': self.organization,
+            'job_title': self.job_title,
+            'phone': self.phone,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 

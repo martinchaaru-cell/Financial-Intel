@@ -21,7 +21,9 @@ from models import (
     Committee, CommitteeMember, User, LOW_EXTRACTION_SCORE_THRESHOLD,
 )
 import ai_extract
-from models_ai import AIExtractionJob, AIExtractionItem
+import review_api
+import tab_modules
+from models_ai import AIExtractionJob, AIExtractionItem, UploadDraft, ExtractionIssue
 from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, ActivityLogEntry
 from survey_data_parse import is_survey_data_format, parse_survey_data
 from intelligence_extractor import extract_survey_schema, extract_policy_disclosures
@@ -188,13 +190,17 @@ def register():
     name = (data.get('name') or '').strip()
     email = (data.get('email') or '').strip().lower()
     password = data.get('password') or ''
-    if not name or not email or not password:
-        return jsonify({'error': 'Name, email, and password are all required.'}), 400
+    organization = (data.get('organization') or '').strip()
+    job_title = (data.get('job_title') or '').strip()
+    phone = (data.get('phone') or '').strip()
+    if not name or not email or not password or not organization or not job_title:
+        return jsonify({'error': 'Name, email, password, organization, and job title are all required.'}), 400
     if len(password) < 6:
         return jsonify({'error': 'Password must be at least 6 characters.'}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({'error': 'An account with that email already exists.'}), 409
-    user = User(name=name, email=email, role='user')
+    user = User(name=name, email=email, role='user',
+                organization=organization, job_title=job_title, phone=phone or None)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
@@ -229,6 +235,39 @@ def me():
     d = u.to_dict()
     d['logged_in'] = True
     return jsonify(d)
+
+@app.route('/api/profile', methods=['GET'])
+def get_profile():
+    """Self-service view of the logged-in user's own profile - backs the
+    'My Profile' panel any logged-in user (not just admins) can open from
+    the account dropdown."""
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'You must be logged in.'}), 401
+    return jsonify(u.to_dict())
+
+@app.route('/api/profile', methods=['PUT'])
+def update_profile():
+    """Lets a logged-in user edit their own name/organization/job
+    title/phone. Email and role are deliberately not editable here - email
+    changes would need re-verification and role changes stay admin-only
+    (see /api/users/<id>/role above)."""
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'You must be logged in.'}), 401
+    data = request.get_json(force=True) or {}
+    name = (data.get('name') or '').strip()
+    organization = (data.get('organization') or '').strip()
+    job_title = (data.get('job_title') or '').strip()
+    phone = (data.get('phone') or '').strip()
+    if not name or not organization or not job_title:
+        return jsonify({'error': 'Name, organization, and job title are all required.'}), 400
+    u.name = name
+    u.organization = organization
+    u.job_title = job_title
+    u.phone = phone or None
+    db.session.commit()
+    return jsonify(u.to_dict())
 
 
 # ---------- API: USER MANAGEMENT (admin only) ----------
@@ -1106,129 +1145,156 @@ def get_company(company_id):
     result['financials'] = [f.to_dict() for f in financials]
     return jsonify(result)
 
+def _purge_company_rows(company_id):
+    """Deletes one company and everything that hangs off it, in dependency
+    order, WITHOUT committing - the caller commits (single delete) or
+    commits per company (bulk delete), and rolls back on error. Shared by
+    DELETE /api/companies/<id> and POST /api/companies/bulk-delete so both
+    clean up exactly the same tables."""
+    c = Company.query.get(company_id)
+    if c is None:
+        return False
+    _doc_ids_for_purge = [d.id for d in SourceDocument.query.filter_by(company_id=company_id)]
+    period_ids = [p.id for p in FinancialPeriod.query.filter_by(company_id=company_id)]
+    if period_ids:
+        statement_ids = [
+            s.id for s in FinancialStatement.query.filter(
+                FinancialStatement.period_id.in_(period_ids)
+            )
+        ]
+        if statement_ids:
+            FinancialLineItem.query.filter(
+                FinancialLineItem.statement_id.in_(statement_ids)
+            ).delete(synchronize_session=False)
+            FinancialStatement.query.filter(
+                FinancialStatement.id.in_(statement_ids)
+            ).delete(synchronize_session=False)
+
+    for period_id in period_ids:
+        CalculatedMetric.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        FinancialSegment.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        OperationalMetric.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        FinancialNote.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        # Every one of these four has a real FK to financial_periods.id
+        # with no ondelete=CASCADE and no ORM relationship either -
+        # each was added in a later session than this route, and none
+        # of them were wired into its cleanup at the time, so a
+        # company with any of this data saved (remuneration rows,
+        # market data snapshot, principal risks, management guidance)
+        # used to fail to delete at all with an uncaught IntegrityError
+        # once FinancialPeriod rows were deleted out from under them
+        # below - that's the delete-company-button-doesn't-work bug:
+        # the request 500'd instead of silently doing nothing, but the
+        # visible effect looked the same either way.
+        DirectorRemunerationRow.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        MarketDataSnapshot.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        PrincipalRisk.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        ManagementGuidance.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+        # Committee/CommitteeMember: added in a later session than this
+        # route too (models.py), same period_id FK/no-cascade shape as
+        # the four above - would hit the identical IntegrityError for
+        # any company with committee data saved. The ORM relationship's
+        # cascade='all, delete-orphan' (models.py) only fires on an
+        # ORM-level session.delete(), never on this route's bulk
+        # .delete() queries - so CommitteeMember still needs its own
+        # explicit cleanup here before Committee, same as everywhere
+        # else in this function.
+        committee_ids = [comm.id for comm in Committee.query.filter_by(period_id=period_id)]
+        if committee_ids:
+            CommitteeMember.query.filter(CommitteeMember.committee_id.in_(committee_ids)).delete(synchronize_session=False)
+        Committee.query.filter_by(period_id=period_id).delete(synchronize_session=False)
+
+    FinancialPeriod.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    ImportJob.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    Financials.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    SourceDocument.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+
+    # Survey-side tables (models_survey.py) - added in a later session
+    # than this route and never wired into its cleanup, so a company
+    # with ANY survey data (SurveyCompanyData row, named directors,
+    # benefits, remuneration/governance policy answers, or a flagged
+    # evidence conflict) hit the exact same class of bug documented
+    # above: a real FK to company.id, nullable=False, no
+    # ondelete=CASCADE, no ORM relationship - the delete 500'd with an
+    # IntegrityError instead of silently doing nothing. All keyed
+    # directly by company_id (none of them FK to each other), so order
+    # among these seven doesn't matter, only that they run before the
+    # Company row itself. ActivityLogEntry included for the same
+    # reason (added this same session, same unindexed FK-only shape).
+    SurveyDirector.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    SurveyDirectorBenefit.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    SurveyBenefitCategory.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    RemunerationPolicy.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    GovernancePolicy.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    EvidenceConflict.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    SurveyCompanyData.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    ActivityLogEntry.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+
+    # Rows that point at this company without a database-level foreign key
+    # on the survey/AI side. AIExtractionItem HAS a real FK to company.id and
+    # was never cleaned up here, so a company that had AI extraction items
+    # could not be deleted (IntegrityError -> 500). ExtractionIssue and
+    # UploadDraft have no FK, but would otherwise linger as orphans on the
+    # Review page after their company is gone.
+    AIExtractionItem.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    ExtractionIssue.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    UploadDraft.query.filter_by(forced_company_id=company_id).delete(synchronize_session=False)
+    if _doc_ids_for_purge:
+        UploadDraft.query.filter(UploadDraft.source_document_id.in_(_doc_ids_for_purge)).delete(synchronize_session=False)
+    db.session.delete(c)
+    return True
+
+
 @app.route('/api/companies/<int:company_id>', methods=['DELETE'])
 @require_role('admin')
 def delete_company(company_id):
-    """Deletes a company and everything that hangs off it.
-
-    Company.periods and Company.source_documents both cascade
-    ('all, delete-orphan') in models.py, so FinancialPeriod ->
-    FinancialStatement -> FinancialLineItem (and segments/notes/
-    operational_metrics/calculated_metrics) are removed automatically by
-    the ORM when the Company row is deleted.
-
-    Two things live OUTSIDE that relationship graph and need cleaning up
-    by hand, or they'd be left as orphaned rows pointing at a company_id
-    that no longer exists:
-      - Financials: the old flat legacy table (kept in app.py on purpose,
-        see its class docstring) - no relationship/cascade is defined on
-        it at all.
-      - ImportJob: has a company_id FK but no relationship/backref was
-        added in models.py, so SQLAlchemy won't touch it automatically.
-    A further four (DirectorRemunerationRow, MarketDataSnapshot,
-    PrincipalRisk, ManagementGuidance) each have a REAL foreign-key
-    constraint on period_id (and source_document_id) with no
-    ondelete=CASCADE and no ORM relationship either - each must be
-    deleted before its parent FinancialPeriod rows or the database
-    itself rejects the delete with an IntegrityError (this was a real
-    bug: any company with saved remuneration/market-data/risk/guidance
-    rows couldn't be deleted at all once those tables were added, until
-    this was fixed - it surfaced to the user as "the delete button
-    doesn't work").
-    """
-    c = Company.query.get_or_404(company_id)
-
+    """Deletes a company and everything that hangs off it (see
+    _purge_company_rows for the full list and why each table needs
+    explicit cleanup)."""
+    Company.query.get_or_404(company_id)
     try:
-        # Delete everything explicitly, in dependency order, instead of
-        # relying on ORM cascade ordering across two separate relationship
-        # trees (Company.periods and Company.source_documents). Those two
-        # trees aren't linked by an ORM relationship even though
-        # FinancialStatement.source_document_id is a real FK to
-        # SourceDocument - so cascade-deleting both in the same flush can
-        # hit a FK violation if statements aren't cleared before their
-        # source documents are. Doing it by hand removes that risk.
-        period_ids = [p.id for p in FinancialPeriod.query.filter_by(company_id=company_id)]
-        if period_ids:
-            statement_ids = [
-                s.id for s in FinancialStatement.query.filter(
-                    FinancialStatement.period_id.in_(period_ids)
-                )
-            ]
-            if statement_ids:
-                FinancialLineItem.query.filter(
-                    FinancialLineItem.statement_id.in_(statement_ids)
-                ).delete(synchronize_session=False)
-                FinancialStatement.query.filter(
-                    FinancialStatement.id.in_(statement_ids)
-                ).delete(synchronize_session=False)
-
-        for period_id in period_ids:
-            CalculatedMetric.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            FinancialSegment.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            OperationalMetric.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            FinancialNote.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            # Every one of these four has a real FK to financial_periods.id
-            # with no ondelete=CASCADE and no ORM relationship either -
-            # each was added in a later session than this route, and none
-            # of them were wired into its cleanup at the time, so a
-            # company with any of this data saved (remuneration rows,
-            # market data snapshot, principal risks, management guidance)
-            # used to fail to delete at all with an uncaught IntegrityError
-            # once FinancialPeriod rows were deleted out from under them
-            # below - that's the delete-company-button-doesn't-work bug:
-            # the request 500'd instead of silently doing nothing, but the
-            # visible effect looked the same either way.
-            DirectorRemunerationRow.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            MarketDataSnapshot.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            PrincipalRisk.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            ManagementGuidance.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-            # Committee/CommitteeMember: added in a later session than this
-            # route too (models.py), same period_id FK/no-cascade shape as
-            # the four above - would hit the identical IntegrityError for
-            # any company with committee data saved. The ORM relationship's
-            # cascade='all, delete-orphan' (models.py) only fires on an
-            # ORM-level session.delete(), never on this route's bulk
-            # .delete() queries - so CommitteeMember still needs its own
-            # explicit cleanup here before Committee, same as everywhere
-            # else in this function.
-            committee_ids = [comm.id for comm in Committee.query.filter_by(period_id=period_id)]
-            if committee_ids:
-                CommitteeMember.query.filter(CommitteeMember.committee_id.in_(committee_ids)).delete(synchronize_session=False)
-            Committee.query.filter_by(period_id=period_id).delete(synchronize_session=False)
-
-        FinancialPeriod.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        ImportJob.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        Financials.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        SourceDocument.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-
-        # Survey-side tables (models_survey.py) - added in a later session
-        # than this route and never wired into its cleanup, so a company
-        # with ANY survey data (SurveyCompanyData row, named directors,
-        # benefits, remuneration/governance policy answers, or a flagged
-        # evidence conflict) hit the exact same class of bug documented
-        # above: a real FK to company.id, nullable=False, no
-        # ondelete=CASCADE, no ORM relationship - the delete 500'd with an
-        # IntegrityError instead of silently doing nothing. All keyed
-        # directly by company_id (none of them FK to each other), so order
-        # among these seven doesn't matter, only that they run before the
-        # Company row itself. ActivityLogEntry included for the same
-        # reason (added this same session, same unindexed FK-only shape).
-        SurveyDirector.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        SurveyDirectorBenefit.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        SurveyBenefitCategory.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        RemunerationPolicy.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        GovernancePolicy.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        EvidenceConflict.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        SurveyCompanyData.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-        ActivityLogEntry.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-
-        db.session.delete(c)
+        _purge_company_rows(company_id)
         db.session.commit()
         return jsonify({'deleted': company_id}), 200
     except Exception as e:
         db.session.rollback()
         app.logger.exception('Failed to delete company %s', company_id)
         return jsonify({'error': f'Delete failed: {e}'}), 500
+
+
+@app.route('/api/companies/bulk-delete', methods=['POST'])
+@require_role('admin')
+def bulk_delete_companies():
+    """Delete several companies, or every company, in one request.
+    Body: {"ids": [1, 2, 3]} or {"all": true}. Each company is deleted in
+    its own transaction, so one failure never blocks or rolls back the
+    others; the response lists which ids were deleted and which failed
+    (with the reason)."""
+    body = request.get_json(silent=True) or {}
+    if body.get('all') is True:
+        ids = [c.id for c in Company.query.with_entities(Company.id).all()]
+    else:
+        raw = body.get('ids')
+        if not isinstance(raw, list) or not raw:
+            return jsonify({'error': 'Send {"ids": [..]} with at least one company id, or {"all": true}.'}), 400
+        try:
+            ids = sorted({int(i) for i in raw})
+        except (TypeError, ValueError):
+            return jsonify({'error': 'ids must be integers.'}), 400
+    deleted, failed = [], []
+    for cid in ids:
+        try:
+            if _purge_company_rows(cid):
+                db.session.commit()
+                deleted.append(cid)
+            else:
+                failed.append({'id': cid, 'error': 'Company not found.'})
+        except Exception as e:
+            db.session.rollback()
+            app.logger.exception('Failed to delete company %s (bulk)', cid)
+            failed.append({'id': cid, 'error': str(e)})
+    return jsonify({'deleted': deleted, 'failed': failed}), (200 if deleted or not failed else 500)
+
 
 # ---------- API: FINANCIALS ----------
 
@@ -1398,6 +1464,14 @@ def _finalize_source_document_score(source_document_id):
         db.session.rollback()
         app.logger.exception(f'Extraction score computation failed for source_document_id={source_document_id} (non-fatal)')
         return None
+
+
+def _replaceable_pay_rows(period_id):
+    """The period's director pay rows an import may replace. Rows a person entered by hand
+    (table_kind 'manual', Settings > Review > Manual entry) are never wiped by a re-upload."""
+    return DirectorRemunerationRow.query.filter(
+        DirectorRemunerationRow.period_id == period_id,
+        db.or_(DirectorRemunerationRow.table_kind.is_(None), DirectorRemunerationRow.table_kind != 'manual'))
 
 
 def _save_one_import(data):
@@ -1755,7 +1829,16 @@ _progress_channels = {}  # batch_id -> queue.Queue, one per in-flight upload
 def _progress_emit(batch_id, event):
     if not batch_id:
         return
-    event = {**event, 'ts': datetime.utcnow().isoformat()}
+    # '+ "Z"' matters: datetime.utcnow().isoformat() alone has no timezone
+    # marker, so the frontend's `new Date(ts)` (templates/index.html) parses
+    # it as browser-LOCAL time rather than UTC. For a browser in a UTC+3
+    # timezone that made every early-stage log line print ~3 hours earlier
+    # than the batch_start/batch_done lines (which use the browser's own
+    # local clock) - making a ~4-minute upload look like it spanned hours,
+    # even though the real elapsed time (the live timer, and *_seconds
+    # fields below) was correct the whole time. The 'Z' tells the browser
+    # this is UTC so it converts to local time like every other timestamp.
+    event = {**event, 'ts': datetime.utcnow().isoformat() + 'Z'}
     q = _progress_channels.get(batch_id)
     if q is not None:
         q.put(event)
@@ -1779,7 +1862,7 @@ def upload_progress_stream(batch_id):
                 if event.get('type') in ('batch_done', 'batch_failed'):
                     break
         except queue.Empty:
-            yield f"data: {json.dumps({'type': 'timeout', 'ts': datetime.utcnow().isoformat()})}\n\n"
+            yield f"data: {json.dumps({'type': 'timeout', 'ts': datetime.utcnow().isoformat() + 'Z'})}\n\n"
         finally:
             _progress_channels.pop(batch_id, None)
 
@@ -1910,8 +1993,42 @@ def _detect_pay_table_unit(pdf_bytes, page):
 # board extraction, so a re-upload may refresh or clear it; any other source
 # (hand-typed file, survey PDF import, a person's correction) is left alone.
 _AUTO_BOARD_SOURCE_PREFIXES = ('from the board table', 'from the attendance table',
-                               'stated in the report', 'from the director roster',
+                               'stated in the report', 'from the director roster', 'from the director pay table',
                                'from the remuneration policy text', 'from the remuneration report')
+
+
+def _sync_executive_pay_rows(company_id, fiscal_year, source_document_id, pdf_bytes):
+    """Executive directors' pay printed as a labelled block (Absa: "Abdi Mohamed, Managing Director - Base salary /
+    Retirement benefits / Other employee benefits / Cash bonus / ... / Total remuneration") becomes pay rows with
+    role 'executive' and its components. Before this, only the non-executive table was saved, so Remuneration's
+    "Executive Directors" table read "Not available" and Benefits & Allowances had no components to show."""
+    from policy_extract import extract_executive_pay_blocks, COMPONENT_DISPLAY
+    from board_extract import same_person
+    period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fiscal_year).first()
+    if period is None:
+        return 0
+    blocks = extract_executive_pay_blocks(pdf_bytes)
+    if not blocks:
+        return 0
+    have = DirectorRemunerationRow.query.filter_by(period_id=period.id).all()
+    n = len(have)
+    added = 0
+    for b in blocks:
+        if any(r.role == 'executive' and same_person(r.director_name, b['name']) for r in have):
+            continue
+        comps = {COMPONENT_DISPLAY[k]: v for k, v in b['components'].items() if k in COMPONENT_DISPLAY}
+        parts = sum(b['components'].get(k, 0.0) for k in ('salary', 'pension', 'non_cash_benefits', 'allowances',
+                                                          'incentive_bonus', 'deferred_incentive'))
+        total = b['components'].get('cost_of_employment')
+        ok = total is not None and abs(parts - total) <= max(2.0, 0.001 * total)
+        db.session.add(DirectorRemunerationRow(
+            period_id=period.id, source_document_id=source_document_id, director_name=b['name'], role='executive',
+            table_kind='exec_block', is_grand_total=False, is_total_row=False, total=total, components=json.dumps(comps),
+            order_index=n + added, page=b['page'], confidence=0.9 if ok else 0.75))
+        added += 1
+    if added:
+        db.session.commit()
+    return added
 
 
 def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_bytes, filename):
@@ -2004,6 +2121,9 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
         produced['non_executive_directors_count'] = (comp['non_executive'], f"stated in the report on page {pg}: \"{comp['text']}\"", 0.85)
         produced['executive_directors_count'] = (comp['executive'], f"stated in the report on page {pg}: \"{comp['text']}\"", 0.85)
         produced['board_size'] = (comp['non_executive'] + comp['executive'], f"stated in the report on page {pg}: \"{comp['text']}\" (sum)", 0.85)
+        if 'independent' in comp and 'non_independent' in comp:
+            produced['independent_neds_count'] = (comp['independent'], f"stated in the report on page {pg}: \"{comp['text']}\"", 0.85)
+            produced['non_independent_neds_count'] = (comp['non_independent'], f"stated in the report on page {pg}: \"{comp['text']}\"", 0.85)
     if attendance and attendance.get('board_meetings') is not None:
         produced['board_meetings_per_year'] = (
             attendance['board_meetings'],
@@ -2039,7 +2159,9 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
             confidence.pop(col, None)
     # ---- pay unit of the directors' pay tables ("Shs" / "Shs'000" / "KShs million"), so the survey's
     # policy and CEO figures below are stored in the same unit as the pay rows they sit beside
-    from policy_extract import extract_ned_benefits, extract_committee_prose, extract_ned_policy, extract_ceo_pay
+    from policy_extract import extract_ned_benefits, extract_committee_prose, extract_committee_roster, \
+        extract_committee_roster_lines, extract_committee_membership_table, extract_committee_membership_columns, \
+        extract_committee_numbered_members, extract_ned_policy, extract_ceo_pay
     if period is not None and not row.director_figures_unit:
         pay_pages = [r.page for r in DirectorRemunerationRow.query.filter_by(period_id=period.id).all() if r.page]
         unit = _detect_pay_table_unit(pdf_bytes, pay_pages[0]) if pay_pages else None
@@ -2055,7 +2177,8 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
     policy = extract_ned_policy(pdf_bytes)
     for col, info in policy.items():
         _rule_field(col, info['value'] * to_pay_unit,
-                    f"from the remuneration report (page {info['page']}): \"{info['text'][:90]}\"")
+                    f"from the remuneration report (page {info['page']}): \"{info['text'][:90]}\"",
+                    info.get('confidence', 0.75))
     ceo = extract_ceo_pay(pdf_bytes)
     if ceo:
         cf = {'units': 1.0, 'thousands': 1e3, 'millions': 1e6}[ceo['unit']] * to_pay_unit / 12.0     # annual -> monthly
@@ -2129,6 +2252,149 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
                     db.session.add(CommitteeMember(committee_id=committee.id, director_name=nm, order_index=j))
             db.session.commit()
 
+    # ---- Committees whose roster is a 'Membership and attendance of committee meetings:'
+    # heading followed by Name / Chairperson-or-Member / (attended/eligible) lines, rather
+    # than a sentence or a filed attendance table (e.g. Equity Group Holdings' 2022 report).
+    # Skipped when either of the two readers above already found something, so the three
+    # never overwrite each other.
+    roster_committees = [] if (attendance and attendance.get('committees')) or prose_committees \
+        else extract_committee_roster(pdf_bytes)
+    if roster_committees and period is not None:
+        existing = Committee.query.filter_by(period_id=period.id).all()
+        if not any(c.source_document_id is None for c in existing):
+            for c in existing:
+                CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                db.session.delete(c)
+            db.session.flush()
+            for i, c in enumerate(roster_committees):
+                chair = next((m['name'] for m in c['members'] if m['role'] == 'Chairperson'), None)
+                total_att = sum(m['attended'] for m in c['members'])
+                total_elig = sum(m['eligible'] for m in c['members'])
+                committee = Committee(
+                    period_id=period.id, source_document_id=source_document_id, name=c['name'],
+                    chairperson_name=chair, member_count=len(c['members']),
+                    meetings_held=max((m['eligible'] for m in c['members']), default=None),
+                    attendance_rate=round(100 * total_att / total_elig, 1) if total_elig else None,
+                    order_index=i, page=c['page'], confidence=0.85)
+                db.session.add(committee)
+                db.session.flush()
+                for j, m in enumerate(c['members']):
+                    db.session.add(CommitteeMember(
+                        committee_id=committee.id, director_name=m['name'],
+                        role_on_committee='chair' if m['role'] == 'Chairperson' else 'member', order_index=j))
+            db.session.commit()
+
+    # ---- Committees whose roster is one member per LINE ("J Swai Chairperson 3/4")
+    # under a "Name Nature of Participation Attendance" header, rather than the
+    # three-lines-per-member roster above (confirmed on NSE's 2022/2023 Integrated
+    # Reports). Same shape as roster_committees, same skip discipline: only runs if
+    # nothing above already found something.
+    roster_line_committees = [] if (attendance and attendance.get('committees')) or prose_committees or roster_committees \
+        else extract_committee_roster_lines(pdf_bytes)
+    if roster_line_committees and period is not None:
+        existing = Committee.query.filter_by(period_id=period.id).all()
+        if not any(c.source_document_id is None for c in existing):
+            for c in existing:
+                CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                db.session.delete(c)
+            db.session.flush()
+            for i, c in enumerate(roster_line_committees):
+                chair = next((m['name'] for m in c['members'] if m['role'] == 'Chairperson'), None)
+                total_att = sum(m['attended'] for m in c['members'])
+                total_elig = sum(m['eligible'] for m in c['members'])
+                committee = Committee(
+                    period_id=period.id, source_document_id=source_document_id, name=c['name'],
+                    chairperson_name=chair, member_count=len(c['members']),
+                    meetings_held=max((m['eligible'] for m in c['members']), default=None),
+                    attendance_rate=round(100 * total_att / total_elig, 1) if total_elig else None,
+                    order_index=i, page=c['page'], confidence=0.85)
+                db.session.add(committee)
+                db.session.flush()
+                for j, m in enumerate(c['members']):
+                    db.session.add(CommitteeMember(
+                        committee_id=committee.id, director_name=m['name'],
+                        role_on_committee='chair' if m['role'] == 'Chairperson' else 'member', order_index=j))
+            db.session.commit()
+
+    # ---- Committees in the three-column "Roles and Responsibilities | Membership |
+    # Attendance" layout (confirmed on Equity Group Holdings' 2024 report) - same
+    # member shape as the two roster readers above, same skip discipline.
+    membership_table_committees = [] if (attendance and attendance.get('committees')) or prose_committees \
+        or roster_committees or roster_line_committees else extract_committee_membership_table(pdf_bytes)
+    if membership_table_committees and period is not None:
+        existing = Committee.query.filter_by(period_id=period.id).all()
+        if not any(c.source_document_id is None for c in existing):
+            for c in existing:
+                CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                db.session.delete(c)
+            db.session.flush()
+            for i, c in enumerate(membership_table_committees):
+                chair = next((m['name'] for m in c['members'] if m['role'] == 'Chairperson'), None)
+                total_att = sum(m['attended'] for m in c['members'])
+                total_elig = sum(m['eligible'] for m in c['members'])
+                committee = Committee(
+                    period_id=period.id, source_document_id=source_document_id, name=c['name'],
+                    chairperson_name=chair, member_count=len(c['members']),
+                    meetings_held=max((m['eligible'] for m in c['members']), default=None),
+                    attendance_rate=round(100 * total_att / total_elig, 1) if total_elig else None,
+                    order_index=i, page=c['page'], confidence=0.85)
+                db.session.add(committee)
+                db.session.flush()
+                for j, m in enumerate(c['members']):
+                    db.session.add(CommitteeMember(
+                        committee_id=committee.id, director_name=m['name'],
+                        role_on_committee='chair' if m['role'] == 'Chairperson' else 'member', order_index=j))
+            db.session.commit()
+
+    # ---- Committees in the two-column "Roles & Responsibilities | Membership" bulleted
+    # layout (confirmed on Britam Holdings' 2025 report). This reader already existed in
+    # policy_extract.py but was never called from anywhere - 2026-09-26 fix wires it in.
+    # Members only (no attendance figures in this layout); same skip discipline.
+    membership_col_committees = [] if (attendance and attendance.get('committees')) or prose_committees \
+        or roster_committees or roster_line_committees or membership_table_committees \
+        else extract_committee_membership_columns(pdf_bytes)
+    if membership_col_committees and period is not None:
+        existing = Committee.query.filter_by(period_id=period.id).all()
+        if not any(c.source_document_id is None for c in existing):
+            for c in existing:
+                CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                db.session.delete(c)
+            db.session.flush()
+            for i, c in enumerate(membership_col_committees):
+                committee = Committee(period_id=period.id, source_document_id=source_document_id, name=c['name'],
+                                      chairperson_name=c.get('chair'), member_count=len(c['members']),
+                                      meetings_held=c.get('meetings'), order_index=i, page=c['page'], confidence=0.7)
+                db.session.add(committee)
+                db.session.flush()
+                for j, nm in enumerate(c['members']):
+                    db.session.add(CommitteeMember(committee_id=committee.id, director_name=nm, order_index=j))
+            db.session.commit()
+
+    # ---- Committees written as a numbered heading + "The members of the Committee ... were: -" list +
+    # tick grid (confirmed on Uchumi's 2025 report). Last fallback, same skip discipline as the others.
+    numbered_committees = [] if (attendance and attendance.get('committees')) or prose_committees \
+        or roster_committees or roster_line_committees or membership_table_committees \
+        or membership_col_committees else extract_committee_numbered_members(pdf_bytes)
+    if numbered_committees and period is not None:
+        existing = Committee.query.filter_by(period_id=period.id).all()
+        if not any(c.source_document_id is None for c in existing):
+            for c in existing:
+                CommitteeMember.query.filter_by(committee_id=c.id).delete()
+                db.session.delete(c)
+            db.session.flush()
+            for i, c in enumerate(numbered_committees):
+                committee = Committee(period_id=period.id, source_document_id=source_document_id, name=c['name'],
+                                      chairperson_name=c.get('chair'), member_count=len(c['members']),
+                                      meetings_held=c.get('meetings'), attendance_rate=c.get('attendance_rate'),
+                                      order_index=i, page=c['page'], confidence=0.8)
+                db.session.add(committee)
+                db.session.flush()
+                for j, nm in enumerate(c['members']):
+                    db.session.add(CommitteeMember(
+                        committee_id=committee.id, director_name=nm,
+                        role_on_committee='chair' if nm == c.get('chair') else 'member', order_index=j))
+            db.session.commit()
+
     # ---- Committees (period-based). Rows a person filed by hand (no source document) are never replaced.
     if attendance and attendance.get('committees') and period is not None:
         existing = Committee.query.filter_by(period_id=period.id).all()
@@ -2149,7 +2415,52 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
                     db.session.add(CommitteeMember(committee_id=committee.id, director_name=m['name'], order_index=j))
             db.session.commit()
 
+    _sync_committee_survey_fields(company_id, fiscal_year)
 
+
+def _sync_committee_survey_fields(company_id, fiscal_year):
+    """Derive the two survey-level committee figures from the Committee rows the readers above just saved:
+    committees_per_board = how many committees are on file, committee_meetings_per_year = the average of
+    their stated meetings held (only committees that state one count; a committee with no stated meetings
+    is left out of the average, never counted as 0). Before this, committee_meetings_per_year was never
+    written by any code path, so 'Average committee meetings' read Not available for every company, and
+    committees_per_board was set only from the attendance-table reader (Britam's / Uchumi's committees
+    never reached the survey figure). Fields a person typed, imported from a survey file or corrected in
+    review are never overwritten - only ones this pipeline wrote (recognised by their source prefix)."""
+    period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fiscal_year).first()
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if period is None or row is None:
+        return
+    comms = Committee.query.filter_by(period_id=period.id).all()
+    if not comms or any(c.source_document_id is None for c in comms):
+        return          # nothing found, or hand-filed committees: the person owns those figures too
+    sources = dict(row.field_sources or {})
+    confidence = dict(row.field_confidence or {})
+    human = set((row.field_review_status or {}).keys())
+
+    def put(col, value, text, conf):
+        if col in human:
+            return
+        ours = str(sources.get(col, '')).startswith(_AUTO_BOARD_SOURCE_PREFIXES)
+        if value is None:
+            if ours:
+                setattr(row, col, None); sources.pop(col, None); confidence.pop(col, None)
+            return
+        if getattr(row, col) is None or ours:
+            setattr(row, col, value); sources[col] = text; confidence[col] = conf
+
+    names = ', '.join(c.name for c in comms[:6])
+    pages = sorted({c.page for c in comms if c.page})
+    where = f"page{'s' if len(pages) > 1 else ''} {', '.join(str(x) for x in pages[:4])}" if pages else 'the committee pages'
+    put('committees_per_board', len(comms),
+        f"from the attendance table: committees found on {where} ({names})", 0.7)
+    held = [c.meetings_held for c in comms if c.meetings_held]
+    put('committee_meetings_per_year', round(sum(held) / len(held)) if held else None,
+        f"from the attendance table: average of the meetings each committee is stated to have held "
+        f"({len(held)} of {len(comms)} committees state a number, {where})", 0.7)
+    row.field_sources = sources
+    row.field_confidence = confidence
+    db.session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -2165,7 +2476,11 @@ _AI_FACT_COLUMNS = {
 
 _POLICY_COLS = ['chairperson_annual_retainer', 'other_ned_annual_retainer', 'chairperson_meeting_allowance',
                 'other_ned_meeting_allowance', 'executive_director_annual_retainer', 'executive_director_meeting_allowance',
-                'committee_chair_annual_retainer', 'committee_member_annual_retainer']
+                'committee_chair_annual_retainer', 'committee_member_annual_retainer',
+                # These two were missing (2026-09-25 fix) - without them the AI gap check never
+                # noticed these fields were empty, so it could stop asking the AI to fill them in
+                # even while they stayed blank.
+                'committee_chair_meeting_allowance', 'committee_member_meeting_allowance']
 _CEO_COLS = ['ceo_monthly_salary', 'ceo_monthly_allowances', 'ceo_monthly_incentive_bonus', 'ceo_monthly_deferred_incentive',
              'ceo_monthly_non_cash_benefits', 'ceo_monthly_pension', 'ceo_monthly_cost_of_employment']
 
@@ -2396,7 +2711,7 @@ def _apply_ai_item(item):
                 rows_out.append((t, {'name': 'Total', 'total': t['printed_total'], 'role': 'unknown', 'components': {},
                                      'page': t.get('printed_total_page')}, True))
         if rows_out and period is not None and gaps_now & {'pay_rows', 'pay_reconcile'}:
-            DirectorRemunerationRow.query.filter_by(period_id=period.id).delete()
+            _replaceable_pay_rows(period.id).delete(synchronize_session=False)
             for i, (t, r, is_total) in enumerate(rows_out):
                 db.session.add(DirectorRemunerationRow(
                     period_id=period.id, source_document_id=item.source_document_id, director_name=r['name'][:150],
@@ -2691,16 +3006,23 @@ def upload_documents_batch():
             file_payloads.append((filename, None))
             app.logger.exception(f'Could not read upload {filename}')
 
+    # REVIEW QUEUE: every PDF is parsed and imported right away, same as a typed survey / condensed
+    # file - nothing waits on approval. A draft record is still created for each PDF so Settings >
+    # Review > Uploads has something to confirm; once this batch's import finishes,
+    # finish_gated_drafts() links each draft to the document it produced. Rejecting a draft later
+    # deletes that document's data, which is what removes a bad upload from the Survey Report page.
+    file_payloads, draft_ids = review_api.gate_payloads(app, file_payloads, forced_company_id)
+
     threading.Thread(
         target=_run_upload_batch_job,
-        args=(app, file_payloads, batch_id, forced_company_id, batch_started),
+        args=(app, file_payloads, batch_id, forced_company_id, batch_started, None, draft_ids),
         daemon=True,
     ).start()
 
     return jsonify({'accepted': True, 'batch_id': batch_id, 'file_count': len(files)}), 202
 
 
-def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id, batch_started):
+def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id, batch_started, pre_results=None, draft_ids=None):
     """Background-thread body of upload_documents_batch (see that route's
     docstring for why this runs off-request). Pushes its own app context
     since it runs outside the request that spawned it, and ALWAYS resolves
@@ -2708,7 +3030,7 @@ def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id,
     block - even an unhandled exception here must not leave the frontend
     waiting forever with no result and no error."""
     with flask_app.app_context():
-        results = []
+        results = list(pre_results or [])      # files already queued for review are reported alongside the imports
         saved = 0
         failed_count = 0
         try:
@@ -2848,7 +3170,7 @@ def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id,
                                 db.session.add(PrincipalRisk(period_id=period_row.id, **row))
                         if condensed['director_remuneration']:
                             try:
-                                DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
+                                _replaceable_pay_rows(period_row.id).delete(synchronize_session=False)
                                 for row in condensed['director_remuneration']:
                                     components = row.pop('components', None)
                                     db.session.add(DirectorRemunerationRow(
@@ -2933,6 +3255,7 @@ def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id,
                         'match_score': 1.0 if company_id and not created_company else 0.0,
                         'created_company': created_company, 'periods_saved': [period_label],
                         'prior_period_error': None, 'format': 'condensed',
+                        'source_document_id': result.get('source_document_id'),
                         # Diagnostics for the director-remuneration section
                         # specifically, surfaced here rather than only in server
                         # logs - added after a real case where the upload
@@ -3198,7 +3521,7 @@ def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id,
                                 company_id=result['company_id'], period_label=period_label
                             ).first()
                             if period_row:
-                                DirectorRemunerationRow.query.filter_by(period_id=period_row.id).delete()
+                                _replaceable_pay_rows(period_row.id).delete(synchronize_session=False)
                                 for row in rem_rows:
                                     row.pop('fiscal_year', None)  # already implied by period_id; not its own column
                                     components = row.pop('components', None)
@@ -3215,11 +3538,23 @@ def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id,
                     # Board side runs AFTER the director pay rows exist: the filing's own pay tables name
                     # every director (KCB's profile pages show only some), so they complete the roster.
                     try:
+                        _sync_executive_pay_rows(result['company_id'], period_label, result.get('source_document_id'), pdf_bytes)
+                    except Exception as e:
+                        app.logger.exception(f'Executive pay rows failed for {filename}')
+                        review_api.record_issue(result['company_id'], period_label, filename, 'executive pay rows', e)
+                    try:
                         _sync_board_data_from_pdf(result['company_id'], period_label,
                                                   result.get('source_document_id'), pdf_bytes, filename)
-                    except Exception:
-                        db.session.rollback()
+                    except Exception as e:
                         app.logger.exception(f'Board extraction failed for {filename}')
+                        review_api.record_issue(result['company_id'], period_label, filename, 'board / register / committees', e)
+                    try:
+                        # tab_modules: make the tabs agree using what is stored (register from the pay tables
+                        # when no register reader worked, composition from the register, ...)
+                        tab_modules.reconcile_tabs(result['company_id'], period_label)
+                    except Exception as e:
+                        app.logger.exception(f'Tab reconciliation failed for {filename}')
+                        review_api.record_issue(result['company_id'], period_label, filename, 'tab reconciliation', e)
 
                     # Store the pages the AI extraction (manual button) will read; nothing is sent anywhere here.
                     try:
@@ -3246,12 +3581,14 @@ def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id,
                         'prior_period_error': (prior_result.get('error') if prior_result and prior_status != 201 else None),
                         'match_score': score,
                         'created_company': created_company,
+                        'source_document_id': result.get('source_document_id'),
                     })
                 else:
                     _progress_emit(batch_id, {'type': 'file_failed', 'filename': filename, 'error': result.get('error', 'Unknown error')})
                     results.append({'filename': filename, 'ok': False, 'error': result.get('error', 'Unknown error')})
 
             failed_count = sum(1 for r in results if not r.get('ok'))
+            review_api.finish_gated_drafts(draft_ids, results)
             final_result = {'results': results, 'saved': saved, 'failed': failed_count}
             _store_batch_result(batch_id, final_result)
             total_elapsed = (datetime.utcnow() - batch_started).total_seconds()
@@ -3845,8 +4182,18 @@ def _survey_report_completeness(company):
     SurveyCompanyData row, any DirectorRemunerationRow, any Committee
     row."""
     score = 0
-    if SurveyCompanyData.query.filter_by(company_id=company.id).first():
+    latest_survey = SurveyCompanyData.query.filter_by(company_id=company.id).order_by(SurveyCompanyData.fiscal_year.desc()).first()
+    if latest_survey:
         score += 40
+        # Up to +9 more for how many of the survey's own fields are actually
+        # filled in, so the default opens on the company whose report has the
+        # least "Not available" rather than whichever tied on id.
+        skip = ('id', 'company_id', 'fiscal_year', 'sector', 'source_filename', 'uploaded_at', 'currency', 'unit',
+                'ned_benefits', 'source_notes', 'field_sources', 'field_confidence', 'field_review_status',
+                'field_review_corrections')
+        filled = len([col for col in SurveyCompanyData.__table__.columns
+                      if col.name not in skip and getattr(latest_survey, col.name) is not None])
+        score += min(9, filled // 4)
     period_ids = [p.id for p in FinancialPeriod.query.filter_by(company_id=company.id).all()]
     if period_ids:
         if DirectorRemunerationRow.query.filter(DirectorRemunerationRow.period_id.in_(period_ids)).first():
@@ -3924,7 +4271,28 @@ def company_survey_report(company_id):
                         for r in all_year_rows]
 
     periods = _ordered_periods(company_id)
-    period = periods[0] if periods else None
+    # Pick the FinancialPeriod that matches the SELECTED reporting year.
+    # This used to be periods[0] (always the newest period), so switching
+    # the year picker to FY2023 kept showing FY2025's period label, director
+    # pay rows and committees under a FY2023 heading. Now: match on the
+    # survey row's own fiscal year (or the requested one); if this company
+    # has no financial period for that year, `period` stays None and the
+    # pay/committee tabs show honest empty states instead of another
+    # year's numbers. Only when no year is known at all (no survey row, no
+    # ?fiscal_year) do we fall back to the newest period.
+    target_year_label = (survey_row.fiscal_year if survey_row else fiscal_year) or None
+    period = None
+    if target_year_label:
+        norm = lambda v: re.sub(r'\s+', '', str(v or '')).upper()
+        period = next((p for p in periods if norm(p.period_label) == norm(target_year_label)), None)
+        if period is None:
+            ty = extract_year(target_year_label)
+            if ty:
+                period = next((p for p in periods
+                               if (p.period_label or '').upper().startswith('FY')
+                               and (p.fiscal_year if p.fiscal_year is not None else extract_year(p.period_label)) == ty), None)
+    elif periods:
+        period = periods[0]
 
     director_rows = []
     committees = []
@@ -4125,6 +4493,23 @@ def intelligence_layer_historical_trends():
     has data - real multi-year series for the Historical Trends tab, no
     interpolation for years with nothing on file."""
     return jsonify(build_historical_trends())
+
+
+@app.route('/api/admin/export-db', methods=['GET'])
+@require_role('admin')
+def export_database_snapshot():
+    """Download the whole database as one SQLite file (credentials excluded) plus field_trace / metric_gaps
+    tables that show, for every survey metric, its value + where it was read from, or that it is missing.
+    See db_export.py."""
+    import db_export
+    path, _counts = db_export.export_sqlite_snapshot()
+    resp = send_file(path, as_attachment=True, download_name='finintel_snapshot.sqlite',
+                     mimetype='application/vnd.sqlite3')
+    try:
+        resp.call_on_close(lambda: os.path.exists(path) and os.remove(path))
+    except Exception:
+        pass
+    return resp
 
 
 @app.route('/api/survey/data-quality', methods=['GET'])
@@ -4950,6 +5335,29 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
+    # upload_drafts predates the source_document_id column (and possibly
+    # others) on the UploadDraft model - create_all() above only creates
+    # missing TABLES, it never ALTERs an existing one to add new columns.
+    # Runs this migration automatically on every boot so it doesn't depend
+    # on someone having shell/console access to run it manually; it's
+    # idempotent (each ALTER TABLE is guarded by an information_schema
+    # check), so re-running it on every worker/restart is harmless.
+    try:
+        from migrate_v5_upload_drafts_columns import run_migration as _run_upload_drafts_migration
+        _run_upload_drafts_migration()
+    except Exception:
+        db.session.rollback()
+
+    # Same idea as v5 above, but for the new User profile columns
+    # (organization, job_title, phone) added alongside the registration
+    # form update - an app_users table created before this change won't
+    # have them yet.
+    try:
+        from migrate_v6_user_profile_columns import run_migration as _run_user_profile_migration
+        _run_user_profile_migration()
+    except Exception:
+        db.session.rollback()
+
     # One-time seed admin, from env vars so no credential is hardcoded in
     # source. Only fires while zero admin accounts exist - after the
     # first login, every further admin is created from inside the app
@@ -4972,6 +5380,15 @@ with app.app_context():
             # that's fine, the outcome (an admin account for this email
             # exists) is the same either way.
             db.session.rollback()
+
+def _get_batch_result(batch_id):
+    with _batch_results_lock:
+        entry = _batch_results.get(batch_id)
+    return entry[1] if entry else None
+
+
+review_api.register(app, require_role, _run_upload_batch_job, _get_batch_result, match_company)
+
 
 if __name__ == '__main__':
     # threaded=True: the live upload-progress SSE stream (GET, held open)

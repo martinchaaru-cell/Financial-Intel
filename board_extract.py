@@ -37,6 +37,7 @@ import re
 from collections import defaultdict
 
 import pdfplumber
+import pytesseract
 
 from pdf_parse import _pypdf_page_texts_cached
 
@@ -60,7 +61,14 @@ def _looks_like_person(name: str) -> bool:
     if any(re.search(r"\d", p) for p in parts):
         return False
     low = name.lower()
-    return not any(w in low for w in ('total', 'attended', 'members', 'committee', 'board', 'meeting', 'director'))
+    if any(w in low for w in ('total', 'attended', 'members', 'committee', 'board', 'meeting', 'director')):
+        return False
+    # an institutional/corporate director's own name ("Ministry of Trade", "XYZ
+    # Corporation") - never a person, even though it's 2-6 capitalized words with
+    # no digits. Confirmed on a real filing: a state corporation nominee director
+    # in a 2025 annual report, whose institutional name spans multiple lines.
+    return not any(w in low for w in ('ministry', 'corporation', 'authority', 'trust', 'fund',
+                                      'council', 'limited', 'plc', 'sacco', 'cooperative'))
 
 
 def _group_rows(words, tol=3.0):
@@ -252,6 +260,118 @@ def _parse_attendance_region(region):
     if len(directors) < 3:
         return None
     return {'columns': columns, 'directors': directors}
+
+
+# ------------------------------- 2c. committee grid: a "Category" column instead of a
+# "total number of scheduled meetings" anchor row. _parse_attendance_region above needs a
+# row of bare integers ("the Board held N meetings") to anchor its columns; some filings
+# instead print only "attended/eligible" fractions ("4/4") per director per committee,
+# with no separate meetings-count row at all - so this reader anchors columns from the
+# fraction/N-A cells themselves. Confirmed on a real filing: BK Group Plc's 2025 Annual
+# Report, p.45 ("Board Committees" table, Board/extraordinary-meeting columns mixed in
+# with 5 real committee columns, filtered out below since only a "...Committee" header
+# is treated as a committee here).
+_FRACTION_OR_NA_RE = re.compile(r"^(?:N/A|\d{1,3}/\d{1,3})$", re.I)
+_ROLE_TOKEN_RE = re.compile(r"^(?:non-?independent|independent|non-?executive|executive)$", re.I)
+
+
+def _parse_committee_grid_region(region, page_no):
+    words = region.extract_words(x_tolerance=1.5, y_tolerance=2, keep_blank_chars=False)
+    rows = _group_rows(words, tol=3.0)
+    data_rows = [r for r in rows if sum(1 for w in r['words'] if _FRACTION_OR_NA_RE.match(w['text'])) >= 3]
+    if len(data_rows) < 3:
+        return None
+    first_data_idx = rows.index(data_rows[0])
+
+    xs = sorted({w['x0'] for r in data_rows for w in r['words'] if _FRACTION_OR_NA_RE.match(w['text'])})
+    bands = []
+    for x in xs:
+        if bands and x - bands[-1][-1] <= 15:
+            bands[-1].append(x)
+        else:
+            bands.append([x])
+    if len(bands) < 2:
+        return None
+    band_centers = [sum(b) / len(b) for b in bands]
+
+    def nearest_band(x0):
+        idx = min(range(len(band_centers)), key=lambda i: abs(band_centers[i] - x0))
+        return idx if abs(band_centers[idx] - x0) <= 20 else None
+
+    role_xs = [w['x0'] for r in data_rows for w in r['words'] if _ROLE_TOKEN_RE.match(w['text'])]
+    role_x0 = min(role_xs) if role_xs else None
+
+    band_lo = [min(b) - 12 for b in bands]
+    band_hi = [max(b) + 20 for b in bands]
+    header_words = defaultdict(list)
+    # only the few physical lines directly above the data (a wrapped column header is never
+    # more than a handful of lines) - not every row back to the top of the page/region, which
+    # would sweep in unrelated body-paragraph text that happens to cross the same x-bands
+    for r in rows[max(0, first_data_idx - 6):first_data_idx]:
+        if any(w['text'].endswith((':', '.')) for w in r['words']):
+            continue        # a stray line of prose ("...comprised seven directors:"), not a header fragment
+        for w in r['words']:
+            for i in range(len(bands)):
+                if band_lo[i] <= w['x0'] <= band_hi[i]:
+                    header_words[i].append((r['top'], w['x0'], w['text']))
+                    break
+    names_full = []
+    for i in range(len(bands)):
+        toks = sorted(header_words.get(i, []))
+        names_full.append(re.sub(r"\s+", " ", " ".join(t[2] for t in toks)).strip() or f"Column {i + 1}")
+    is_committee = [bool(re.search(r"committee", nm, re.I)) for nm in names_full]
+
+    committees_full = [{'name': nm, 'meetings': None, 'members': []} for nm in names_full]
+    directors = []
+    for r in data_rows:
+        name_words = [w for w in r['words'] if role_x0 is not None and w['x0'] < role_x0 - 5]
+        name = _clean_person_name(" ".join(w['text'] for w in name_words))
+        if not _looks_like_person(name):
+            continue
+        cells = {}
+        for w in r['words']:
+            if not _FRACTION_OR_NA_RE.match(w['text']) or w['text'].upper() == 'N/A':
+                continue
+            bi = nearest_band(w['x0'])
+            if bi is None or not is_committee[bi]:
+                continue
+            nums = [int(x) for x in re.findall(r"\d+", w['text'])]
+            if len(nums) != 2:
+                continue
+            att, elig = nums
+            cells[bi] = (att, elig)
+            committees_full[bi]['members'].append({'name': name, 'attended': att, 'eligible': elig})
+        if cells:
+            directors.append({'name': name, 'cells': cells})
+    committees = [c for c in committees_full if c['members']]
+    if not committees:
+        return None
+    for c in committees:
+        att = sum(m['attended'] for m in c['members'])
+        elig = sum(m['eligible'] for m in c['members'])
+        c['attendance_rate'] = round(100.0 * att / elig, 1) if elig else None
+        c['consistent'] = all(m['eligible'] >= m['attended'] for m in c['members'])
+    dir_out = [{'name': d['name'], 'on_board': True,
+               'committees': [names_full[i] for i in d['cells'] if is_committee[i] and committees_full[i]['members']]}
+              for d in directors]
+    return {'page': page_no, 'board_meetings': None, 'committees': committees, 'directors': dir_out}
+
+
+def extract_committee_grid(pdf_bytes: bytes):
+    """[] unless the report has a per-director x per-committee grid with attendance
+    fractions/N-A cells and no separate meetings-count row - see the module comment
+    above _parse_committee_grid_region. Same return shape as extract_board_attendance,
+    so callers can use it as a drop-in fallback when that one finds nothing."""
+    pages = _candidate_pages(pdf_bytes, required_any=['n/a', 'committee'], required_all=['committee'])
+    if not pages:
+        return None
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for pn in pages[:20]:
+            for region in _regions(pdf.pages[pn - 1]):
+                found = _parse_committee_grid_region(region, pn)
+                if found:
+                    return found
+    return None
 
 
 def extract_board_attendance(pdf_bytes: bytes):
@@ -712,11 +832,15 @@ def profile_cards_look_complete(cards: list, roster_names: list) -> bool:
 # Cards whose facts are printed as "Label: value" lines under the director's
 # name and title - the layout of Eaagads ("Age: 43 / Nationality: Kenyan /
 # Appointed: 05/09/2023"), Safaricom ("Nationality: Kenyan / Appointed: 22
-# December 2022 / Committees: ...") and KCB ("Date of Appointment to Board:
-# March 2023"). Columns are found from the label words' x positions, so it
-# does not matter whether a page has one, two or three cards across.
+# December 2022 / Committees: ..."), KCB ("Date of Appointment to Board:
+# March 2023"), and Britam ("Year of appointment: 2022" with age printed
+# separately as a bare "64 years" line under the name - see
+# _age_from_parenthetical below - and no Nationality field anywhere in
+# the report). Columns are found from the label words' x positions, so
+# it does not matter whether a page has one, two or three cards across.
 _LABEL_FIND_RE = re.compile(
-    r"(Nationality|Appointed(?:\s+to\s+(?:the\s+)?Board)?|Date\s+of\s+Appointment(?:\s+to\s+(?:the\s+)?Board)?|Age|Committees?)\s*:", re.I)
+    r"(Nationality|Appointed(?:\s+to\s+(?:the\s+)?Board)?|Date\s+of\s+Appointment(?:\s+to\s+(?:the\s+)?Board)?"
+    r"|Year\s+of\s+Appointment|Age|Committees?)\s*:", re.I)
 _HEADERISH_STOP_RE = re.compile(r"[.;]$")
 _CREDENTIAL_SUFFIXES = {'mbs', 'cbs', 'ebs', 'egh', 'ogw', 'hsc', 'sc', 'mgh', 'cpa', 'fcpa', 'fcs', 'mp', 'cs', 'phd', 'ca', 'cfa', 'ogw'}
 _HONORIFICS = {'mr': 'Male', 'mrs': 'Female', 'ms': 'Female', 'miss': 'Female', 'madam': 'Female'}
@@ -726,9 +850,43 @@ _TITLE_VOCAB_RE = re.compile(
     r"\b(chair(?:man|person|woman)?|director|executive|officer|independent|alternate|ceo|managing|nominee|secretary|chief|acting)\b", re.I)
 
 
+def _age_from_parenthetical(raw: str):
+    """Age when a header line prints it as a bare (NN) parenthetical
+    right after the name, OR as its own standalone "NN years" line
+    (both confirmed on real filings - Safaricom PLC uses the first,
+    e.g. "Peter Ndegwa (CBS) (55)"; Britam Holdings PLC uses the
+    second, a "64 years" line of its own directly under the name,
+    with no "Age:" label anywhere on the page - see the "NN years"
+    check below),
+    rather than a labeled 'Age:' field, which a reader that only
+    looks for a labeled field (see _LABEL_FIND_RE) would read as None
+    for every director even though the number is right there.
+
+    The parenthetical form only matches PURELY 1-3 digits in a
+    plausible human age range, so a credential parenthetical ("(CBS)",
+    "(MGH)", "(EBS)") never matches - those are letters, not digits.
+    Takes the LAST such match on the line (an earlier parenthetical
+    could be a short numeric appointment reference; the age, when
+    present this way, is printed as the final parenthetical after all
+    honorifics/credentials)."""
+    matches = [int(m.group(1)) for m in re.finditer(r"\((\d{1,3})\)", raw or "")
+               if 18 <= int(m.group(1)) <= 100]
+    if matches:
+        return matches[-1]
+    m = re.search(r"\b(\d{1,3})\s*years?\b", raw or "", re.I)
+    if m and 18 <= int(m.group(1)) <= 100:
+        return int(m.group(1))
+    return None
+
+
 def _split_honorific_and_name(raw: str):
     """('Mrs.', 'Jane Doe') style split: returns (gender_or_None, cleaned_name)."""
     text = re.sub(r"\([^)]*\)", " ", raw or "")                 # "(MGH)"
+    text = re.sub(r"\b\d{1,3}\s*years?\b", " ", text, flags=re.I)  # a bare age line
+    # ("64 years") folded in when the age isn't the last thing on the
+    # header block (see _age_from_parenthetical) - stripped here too
+    # so it can never end up as a stray token in the parsed name;
+    # confirmed necessary on a real filing (Britam Holdings PLC).
     text = re.sub(r",.*$", "", text)                            # ", CBS, SC" credentials
     parts = [p for p in re.split(r"\s+", text.replace('.', '. ').strip()) if p]
     gender = None
@@ -772,6 +930,28 @@ def _date_text(value: str):
     return value or None
 
 
+def _cluster_x_positions(anchors: list, gap: float = 50) -> list:
+    """Groups anchor x0 values into columns by proximity rather than a
+    fixed-width grid. Confirmed necessary on a real filing (Safaricom
+    PLC): the old code rounded each x0 to the nearest 18pt bin, but
+    "Nationality:" and "Appointed:" start at slightly different x0
+    within the SAME visual card column (different label lengths), and
+    those x0s can straddle two adjacent 18pt bins (e.g. 72 vs 90) -
+    splitting one real card's anchors across two "columns" and losing
+    the card. Anchors closer together than `gap` points are merged
+    into one column; each column's representative x is its own
+    lowest x0, since col_of()/col_band() below already tolerate
+    anchors sitting somewhat to the right of that representative.
+    """
+    xs_raw = sorted({a['x0'] for a in anchors})
+    columns = []
+    for x in xs_raw:
+        if columns and x - columns[-1] <= gap:
+            continue
+        columns.append(x)
+    return columns
+
+
 def _parse_label_cards_region(region, page_no):
     words = region.extract_words(x_tolerance=1.5, y_tolerance=2, keep_blank_chars=False)
     rows = _group_rows(words)
@@ -795,7 +975,7 @@ def _parse_label_cards_region(region, page_no):
         return []
 
     # columns = clusters of anchor x0
-    xs = sorted({round(a['x0'] / 18) * 18 for a in anchors})
+    xs = _cluster_x_positions(anchors)
     def col_of(x0):
         return min(xs, key=lambda c: abs(c - x0))
     def col_band(cx):
@@ -842,7 +1022,7 @@ def _parse_label_cards_region(region, page_no):
             mine = best_run
             txt = " ".join(w['text'] for w in mine).strip()
             if (not mine or prev_top - r['top'] > 20 or len(txt.split()) > 9 or _HEADERISH_STOP_RE.search(txt)
-                    or ':' in txt or len(lines) >= 4):
+                    or ':' in txt or len(lines) >= 6):
                 break
             lines.append(txt); prev_top = r['top']
         lines.reverse()
@@ -865,9 +1045,11 @@ def _parse_label_cards_region(region, page_no):
             gender, name = _split_honorific_and_name(mname.group(1))
             mt = re.search(r"((?:Independent\s+)?Non[\s\-]*Executive\s+Director|(?:Group\s+)?(?:Chief Executive Officer|Managing Director)|Executive Director|Chairman)", bio_text)
             title = mt.group(1) if mt else ""
+            name_line_age = _age_from_parenthetical(mname.group(1))
         else:
             gender, name = _split_honorific_and_name(" ".join(lines[:first_title]))
             title = " ".join(lines[first_title:])
+            name_line_age = _age_from_parenthetical(" ".join(lines[:first_title]))
         if not _looks_like_person(name):
             continue
         if re.search(r"secretary", title, re.I) and not re.search(r"director", title, re.I):
@@ -892,6 +1074,11 @@ def _parse_label_cards_region(region, page_no):
         m = re.search(r"\b(\d{2})\b", vals.get('age', ''))
         if m and 18 <= int(m.group(1)) <= 100:
             age = int(m.group(1))
+        elif name_line_age is not None:
+            # No labeled 'Age:' field on this card at all - fall back
+            # to the (NN) parenthetical found next to the name/title
+            # header, if there was one (see _age_from_parenthetical).
+            age = name_line_age
         committees = None
         if 'committees' in vals:
             ca = next(a for a in card['anchors'] if a['kind'] == 'committees')
@@ -922,7 +1109,12 @@ def extract_director_label_cards(pdf_bytes: bytes) -> list:
     texts = _pypdf_page_texts_cached(pdf_bytes) or []
     pages = []
     for pn, t in texts:
-        n = len(re.findall(r"(?:nationality|appointed(?:\s+to\s+(?:the\s+)?board)?|date\s+of\s+appointment(?:\s+to\s+(?:the\s+)?board)?|age)\s*:", t or '', re.I))
+        # Reuses _LABEL_FIND_RE itself (rather than a second,
+        # hand-duplicated pattern) so any layout it's extended to
+        # recognize - e.g. Britam's "Year of appointment:" - is
+        # automatically picked up here too, with nothing to keep in
+        # sync by hand.
+        n = len(_LABEL_FIND_RE.findall(t or ''))
         if n >= 4:
             pages.append(pn)
     if not pages:
@@ -1037,6 +1229,277 @@ def extract_director_prose_cards(pdf_bytes: bytes) -> list:
     return out if len(out) >= 3 else []
 
 
+# ---------------------------------------- 3b. "Corporate Information" marker roster
+# A short "Corporate Information" / "Statutory Information" page that lists the board
+# as a bare name list, one director per line, with a footnote symbol after each name
+# (*, **, ...) and a legend a few lines below mapping each symbol to Non-Executive /
+# Independent Non-Executive - a very common front-matter page in Kenyan-listed
+# company annual reports, distinct from all four readers above (no table, no photo
+# card, no "Appointed to Board:" line, no honorific-led biography). A "Nationality
+# where not Kenyan:" list, keyed to the same markers, is read too when present.
+# Confirmed on a real filing: BOC Kenya Plc's 2025 Annual Report, p.8.
+_MARKER_CHARS = "*\u2020\u2021\u00a7#^"
+_MARKER_TAIL_RE = re.compile(r"([" + _MARKER_CHARS + r"]{1,3})\s*$")
+_MARKER_STRIP_RE = re.compile(r"[" + _MARKER_CHARS + r"]+\s*$")
+_LEGEND_LINE_RE = re.compile(r"^\s*([" + _MARKER_CHARS + r"]{1,3})\s+(.{3,60}\bdirectors?)\s*$", re.I)
+_ROSTER_HEADING_RE = re.compile(r"^\s*(?:BOARD OF DIRECTORS|DIRECTORS)\b", re.I)
+_ROSTER_STOP_RE = re.compile(r"^[A-Z][A-Z ,&'\-]{4,60}$")
+_HONORIFIC_LEAD_RE = re.compile(r"^(?:Mr|Mrs|Ms|Miss|Dr|Prof|Eng|Hon|Amb|Rev|Sir|CPA|FCPA)\.?\s+[A-Z]", re.I)
+
+
+def _parse_marker_roster_region(region, page_no):
+    words = region.extract_words(x_tolerance=1.5, y_tolerance=2, keep_blank_chars=False)
+    rows = _group_rows(words, tol=4.0)
+    head_idx = next((i for i, r in enumerate(rows) if _ROSTER_HEADING_RE.match(r['text'])), None)
+    if head_idx is None:
+        return []
+    head_words = rows[head_idx]['words']
+    left_x, right_x = head_words[0]['x0'], region.bbox[2]
+    for i in range(1, len(head_words)):
+        if head_words[i]['x0'] - head_words[i - 1]['x1'] > 60:
+            right_x = head_words[i]['x0'] - 4
+            break
+
+    legend = {}
+    for r in rows:
+        m = _LEGEND_LINE_RE.match(r['text'])
+        if m:
+            legend[m.group(1)] = _role_from_title(m.group(2))
+
+    nat_idx = next((i for i, r in enumerate(rows) if re.search(r"nationality", r['text'], re.I)), None)
+    nationalities = {}
+    if nat_idx is not None:
+        for r in rows[nat_idx + 1: nat_idx + 15]:
+            if _ROSTER_STOP_RE.match(r['text']) and not _HONORIFIC_LEAD_RE.match(r['text']):
+                break
+            mm = re.match(r"^(.*?)\(([^)]+)\)\s*$", r['text'])
+            if mm and _HONORIFIC_LEAD_RE.match(r['text']):
+                nm = _clean_person_name(_MARKER_STRIP_RE.sub("", mm.group(1)))
+                _, nm = _split_honorific_and_name(nm)
+                nationalities[nm] = mm.group(2).strip()
+
+    people = []
+    for r in rows[head_idx + 1:]:
+        row_words = [w for w in r['words'] if left_x - 5 <= w['x0'] < right_x]
+        if not row_words:
+            continue
+        text = " ".join(w['text'] for w in row_words).strip()
+        if not text:
+            continue
+        if _ROSTER_STOP_RE.match(text) and not _HONORIFIC_LEAD_RE.match(text):
+            break                      # next section heading (a committee, etc.) ends the board list
+        if not _HONORIFIC_LEAD_RE.match(text):
+            continue
+        title_m = re.search(r"\(([^)]+)\)\s*$", text)
+        title = title_m.group(1).strip() if title_m else ''
+        name_part = text[:title_m.start()].strip() if title_m else text
+        mk = _MARKER_TAIL_RE.search(name_part)
+        marker = mk.group(1) if mk else ''
+        gender, name = _split_honorific_and_name(_MARKER_STRIP_RE.sub("", name_part))
+        if not _looks_like_person(name):
+            continue
+        if re.search(r"secretary", title, re.I) and not re.search(r"director", title, re.I):
+            continue                  # the company secretary is an officer, not a board member
+        role, independent = _role_from_title(title) if title else ('unknown', None)
+        if role == 'unknown' and marker in legend:
+            role, independent = legend[marker]
+        if role == 'unknown' and not marker and legend:
+            # this roster marks EVERY non-executive name with a footnote symbol (that's
+            # how the legend below it was found); a name with no symbol at all and a
+            # title this module doesn't recognise (e.g. "Finance Director") is still,
+            # by that same convention, one of the executive directors, not unstated
+            role, independent = 'executive', None
+        people.append({'director_name': name, 'position': (title[:80] or None), 'role': role,
+                       'independent': independent, 'gender': gender,
+                       'nationality': nationalities.get(name), 'appointed_date': None, 'age': None,
+                       'committees': None, 'page': page_no, 'order_index': len(people), 'source': 'roster_marker'})
+    # a plain (unmarked-as-independent) Non-Executive entry is "not independent" only
+    # when the SAME roster also has a marker the legend calls independent - i.e. the
+    # roster visibly distinguishes the two (same convention as extract_director_profile_cards)
+    labels_independence = any(d['independent'] for d in people)
+    for d in people:
+        if d['role'] == 'non_executive' and d['independent'] is None:
+            d['independent'] = False if labels_independence else None
+    return people
+
+
+def extract_director_marker_roster(pdf_bytes: bytes) -> list:
+    """[] unless the report has a "Corporate Information" style board roster: see
+    _parse_marker_roster_region's docstring block above."""
+    texts = _pypdf_page_texts_cached(pdf_bytes) or []
+    pages = []
+    for pn, t in texts:
+        lines = (t or '').splitlines()
+        if any(_ROSTER_HEADING_RE.match(l) for l in lines) and \
+                sum(1 for l in lines if _LEGEND_LINE_RE.match(l)) >= 1:
+            pages.append(pn)
+    if not pages:
+        return []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for pn in pages[:5]:
+            for region in _regions(pdf.pages[pn - 1]):
+                found = _parse_marker_roster_region(region, pn)
+                if len(found) >= 3:
+                    return found
+    return []
+
+
+# ---------------------------------------- 3c. bare "Statutory Information" name list
+# The barest board disclosure seen in practice: a "Statutory Information" / "Corporate
+# Information" front page with a standalone "DIRECTORS" heading followed by one name
+# per line, a title after some of them (2+ spaces over from the name, e.g. "Chairman",
+# "Managing Director") and nothing after most - no markers, no legend, no nationality,
+# no age. Everything this reader cannot read (independence, gender, nationality) is
+# left None rather than guessed, matching this module's rule throughout. Confirmed on
+# a real filing: Sameer Africa Plc's 2025 Annual Report, p.2 ("STATUTORY INFORMATION").
+_BARE_HEADING_RE = re.compile(r"^\s*DIRECTORS\s*$")
+_BARE_STOP_RE = re.compile(r"^[A-Z][A-Z .,&'\-]{2,40}$")
+# A sub-heading INSIDE the roster that groups directors by category, e.g. "Non-Executive
+# and Independent Directors" then, further down, "Non-Executive and Non-Independent
+# Directors" - as opposed to a genuine end-of-roster heading (SECRETARY, AUDITOR, ...),
+# which never contains the word "director". Confirmed on a real filing: BK Group Plc's
+# 2025 Annual Report, p.101, which uses exactly this two-group layout with no markers.
+_GROUP_LABEL_RE = re.compile(r"^(?:non[\s\-]*executive|executive|independent)\b.*\bdirectors?\s*$", re.I)
+# A title glued directly onto the name with no column gap at all (single-space text,
+# e.g. "Mr. Jean Philippe Prosper Chairman") - stripped off the end when it matches a
+# short closed vocabulary of board-role words, rather than guessed for anything else.
+_TRAILING_TITLE_RE = re.compile(
+    r"\s+((?:Group\s+)?(?:Vice\s+|Deputy\s+)?(?:Chairman|Chairperson|Chair)|"
+    r"(?:Group\s+)?(?:Managing\s+Director|Chief\s+Executive\s+Officer|CEO))\s*$", re.I)
+
+
+def extract_director_statutory_list(pdf_bytes: bytes) -> list:
+    """[] unless a page has a standalone "DIRECTORS" heading followed by >= 3 plain
+    name lines (see the module comment above); one dict per director (director_name,
+    position, role, page, order_index) - independent/gender/nationality/age/committees
+    are always None here since the source line states none of them, except role/
+    independent when a group sub-heading states it for the whole group that follows."""
+    texts = _pypdf_page_texts_cached(pdf_bytes) or []
+    out = []
+    for pn, t in texts:
+        lines = (t or '').splitlines()
+        head = next((i for i, l in enumerate(lines) if _BARE_HEADING_RE.match(l)), None)
+        if head is None:
+            continue
+        people = []
+        group_role, group_independent = 'unknown', None
+        for l in lines[head + 1:]:
+            s = l.strip()
+            if not s:
+                if people:
+                    break               # a blank line after we've started collecting ends the list
+                continue
+            # an all-caps line is always a heading (a real person's name is never printed
+            # in full caps in this format) - either a within-roster category sub-heading
+            # ("NON-EXECUTIVE...", handled the same whether or not it happens to include a
+            # lower-case "and"/"of") or the end of the roster (SECRETARY, AUDITOR, GROUP
+            # CHIEF EXECUTIVE OFFICER, ...); never treated as a person line either way.
+            if not re.search(r"[a-z]", s) and re.search(r"[A-Z]{2,}", s):
+                if _GROUP_LABEL_RE.search(s):
+                    group_role, group_independent = _role_from_title(s)
+                    continue
+                if people:
+                    break
+                continue
+            if _GROUP_LABEL_RE.match(s):
+                group_role, group_independent = _role_from_title(s)
+                continue
+            tail_m = _TRAILING_TITLE_RE.search(s)
+            name_part = s[:tail_m.start()] if tail_m else s
+            parts = re.split(r"\s{2,}", name_part.strip(), maxsplit=1)
+            name_raw, title = parts[0], (tail_m.group(1).strip() if tail_m else
+                                         (parts[1].strip() if len(parts) > 1 else ''))
+            gender, name = _split_honorific_and_name(name_raw)
+            if not _looks_like_person(name):
+                if people:
+                    break
+                continue
+            if re.search(r"secretary", title, re.I) and not re.search(r"director", title, re.I):
+                continue
+            role, independent = _role_from_title(title) if title else ('unknown', None)
+            if role == 'unknown':
+                role, independent = group_role, group_independent
+            people.append({'director_name': name, 'position': (title[:80] or None), 'role': role,
+                           'independent': independent, 'gender': gender, 'nationality': None,
+                           'appointed_date': None, 'age': None, 'committees': None, 'page': pn,
+                           'order_index': len(people), 'source': 'statutory_list'})
+        if len(people) >= 3:
+            out = people
+            break
+    return out
+
+
+# ------------------------------------ 3d. "Board attendance report" with a Category column
+# A simpler, single-table alternative to extract_board_attendance()'s multi-committee
+# layout: one row per director with a "Category" column stating their role in plain
+# words (Executive / Non-Executive / Independent Non-Executive) right next to their
+# attendance fractions ("4/4"), rather than a grid of per-committee meeting columns.
+# A director who resigned or was appointed mid-year often has their row split over 2-3
+# lines (name alone, then category+numbers, then a "(Resigned on ...)" note) - merged
+# back into one entry here. Confirmed on a real filing: Bamburi Cement Plc's 2025
+# Annual Report, p.49 ("The Board attendance report for the year under review...").
+def _parse_attendance_category_region(region, page_no):
+    words = region.extract_words(x_tolerance=1.5, y_tolerance=2, keep_blank_chars=False)
+    rows = _group_rows(words, tol=3.0)
+    head_idx = next((i for i, r in enumerate(rows)
+                     if re.search(r"\bcategory\b", r['text'], re.I) and re.search(r"\bdirector\b", r['text'], re.I)),
+                    None)
+    if head_idx is None:
+        return []
+    head_words = rows[head_idx]['words']
+    cat_w = next((w for w in head_words if w['text'].lower().startswith('categor')), None)
+    if cat_w is None:
+        return []
+    name_hi = cat_w['x0'] - 3
+    later = sorted((w for w in head_words if w['x0'] > cat_w['x0'] + 5), key=lambda w: w['x0'])
+    cat_hi = later[0]['x0'] - 3 if later else region.bbox[2]
+
+    people, pending = [], None
+    for r in rows[head_idx + 1:]:
+        low = r['text'].lower().lstrip()
+        if low.startswith(('note:', 'numbers in', 'all the directors')):
+            break
+        name_text = " ".join(w['text'] for w in r['words'] if w['x1'] <= name_hi).strip()
+        cat_text = " ".join(w['text'] for w in r['words'] if name_hi < w['x0'] <= cat_hi).strip()
+        role, independent = _role_from_title(cat_text) if cat_text else ('unknown', None)
+        has_role = bool(cat_text) and role != 'unknown'
+        gender, name = _split_honorific_and_name(name_text) if name_text else (None, '')
+        looks_person = bool(name_text) and _looks_like_person(name)
+        if looks_person and has_role:
+            people.append({'director_name': name, 'position': cat_text[:80], 'role': role,
+                           'independent': independent, 'gender': gender, 'nationality': None,
+                           'appointed_date': None, 'age': None, 'committees': None, 'page': page_no,
+                           'order_index': len(people), 'source': 'attendance_category'})
+            pending = None
+        elif looks_person and not cat_text:
+            pending = (name, gender)
+        elif pending is not None and has_role and not looks_person:
+            pname, pgender = pending
+            people.append({'director_name': pname, 'position': cat_text[:80], 'role': role,
+                           'independent': independent, 'gender': pgender, 'nationality': None,
+                           'appointed_date': None, 'age': None, 'committees': None, 'page': page_no,
+                           'order_index': len(people), 'source': 'attendance_category'})
+            pending = None
+        elif name_text or cat_text:
+            pending = None                                    # an unrecognised row (a note) breaks the pending merge
+    return people
+
+
+def extract_director_attendance_category(pdf_bytes: bytes) -> list:
+    """[] unless the report has a Board attendance table with an explicit per-director
+    "Category" column - see the module comment above."""
+    pages = _candidate_pages(pdf_bytes, required_any=['attend'], required_all=['category', 'director'])
+    if not pages:
+        return []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for pn in pages[:5]:
+            for region in _regions(pdf.pages[pn - 1]):
+                found = _parse_attendance_category_region(region, pn)
+                if len(found) >= 3:
+                    return found
+    return []
+
+
 # ------------------------------------------------------ 4. prose facts
 _NUM_WORDS = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
               'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
@@ -1050,10 +1513,17 @@ def _to_int(tok):
     return _NUM_WORDS.get(tok)
 
 
+_NUM_TOKEN = r"(?:\d+|" + "|".join(sorted(_NUM_WORDS, key=len, reverse=True)) + r")"
+
+
 def extract_prose_facts(pdf_bytes: bytes) -> dict:
     """Facts the report STATES IN A SENTENCE, read from the text of every page:
       board_meetings   "the Board held five Board meetings" / "met 4 times"
-      composition      "10 Non-Executive Directors and 1 Executive Director"
+      composition      "10 Non-Executive Directors and 1 Executive Director",
+                        or the three-way "X independent non-executive, Y non-
+                        independent non-executive and Z executive directors"
+                        phrasing, or "N Directors, M of whom are Non-Executive
+                        ... and K is an Executive Director"
       market_cap       "market capitalisation of KES 1.2 trillion" (millions)
     Each value comes with the page and the matched sentence fragment. Nothing
     is inferred: a sentence that does not say it is not a fact."""
@@ -1062,8 +1532,33 @@ def extract_prose_facts(pdf_bytes: bytes) -> dict:
     meet_re = re.compile(
         r"\b(?:board(?:\s+of\s+directors)?|directors)\s+(?:held|met|convened|had|conducted)\s+(?:a\s+total\s+of\s+)?"
         r"(\w+)\s*(?:\(\s*(\d+)\s*\)\s*)?(?:[a-z]+\s+){0,2}?(?:meetings|times)\b", re.I)
+    # Group counts must themselves be a number (digit or number-word) - a bare \w+ here
+    # previously matched onto "independent" in "Three (3) independent non-executive
+    # directors, ..." because that word sits directly in front of "non-executive
+    # directors" too, giving a false "independent and two executive directors" reading
+    # that _to_int() then silently discarded (confirmed on a real filing: BAMBA/BOC 2025).
     comp_re = re.compile(
-        r"\b(\w+)\s*(?:\(\s*\d+\s*\)\s*)?non[\s\-]*executive\s+directors?\s*(?:,\s*)?(?:and|&|,)\s*(\w+)\s*(?:\(\s*\d+\s*\)\s*)?executive\s+directors?\b", re.I)
+        r"\b(" + _NUM_TOKEN + r")\s*(?:\(\s*\d+\s*\)\s*)?non[\s\-]*executive\s+directors?\s*(?:,\s*)?"
+        r"(?:and|&|,)\s*(" + _NUM_TOKEN + r")\s*(?:\(\s*\d+\s*\)\s*)?executive\s+directors?\b", re.I)
+    # Three-way "X independent non-executive directors, Y non-independent non-executive
+    # directors and Z executive directors" (confirmed on a real filing: BAMBURI/BAMB 2025).
+    comp3_re = re.compile(
+        r"\b(" + _NUM_TOKEN + r")\s*(?:\(\s*\d+\s*\)\s*)?independent\s+non[\s\-]*executive\s+directors?\s*,\s*"
+        r"(" + _NUM_TOKEN + r")\s*(?:\(\s*\d+\s*\)\s*)?non[\s\-]*independent\s+non[\s\-]*executive\s+directors?\s+"
+        r"and\s+(" + _NUM_TOKEN + r")\s*(?:\(\s*\d+\s*\)\s*)?executive\s+directors?\b", re.I)
+    # "N Directors, M of whom are Non-Executive Directors and K is an Executive Director"
+    # (confirmed on a real filing: UCHUMI/UCHM 2025).
+    comp_of_whom_re = re.compile(
+        r"\b(" + _NUM_TOKEN + r")\s+directors?\s*,\s*(" + _NUM_TOKEN + r")\s+of\s+whom\s+(?:are|is)\s+"
+        r"non[\s\-]*executive\s+directors?\s+and\s+(" + _NUM_TOKEN + r")\s+(?:is|are)\s+(?:an?\s+)?"
+        r"executive\s+directors?\b", re.I)
+    # Executive-first phrasing: "comprised of 11 Directors, of whom one is an Executive Director (ED),
+    # and 10 are Non-Executive Directors (NEDs)" (confirmed on a real filing: SAFARICOM/SCOM 2026).
+    # Optional "(ED)"/"(NEDs)" abbreviations after each role are tolerated.
+    comp_of_whom_ed_first_re = re.compile(
+        r"\b(" + _NUM_TOKEN + r")\s+directors?\s*,?\s*of\s+whom\s+(" + _NUM_TOKEN + r")\s+(?:is|are)\s+(?:an?\s+)?"
+        r"executive\s+directors?\s*(?:\(\s*[A-Za-z]{2,5}\s*\))?\s*,?\s*and\s+(" + _NUM_TOKEN + r")\s+(?:is|are)\s+"
+        r"non[\s\-]*executive\s+directors?\b", re.I)
     cap_re = re.compile(
         r"market\s+capitali[sz]ation[^.]{0,60}?(?:KES|KSh|Ksh|Shs?\.?|Sh)\s?([\d][\d,.]*)\s*(trillion|billion|million|bn|tn|m)\b", re.I)
     for pn, t in texts:
@@ -1075,14 +1570,49 @@ def extract_prose_facts(pdf_bytes: bytes) -> dict:
                     facts['board_meetings'] = {'value': n, 'page': pn, 'text': m.group(0)[:90]}
                     break
         if 'composition' not in facts:
-            m = comp_re.search(flat)
-            if m:
-                ned, ex = _to_int(m.group(1)), _to_int(m.group(2))
-                # "two non-executive directors and three executive directors" is usually a SUBSIDIARY
-                # or committee description; a listed company's own board is stated as 5+ people
-                if ned and ex is not None and ned <= 25 and ex <= 10 and (ned + ex) >= 5 and \
-                        re.search(r"board", flat[max(0, m.start() - 160):m.start()], re.I):
-                    facts['composition'] = {'non_executive': ned, 'executive': ex, 'page': pn, 'text': m.group(0)[:100]}
+            m3 = comp3_re.search(flat)
+            if m3:
+                ind, non_ind, ex = _to_int(m3.group(1)), _to_int(m3.group(2)), _to_int(m3.group(3))
+                if ind is not None and non_ind is not None and ex is not None and (ind + non_ind) <= 25 and \
+                        ex <= 10 and (ind + non_ind + ex) >= 5:
+                    facts['composition'] = {'non_executive': ind + non_ind, 'executive': ex,
+                                            'independent': ind, 'non_independent': non_ind,
+                                            'page': pn, 'text': m3.group(0)[:150]}
+            if 'composition' not in facts:
+                mw = comp_of_whom_re.search(flat)
+                if mw:
+                    total, ned, ex = _to_int(mw.group(1)), _to_int(mw.group(2)), _to_int(mw.group(3))
+                    if total and ned is not None and ex is not None and ned + ex <= total and total <= 30:
+                        facts['composition'] = {'non_executive': ned, 'executive': ex, 'page': pn,
+                                                'text': mw.group(0)[:150]}
+            if 'composition' not in facts:
+                mx = comp_of_whom_ed_first_re.search(flat)
+                if mx:
+                    total, ex, ned = _to_int(mx.group(1)), _to_int(mx.group(2)), _to_int(mx.group(3))
+                    if total and ex is not None and ned is not None and ned + ex == total and total <= 30:
+                        facts['composition'] = {'non_executive': ned, 'executive': ex, 'page': pn,
+                                                'text': mx.group(0)[:150]}
+            if 'composition' not in facts:
+                m = comp_re.search(flat)
+                if m:
+                    ned, ex = _to_int(m.group(1)), _to_int(m.group(2))
+                    # "two non-executive directors and three executive directors" is usually a SUBSIDIARY
+                    # or committee description; a listed company's own board is stated as 5+ people
+                    if ned and ex is not None and ned <= 25 and ex <= 10 and (ned + ex) >= 5 and \
+                            re.search(r"board", flat[max(0, m.start() - 160):m.start()], re.I):
+                        facts['composition'] = {'non_executive': ned, 'executive': ex, 'page': pn, 'text': m.group(0)[:100]}
+        # "Three of the NEDs are designated as Independent Non-Executive Directors" - stated on the same
+        # page as the composition sentence (SAFARICOM 2026); completes the independent / non-independent split.
+        comp_f = facts.get('composition')
+        if comp_f and comp_f.get('page') == pn and 'independent' not in comp_f:
+            mi = re.search(r"\b(" + _NUM_TOKEN + r")\s+of\s+the\s+(?:neds?|non[\s\-]*executive\s+directors?)\s*(?:\(\s*neds?\s*\)\s*)?"
+                           r"(?:are|is)\s+(?:designated\s+as\s+|classified\s+as\s+|considered\s+)?independent\b", flat, re.I)
+            if mi:
+                ind = _to_int(mi.group(1))
+                if ind is not None and ind <= comp_f['non_executive']:
+                    comp_f['independent'] = ind
+                    comp_f['non_independent'] = comp_f['non_executive'] - ind
+                    comp_f['text'] = (comp_f['text'] + ' ... ' + mi.group(0))[:240]
         if 'market_cap' not in facts:
             m = None
             for cand in cap_re.finditer(flat):
@@ -1108,6 +1638,94 @@ def extract_prose_facts(pdf_bytes: bytes) -> dict:
     return facts
 
 
+# ------------------------------------------------- 2d. OCR last resort
+def _page_looks_scanned(page) -> bool:
+    """True when a pdfplumber page has essentially no extractable text
+    but does have image content - the signature of a page that's
+    really a picture of a page rather than born-digital text.
+    Confirmed on a real filing: every one of the 166 pages in KCB
+    Group Plc's 2023 annual report returns 0 characters from
+    pdfplumber.extract_text(), and every page carries image objects -
+    the whole document was scanned, not just a stray page or two."""
+    text = page.extract_text() or ""
+    return len(text.strip()) < 20 and len(page.images) > 0
+
+
+class _OCRRegion:
+    """Minimal stand-in for a pdfplumber Page/region, exposing just
+    the bit of the API _parse_label_cards_region and friends actually
+    use - .extract_words() and .bbox - backed by Tesseract OCR instead
+    of the page's own (missing) text layer.
+
+    Deliberately not a general-purpose replacement for a pdfplumber
+    page: it has no .chars, so anything relying on font-size-based
+    heading detection (document_chunk.py's chunk_pdf) gets nothing
+    useful from this - OCR output carries no font-size information at
+    all, only a glyph's pixel height, which is too weak a proxy to
+    reuse that logic safely. This class only serves board_extract.py's
+    own word-position-based card readers, which don't need font size.
+
+    OCR costs several seconds per page (see ocr_scan_for_board_pages),
+    so an instance is built only for a page a caller has already
+    decided is worth that cost - never automatically for every page."""
+
+    def __init__(self, page, resolution: int = 200):
+        self.bbox = (0, 0, page.width, page.height)
+        scale = 72.0 / resolution   # tesseract's pixel grid -> PDF points
+        image = page.to_image(resolution=resolution).original
+        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+        self._words = []
+        for i in range(len(data['text'])):
+            txt = (data['text'][i] or '').strip()
+            if not txt:
+                continue
+            x0 = data['left'][i] * scale
+            top = data['top'][i] * scale
+            self._words.append({
+                'text': txt,
+                'x0': x0, 'x1': x0 + data['width'][i] * scale,
+                'top': top, 'bottom': top + data['height'][i] * scale,
+            })
+
+    def extract_words(self, **_ignored_kwargs):
+        return self._words
+
+
+def ocr_scan_for_board_pages(pdf_bytes: bytes, max_pages: int = 40) -> list:
+    """Last-resort fallback for a fully scanned filing where every
+    other (fast, text-layer-based) reader in this module has already
+    come back with nothing: OCRs scanned pages one at a time looking
+    for a board register/profile section, stopping as soon as one is
+    found. Returns [] immediately, without OCRing anything, if the
+    document doesn't actually look scanned (_page_looks_scanned finds
+    no matching pages) - this function is a fallback for the specific
+    "whole document is a picture of pages" case, not a general retry.
+
+    Runtime cost is the reason this isn't just folded into the normal
+    reader list: OCR takes roughly 4-5 seconds PER PAGE (confirmed
+    timing it on a real filing), so scanning even a 150+ page report
+    page by page can take minutes. max_pages caps the worst case
+    (default 40 pages, a few minutes) rather than let a large scanned
+    document turn one request into an open-ended wait; in practice a
+    board/profile section usually surfaces well before that cap, but
+    a document where it doesn't will return [] rather than run
+    indefinitely.
+    """
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        scanned_pages = [i for i, p in enumerate(pdf.pages) if _page_looks_scanned(p)]
+        if not scanned_pages:
+            return []
+        for i in scanned_pages[:max_pages]:
+            region = _OCRRegion(pdf.pages[i])
+            words = region.extract_words()
+            text = " ".join(w['text'] for w in words)
+            if len(_LABEL_FIND_RE.findall(text)) >= 4:
+                people = _parse_label_cards_region(region, i + 1)
+                if len(people) >= 3:
+                    return people
+    return []
+
+
 def extract_board_bundle(pdf_bytes: bytes) -> dict:
     """Everything the board tabs can take from one report:
     {'register': [...rows...], 'register_kind': 'table'|'cards'|'prose'|None,
@@ -1117,16 +1735,28 @@ def extract_board_bundle(pdf_bytes: bytes) -> dict:
     if not register:
         # The card readers are cheap, and each layout is read by only one of them, but a partial
         # match by the wrong reader must not pre-empt the right one: keep the reader that found
-        # the MOST directors (ties go to the earlier, more explicit reader).
+        # the MOST directors (ties go to the earlier, more explicit reader). The marker-roster and
+        # statutory-list readers go last: both are progressively thinner front-matter formats (no
+        # photo, no bio, often no title at all) that only a report with no richer board section
+        # would fall through to.
         best = []
         for name, fn in (('cards', extract_director_label_cards), ('cards', extract_director_profile_cards),
-                         ('prose', extract_director_prose_cards)):
+                         ('prose', extract_director_prose_cards), ('table', extract_director_attendance_category),
+                         ('roster', extract_director_marker_roster), ('roster', extract_director_statutory_list)):
             rows = fn(pdf_bytes)
             if len(rows) > len(best):
                 best, kind = rows, name
         register = best
+    if not register:
+        # Every fast reader above needs SOME text layer to work with;
+        # a fully scanned filing has none, so only try this - expensive -
+        # OCR fallback once everything else has already failed.
+        ocr_people = ocr_scan_for_board_pages(pdf_bytes)
+        if ocr_people:
+            register, kind = ocr_people, 'cards'
+    attendance = extract_board_attendance(pdf_bytes) or extract_committee_grid(pdf_bytes)
     return {'register': register, 'register_kind': kind if register else None,
-            'attendance': extract_board_attendance(pdf_bytes), 'facts': extract_prose_facts(pdf_bytes)}
+            'attendance': attendance, 'facts': extract_prose_facts(pdf_bytes)}
 
 
 # ------------------------------------------------- 3. board composition
