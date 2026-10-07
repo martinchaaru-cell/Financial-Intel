@@ -14,6 +14,7 @@ FROM python:3.11-slim
 # System libs needed by pdfplumber/pymupdf (PDF parsing) and psycopg2
 # (Postgres driver) — mirrors the [nix] packages block in .replit.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
     libjpeg62-turbo \
     libopenjp2-7 \
     zlib1g \

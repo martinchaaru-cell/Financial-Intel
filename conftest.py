@@ -12,6 +12,8 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("SESSION_SECRET", "test-secret")
+# Rate limits would trip over the many requests a test run makes from one address; test_access_control.py turns them back on.
+os.environ.setdefault("RATELIMIT_ENABLED", "false")
 
 from app import app as flask_app, db as _db  # noqa: E402  (env vars must be set first)
 
@@ -37,3 +39,17 @@ def client(app):
 @pytest.fixture()
 def db(app):
     return _db
+
+
+@pytest.fixture()
+def signed_in(client, db):
+    """The test client, signed in as an ordinary Member. Guests may only read what the Dashboard
+    Overview needs (see access_control.py), so tests that read other data endpoints use this."""
+    from models import User
+    user = User(name="Test Member", email="member@test.example", role="user")
+    user.set_password("secret123")
+    db.session.add(user)
+    db.session.commit()
+    resp = client.post("/api/login", json={"email": "member@test.example", "password": "secret123"})
+    assert resp.status_code == 200
+    return client

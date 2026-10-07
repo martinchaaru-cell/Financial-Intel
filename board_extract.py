@@ -36,8 +36,13 @@ import io
 import re
 from collections import defaultdict
 
+import shutil
+
 import pdfplumber
-import pytesseract
+try:
+    import pytesseract
+except ImportError:          # OCR is a last-resort extra; the app must still run without it
+    pytesseract = None
 
 from pdf_parse import _pypdf_page_texts_cached
 
@@ -911,7 +916,12 @@ def _role_from_title(title: str):
     title does not say."""
     t = re.sub(r"[\u2013\u2014]", "-", (title or "")).lower()
     if 'alternate' in t:
-        return 'unknown', None              # "Alternate Director to CEO" is not the CEO
+        # "Alternate Director to CEO" is not the CEO - but "Chief Finance Officer and Alternate
+        # Director to the CEO" is an executive: judge only what precedes the alternate clause
+        head_t = t.split('alternate')[0]
+        if re.search(r"\bchief\b.*\bofficer\b", head_t):
+            return 'executive', None
+        return 'unknown', None
     independent = None
     if re.search(r"non[\s\-]*independent", t):
         independent = False
@@ -1000,38 +1010,54 @@ def _parse_label_cards_region(region, page_no):
         first = card['anchors'][0]
         card_left = min(a['x0'] for a in card['anchors'])
         # ---- header lines above the first label
-        above = [w for w in words if lo - 60 <= w['x0'] < hi and first['top'] - 80 < w['top'] < first['top'] - 1]
-        lines, prev_top = [], first['top']
-        for r in reversed(_group_rows(above)):
-            # split the row into runs of words (a wide gap = another card's text) and keep the
-            # run that overlaps this card's own x-range: names are set flush-left OR centred
-            # over the indented "Label:" lines
-            runs, cur_run = [], []
-            for w in r['words']:
-                if cur_run and w['x0'] - cur_run[-1]['x1'] > 22:
-                    runs.append(cur_run); cur_run = []
-                cur_run.append(w)
-            if cur_run:
-                runs.append(cur_run)
-            card_right = card_left + 210
-            best_run, best_ov = [], 0.0
-            for run in runs:
-                ov = min(run[-1]['x1'], card_right) - max(run[0]['x0'], card_left - 75)
-                if ov > best_ov:
-                    best_run, best_ov = run, ov
-            mine = best_run
-            txt = " ".join(w['text'] for w in mine).strip()
-            if (not mine or prev_top - r['top'] > 20 or len(txt.split()) > 9 or _HEADERISH_STOP_RE.search(txt)
-                    or ':' in txt or len(lines) >= 6):
-                break
-            lines.append(txt); prev_top = r['top']
-        lines.reverse()
+        def _header_lines(left_pad):
+            above = [w for w in words if lo - 60 <= w['x0'] < hi and w['x0'] >= card_left - left_pad
+                     and first['top'] - 80 < w['top'] < first['top'] - 1]
+            lines, prev_top = [], first['top']
+            for r in reversed(_group_rows(above)):
+                # split the row into runs of words (a wide gap = another card's text) and keep the
+                # run that overlaps this card's own x-range: names are set flush-left OR centred
+                # over the indented "Label:" lines
+                runs, cur_run = [], []
+                for w in r['words']:
+                    if cur_run and w['x0'] - cur_run[-1]['x1'] > 22:
+                        runs.append(cur_run); cur_run = []
+                    cur_run.append(w)
+                if cur_run:
+                    runs.append(cur_run)
+                card_right = card_left + 210
+                best_run, best_ov = [], 0.0
+                for run in runs:
+                    ov = min(run[-1]['x1'], card_right) - max(run[0]['x0'], card_left - 75)
+                    if ov > best_ov:
+                        best_run, best_ov = run, ov
+                mine = best_run
+                txt = " ".join(w['text'] for w in mine).strip()
+                if (not mine or prev_top - r['top'] > 20 or len(txt.split()) > 9 or _HEADERISH_STOP_RE.search(txt)
+                        or ':' in txt or len(lines) >= 6):
+                    break
+                lines.append(txt); prev_top = r['top']
+            lines.reverse()
+            return lines
+        # Flush-left header first: neighbouring cards' names/titles sit only ~15-20pt apart
+        # (Safaricom 2026: "Adil ..., MGH, MBS, SC" runs right up to "Dr. Peter Ndegwa"), so the
+        # wide left margin would swallow the previous card's overflow into this card's name.
+        # The wide margin stays as a fallback for centred layouts.
+        lines = _header_lines(8)
         first_title = next((i for i, l in enumerate(lines) if _TITLE_VOCAB_RE.search(l)), None)
         if first_title is None or first_title == 0:
+            lines_wide = _header_lines(75)
+            ft_wide = next((i for i, l in enumerate(lines_wide) if _TITLE_VOCAB_RE.search(l)), None)
+            if ft_wide not in (None, 0):
+                lines, first_title = lines_wide, ft_wide
+        section_title = None
+        if first_title is None or first_title == 0:
             # No name/title header above the labels (KCB prints them in a photo box): take the
-            # name from the biography sentence "<Name> is/was ..." under "Education and
-            # Professional Background:", and the title from the first designation phrase in it.
-            bio_rows = [r2 for r2 in rows if first['top'] < r2['top'] < first['top'] + 120]
+            # name from the biography sentence "<Name> is/was ...", and the title from the first
+            # designation phrase in it. Bio rows start BELOW the last label row (else the
+            # "Appointed: <date>" value is glued to the front of the bio and the name never matches).
+            last_anchor_top = max(a['top'] for a in card['anchors'])
+            bio_rows = [r2 for r2 in rows if last_anchor_top + 3 < r2['top'] < last_anchor_top + 120]
             bio = []
             for r2 in bio_rows:
                 run = [w for w in r2['words'] if card_left - 6 <= w['x0'] < min(hi, card_left + 320)]
@@ -1045,6 +1071,19 @@ def _parse_label_cards_region(region, page_no):
             gender, name = _split_honorific_and_name(mname.group(1))
             mt = re.search(r"((?:Independent\s+)?Non[\s\-]*Executive\s+Director|(?:Group\s+)?(?:Chief Executive Officer|Managing Director)|Executive Director|Chairman)", bio_text)
             title = mt.group(1) if mt else ""
+            head = [r2 for r2 in rows if r2['top'] < first['top'] and re.fullmatch(
+                r"(?:INDEPENDENT\s+)?(?:NON[\s\-]*)?EXECUTIVE\s+DIRECTORS?",
+                " ".join(w['text'] for w in r2['words']).strip(), re.I)]
+            if head:
+                # the page's own section heading ("NON-EXECUTIVE DIRECTORS") is the designation the
+                # filing itself gives the whole group; a biography's "Chief Executive Officer of
+                # Vodacom" describes another company, so it must not decide this one's board role
+                section_title = " ".join(w['text'] for w in head[-1]['words']).title().rstrip('s')
+            if first_title == 0:
+                # the header above the labels is a title with no name line (name only in the bio)
+                title = " ".join(lines)
+            elif section_title:
+                title = section_title
             name_line_age = _age_from_parenthetical(mname.group(1))
         else:
             gender, name = _split_honorific_and_name(" ".join(lines[:first_title]))
@@ -1060,14 +1099,14 @@ def _parse_label_cards_region(region, page_no):
             row = rows[a['ri']]
             nxt_x = min([b['x0'] for b in anchors if b['ri'] == a['ri'] and b['x0'] > a['x0'] + 5] or [hi])
             lw = a['label_word']
-            same = [w for w in row['words'] if w['x0'] > lw['x1'] - 1 and w['x0'] < nxt_x - 3
+            same = [w for w in row['words'] if w['x0'] > lw['x1'] - 1 and w['x0'] < min(nxt_x - 3, hi)
                     and not (w['x0'] < lw['x1'] and w is lw)]
             # the label may span several words ("Appointed to Board:") - drop words up to the colon
             same_txt = " ".join(w['text'] for w in same)
             same_txt = re.sub(r"^.*?:\s*", "", same_txt) if ':' in same_txt else same_txt
             if not same_txt.strip() and a['ri'] + 1 < len(rows):
                 nxt_row = rows[a['ri'] + 1]
-                cand = [w for w in nxt_row['words'] if abs(w['x0'] - a['x0']) < 60 and w['x0'] < nxt_x - 3]
+                cand = [w for w in nxt_row['words'] if abs(w['x0'] - a['x0']) < 60 and w['x0'] < min(nxt_x - 3, hi)]
                 same_txt = " ".join(w['text'] for w in cand)
             vals[a['kind']] = same_txt.strip()
         age = None
@@ -1094,6 +1133,9 @@ def _parse_label_cards_region(region, page_no):
             committees = [c.strip() for c in re.split(r"[;,]|\s{2,}", joined)
                           if len(re.findall(r"[A-Za-z]", c)) >= 4 and not re.search(r"annual report|integrated report|\bplc\b", c, re.I)] or None
         role, independent = _role_from_title(title)
+        if role == 'unknown' and section_title:
+            _r2, _i2 = _role_from_title(section_title)
+            role, independent = _r2, (independent if independent is not None else _i2)
         people.append({'top': first['top'], 'x': card['cx'], 'director_name': name, 'position': title[:80],
                        'role': role, 'independent': independent, 'gender': gender,
                        'nationality': _date_text(vals.get('nationality')),
@@ -1711,9 +1753,17 @@ def ocr_scan_for_board_pages(pdf_bytes: bytes, max_pages: int = 40) -> list:
     a document where it doesn't will return [] rather than run
     indefinitely.
     """
+    # No OCR engine installed (pytesseract missing, or the tesseract BINARY missing from PATH,
+    # which is what a fresh Replit/Docker image looks like): skip quietly. Previously this raised
+    # TesseractNotFoundError, which aborted the ENTIRE board step for every filing that reached
+    # this fallback - including born-digital ones like Safaricom's.
+    if pytesseract is None or shutil.which('tesseract') is None:
+        return []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         scanned_pages = [i for i, p in enumerate(pdf.pages) if _page_looks_scanned(p)]
-        if not scanned_pages:
+        # Only a genuinely scanned filing is worth minutes of OCR. A born-digital report that
+        # merely has a few full-page photos must not trigger it.
+        if not scanned_pages or len(scanned_pages) < 0.5 * len(pdf.pages):
             return []
         for i in scanned_pages[:max_pages]:
             region = _OCRRegion(pdf.pages[i])

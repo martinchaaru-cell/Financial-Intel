@@ -629,6 +629,28 @@ def _amount(num: str, scale: str | None):
     return v * {'million': 1e6, 'm': 1e6, 'thousand': 1e3, 'k': 1e3}.get((scale or '').lower(), 1.0)
 
 
+_BULLET_LINE_RE = re.compile(r"^\s*[\u043e\u2022\u25cf\u25aa\u25e6\u00b7\uf0b7]\s+(?=\S)|^\s*o\s+(?=[A-Z])")
+
+
+def _bullets_to_sentences(text: str) -> str:
+    """Each bulleted line becomes its own sentence. Annual reports set fee schedules as bullets
+    ("о Annual Directors' fees paid to the Chairman ... KShs 13,622,000 per annum"; the bullet is
+    often a Cyrillic 'о' in the PDF's font) with no full stop, so _sentences() would fuse the whole
+    list into one sentence carrying several amounts, which _has_*_amount rightly refuses."""
+    out = []
+    lines = (text or '').split('\n')
+    for idx, ln in enumerate(lines):
+        if ln.rstrip().endswith(':') and idx + 1 < len(lines) and _BULLET_LINE_RE.match(lines[idx + 1]):
+            ln = ln.rstrip() + ' .'       # the lead-in sentence ends here, before the first bullet
+        if _BULLET_LINE_RE.match(ln):
+            ln = _BULLET_LINE_RE.sub('', ln).rstrip()
+            if ln and ln[-1] not in '.;!?':
+                ln += '.'
+        out.append(ln)
+    return '\n'.join(out)
+
+
+
 def _extract_ned_policy_sentences(pdf_bytes: bytes) -> dict:
     """{field: {'value': float (Shs, whole units), 'page', 'text'}} for the NED/executive-director/
     committee pay policy the report STATES, one sentence or bullet at a time (via _sentences(),
@@ -642,12 +664,15 @@ def _extract_ned_policy_sentences(pdf_bytes: bytes) -> dict:
     for pn, text in _pypdf_page_texts_cached(pdf_bytes) or []:
         if not re.search(r"non[\s\-]*executive", text or '', re.I):
             continue
-        for sentence in _sentences(text):
+        for sentence in _sentences(_bullets_to_sentences(text)):
             for field, anchor, kind in _POLICY_FIELD_ANCHORS:
                 if field in out:
                     continue
                 if not re.search(anchor, sentence, re.I):
                     continue
+                if field.startswith('chairperson_') and re.search(_A_COMM_CHAIR, sentence, re.I) \
+                        and not re.search(r"chair(?:man|person|lady)?\s+of\s+the\s+board|board\s+chair", sentence, re.I):
+                    continue      # "Chair of a Committee" is the committee chair's rate, not the Board Chairman's
                 v = _has_meeting_amount(sentence) if kind == 'meeting' else _has_retainer_amount(sentence)
                 if v and v >= 100:
                     out[field] = {'value': v, 'page': pn, 'text': sentence[:160]}
@@ -897,9 +922,79 @@ def extract_executive_pay_blocks(pdf_bytes: bytes) -> list:
     return blocks
 
 
+_SF_NUM = r"(?:\d[\d,]*(?:\.\d+)?|[\u2013\u2014\-])"
+_SF_COLS = [('salary', r"salary|basic"), ('fees', r"fees"), ('incentive_bonus', r"bonus"),
+            ('non_cash_benefits', r"benefits|non[\s\-]*cash"), ('share_value', r"epsap|share|award"),
+            ('cost_of_employment', r"totals?")]
+
+
+def _extract_ceo_pay_single_figure(pdf_bytes: bytes) -> dict | None:
+    """CEO pay from a 'single figure' table with one ROW per director and the pay elements as COLUMNS
+    (Safaricom: "Name | Salary | Directors' fees | Bonus | Non-cash benefits | EPSAP | Totals", KShs'Mn;
+    "Dr. Peter Ndegwa (CBS)  105.4  -  118.5  31.4  69.2  324.5"). The row carries no title, so the
+    person is accepted as the CEO only when the same report prints the name next to a CEO / Managing
+    Director title. A dash is 'nil' and is left out, never stored as a number."""
+    pages = _pypdf_page_texts_cached(pdf_bytes) or []
+    full = "\n".join(t or '' for _, t in pages)
+    for pn, text in pages:
+        lines = (text or '').split('\n')
+        for i, ln in enumerate(lines):
+            if not re.search(r"\bsalary\b", ln, re.I):
+                continue
+            # The header may be one line ("Salary fees Bonus ... Totals") or one word per line (pypdf on a
+            # rotated/table header): gather header text up to the first line of numbers.
+            j = i
+            while j < min(i + 30, len(lines)) and len(re.findall(_SF_NUM + r"(?=\s|$)", lines[j])) < 3:
+                j += 1
+            header_text = " ".join(lines[i:j])
+            if not re.search(r"\btotals?\b", header_text, re.I):
+                continue
+            cols = []
+            for w in re.findall(r"[A-Za-z][A-Za-z\-]*", header_text):
+                for key, rx in _SF_COLS:
+                    if re.fullmatch(rx, w, re.I) and key not in cols:
+                        cols.append(key)
+                        break
+            if len(cols) < 4 or cols[0] != 'salary' or cols[-1] != 'cost_of_employment':
+                continue
+            ln = header_text
+            i = j - 1
+            head_block = header_text
+            unit = ('thousands' if re.search(r"(?:shs?|kshs?|kes)\.?\s*['\u2018\u2019]?\s*000", head_block, re.I) else
+                    'millions' if re.search(r"(?:shs?|kshs?|kes)\.?\s*['\u2018\u2019]?\s*(?:m\b|mn\b|million)", head_block, re.I) else 'units')
+            row_re = re.compile(r"^(?P<name>[A-Za-z][^\d\u2013\u2014]*?)\s+(?P<nums>(?:" + _SF_NUM + r"(?:\s+|$)){%d})$" % len(cols))
+            for row in lines[i + 1: i + 8]:
+                m = row_re.match(row.strip())
+                if not m:
+                    if re.match(r"\s*(?:total|non[\s\-]*executive)", row, re.I):
+                        break
+                    continue
+                name = m.group('name').strip()
+                if re.match(r"total|grand", name, re.I):
+                    break
+                core = re.sub(r"^(?:(?:Dr|Prof|Mr|Mrs|Ms|Hon|Eng|Amb|CPA)\.?\s+)+", "", re.sub(r"\s*\([^)]*\)", "", name)).strip()
+                if not core or not re.search(re.escape(core) + r".{0,80}?(?:chief\s+executive|\bceo\b|managing\s+director)", full, re.I | re.S):
+                    break            # the first row is not shown to be the CEO: do not guess which row is
+                vals = re.findall(_SF_NUM + r"(?=\s|$)", m.group('nums'))
+                comps = {}
+                for key, tok in zip(cols, vals):
+                    if key == 'fees' or not re.match(r"\d", tok):
+                        continue
+                    comps[key] = float(tok.replace(',', ''))
+                if not comps:
+                    break
+                return {'name': core, 'title': 'Chief Executive Officer', 'unit': unit, 'components': comps,
+                        'page': pn, 'text': row.strip()[:120]}
+    return None
+
+
 def extract_ceo_pay(pdf_bytes: bytes) -> dict | None:
-    """The CEO's / Managing Director's block (first executive block whose title says so)."""
+    """The CEO's / Managing Director's block (first executive block whose title says so), else the CEO's
+    row of a one-row-per-director single-figure table."""
     for b in extract_executive_pay_blocks(pdf_bytes):
         if _CEO_TITLE_RE.search(b['title']):
             return b
-    return None
+    try:
+        return _extract_ceo_pay_single_figure(pdf_bytes)
+    except Exception:
+        return None

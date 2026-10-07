@@ -22,13 +22,19 @@ from models import (
 )
 import ai_extract
 import review_api
+import extraction_report
+import approvals
+from approvals import queue_unless_super
 import tab_modules
 from models_ai import AIExtractionJob, AIExtractionItem, UploadDraft, ExtractionIssue
-from models_survey import SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, ActivityLogEntry
+import activity_log
+import access_control
+from models_survey import is_full_year, SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, ActivityLogEntry
 from survey_data_parse import is_survey_data_format, parse_survey_data
 from intelligence_extractor import extract_survey_schema, extract_policy_disclosures
 from survey_aggregate import build_survey_overview, build_company_rows, build_historical_trends, build_portfolio_data_quality
 from survey_report_pdf import build_survey_pdf
+from narrative_reports import build_combined_report, build_company_report
 from ratios import calculate_ratios
 from company_directory import match_company
 from pdf_parse import (
@@ -82,7 +88,15 @@ app.json.sort_keys = False
 
 # Fix for hosts (e.g. Replit's provisioned Postgres) that hand back a
 # "postgres://" URL — SQLAlchemy 1.4+ requires "postgresql://".
-database_url = os.environ.get('DATABASE_URL', 'sqlite:///test.db')
+import account_security
+database_url = os.environ.get('DATABASE_URL')
+if not database_url:
+    if account_security.is_production():
+        # A deployed copy must never silently fall back to a throw-away SQLite file: it is wiped on
+        # redeploy, which is exactly how uploaded survey data used to vanish.
+        raise RuntimeError('DATABASE_URL is not set. Add the Postgres connection string to the '
+                           'deployment secrets before starting the app.')
+    database_url = 'sqlite:///test.db'      # local development / tests only
 if database_url.startswith('postgres://'):
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
 
@@ -94,6 +108,19 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # invalidated on restart if this falls back to the dev default, since a
 # new random-looking-but-fixed string only holds within one process.
 app.config['SECRET_KEY'] = os.environ.get('SESSION_SECRET', 'dev-only-change-me')
+if account_security.is_production() and app.config['SECRET_KEY'] == 'dev-only-change-me':
+    raise RuntimeError('SESSION_SECRET is not set. Add a long random value to the deployment secrets.')
+
+# HTTPS redirect, security headers, Secure login cookie, robots.txt and sitemap.xml (see web_hardening.py).
+import web_hardening
+web_hardening.init(app)
+
+# Account lockout, optional two-step verification (TOTP), cross-site request check (see account_security.py).
+account_security.init(app)
+
+# Public, search-engine-visible company pages: /companies and /company/<slug> (see public_pages.py).
+import public_pages
+public_pages.init(app)
 
 # Hosted Postgres (Replit's provisioned DB is Neon-backed) silently drops
 # idle connections after a short window. Without this, SQLAlchemy's pool
@@ -179,13 +206,34 @@ def require_role(*roles):
         return wrapper
     return decorator
 
+def is_current_super_admin():
+    """True only for an admin account flagged is_super_admin."""
+    u = current_user()
+    return bool(u and u.role == 'admin' and getattr(u, 'is_super_admin', False))
+
+def require_super_admin(fn):
+    """Server-side gate for account management (create / change role / reset
+    password / delete / list accounts). A regular admin is NOT enough."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not is_current_super_admin():
+            return jsonify({'error': 'Only a super admin can manage user accounts.'}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+def self_registration_open():
+    """Public sign-up (Member accounts only) is ON by default. Set
+    ALLOW_SELF_REGISTRATION=false in the environment to close it so that
+    only a super admin can create accounts."""
+    return os.environ.get('ALLOW_SELF_REGISTRATION', 'true').strip().lower() not in ('0', 'false', 'no', 'off')
+
 @app.route('/api/register', methods=['POST'])
 def register():
-    """Public self-registration. Always creates a 'user' role account -
-    self-registering as admin is never allowed; new admins can only be
-    created by an existing admin from the User Management panel. The
-    name given here is what shows in the topbar everywhere in the app -
-    replaces the old hardcoded name."""
+    """Public self-registration. Always creates a 'user' (Member) role account
+    and requires name, email, password, organization and job title; only a
+    super admin can create admins. Can be closed with ALLOW_SELF_REGISTRATION=false."""
+    if not self_registration_open():
+        return jsonify({'error': 'Sign-up is closed. Ask a super admin to create an account for you.'}), 403
     data = request.get_json(force=True) or {}
     name = (data.get('name') or '').strip()
     email = (data.get('email') or '').strip().lower()
@@ -213,8 +261,11 @@ def login():
     email = (data.get('email') or '').strip().lower()
     password = data.get('password') or ''
     user = User.query.filter_by(email=email).first()
-    if not user or not user.check_password(password):
-        return jsonify({'error': 'Incorrect email or password.'}), 401
+    status, payload = account_security.attempt_login(user, password, data.get('code'), db)
+    if status != 200:
+        return jsonify(payload), status
+    session.clear()                 # fresh session once authenticated
+    session.permanent = True        # expires after SESSION_HOURS (default 12)
     session['user_id'] = user.id
     return jsonify(user.to_dict())
 
@@ -231,9 +282,11 @@ def me():
     expected state, not an error."""
     u = current_user()
     if not u:
-        return jsonify({'logged_in': False, 'role': 'guest', 'name': None, 'email': None})
+        return jsonify({'logged_in': False, 'role': 'guest', 'name': None, 'email': None,
+                        'self_registration': self_registration_open()})
     d = u.to_dict()
     d['logged_in'] = True
+    d['self_registration'] = self_registration_open()
     return jsonify(d)
 
 @app.route('/api/profile', methods=['GET'])
@@ -262,6 +315,8 @@ def update_profile():
     phone = (data.get('phone') or '').strip()
     if not name or not organization or not job_title:
         return jsonify({'error': 'Name, organization, and job title are all required.'}), 400
+    if name.lower() in ('admin', 'administrator'):
+        return jsonify({'error': 'Please enter your own full name.'}), 400
     u.name = name
     u.organization = organization
     u.job_title = job_title
@@ -270,41 +325,44 @@ def update_profile():
     return jsonify(u.to_dict())
 
 
-# ---------- API: USER MANAGEMENT (admin only) ----------
+# ---------- API: USER MANAGEMENT (super admin only) ----------
 # Lets an admin promote/demote roles, create new accounts of any role
 # (including new admins), and reset a locked-out user's password by hand
 # - there's no email-based password-reset flow in this app.
 
 @app.route('/api/users', methods=['GET'])
-@require_role('admin')
+@require_super_admin
 def list_users():
     users = User.query.order_by(User.created_at.asc()).all()
     return jsonify([u.to_dict() for u in users])
 
 @app.route('/api/users', methods=['POST'])
-@require_role('admin')
+@require_super_admin
 def create_user():
     data = request.get_json(force=True) or {}
     name = (data.get('name') or '').strip()
     email = (data.get('email') or '').strip().lower()
     password = data.get('password') or ''
     role = data.get('role') or 'user'
+    organization = (data.get('organization') or '').strip()
+    job_title = (data.get('job_title') or '').strip()
     if role not in ('admin', 'user'):
         return jsonify({'error': "Role must be 'admin' or 'user'."}), 400
-    if not name or not email or not password:
-        return jsonify({'error': 'Name, email, and password are all required.'}), 400
+    if not name or not email or not password or not organization or not job_title:
+        return jsonify({'error': 'Name, email, password, organization and job title are all required.'}), 400
     if len(password) < 6:
         return jsonify({'error': 'Password must be at least 6 characters.'}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({'error': 'An account with that email already exists.'}), 409
-    user = User(name=name, email=email, role=role)
+    user = User(name=name, email=email, role=role,
+                organization=organization or None, job_title=job_title or None)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
     return jsonify(user.to_dict()), 201
 
 @app.route('/api/users/<int:user_id>/role', methods=['PATCH'])
-@require_role('admin')
+@require_super_admin
 def update_user_role(user_id):
     user = User.query.get_or_404(user_id)
     data = request.get_json(force=True) or {}
@@ -317,12 +375,16 @@ def update_user_role(user_id):
         remaining_admins = User.query.filter(User.role == 'admin', User.id != user.id).count()
         if remaining_admins == 0:
             return jsonify({'error': 'At least one admin account must remain.'}), 400
+        if user.is_super_admin:
+            other_supers = User.query.filter(User.is_super_admin == True, User.role == 'admin', User.id != user.id).count()  # noqa: E712
+            if other_supers == 0:
+                return jsonify({'error': 'At least one super admin must remain.'}), 400
     user.role = role
     db.session.commit()
     return jsonify(user.to_dict())
 
 @app.route('/api/users/<int:user_id>/reset-password', methods=['POST'])
-@require_role('admin')
+@require_super_admin
 def reset_user_password(user_id):
     user = User.query.get_or_404(user_id)
     data = request.get_json(force=True) or {}
@@ -331,10 +393,11 @@ def reset_user_password(user_id):
         return jsonify({'error': 'Password must be at least 6 characters.'}), 400
     user.set_password(password)
     db.session.commit()
+    account_security.unlock(user, db)       # a password reset also clears any lockout
     return jsonify({'ok': True})
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
-@require_role('admin')
+@require_super_admin
 def delete_user(user_id):
     user = User.query.get_or_404(user_id)
     if user.id == session.get('user_id'):
@@ -343,6 +406,8 @@ def delete_user(user_id):
         remaining_admins = User.query.filter(User.role == 'admin', User.id != user.id).count()
         if remaining_admins == 0:
             return jsonify({'error': 'At least one admin account must remain.'}), 400
+    if user.is_super_admin and User.query.filter_by(is_super_admin=True).count() <= 1:
+        return jsonify({'error': 'At least one super admin must remain - make another admin a super admin first.'}), 400
     db.session.delete(user)
     db.session.commit()
     return jsonify({'ok': True})
@@ -529,25 +594,15 @@ def _ordered_periods(company_id):
     )
 
 def log_activity(company_id, action, detail=None, fiscal_year=None, actor=None):
-    """Write one ActivityLogEntry row - called from the survey write
-    paths that actually mutate data (see each call site). Deliberately
-    swallows its own errors rather than ever failing the caller's real
-    write: logging an activity is a courtesy for the Admin Dashboard's
-    Recent Activities panel, not something that should turn a
-    successful survey upload or field review into a 500 if, say, the
-    activity_log_entries table hasn't been migrated in yet on some
-    older deployment. db.session.commit() here is separate from the
-    caller's own commit (already done by the time this runs at every
-    call site), so a failure here can never roll back real data that
-    was already saved."""
-    try:
-        db.session.add(ActivityLogEntry(
-            company_id=company_id, fiscal_year=fiscal_year,
-            action=action, detail=detail, actor=actor,
-        ))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
+    """Write one ActivityLogEntry row, tagged to the signed-in account (user id, name, email,
+    role) with a UTC timestamp and a category - see activity_log.py. Called from the write
+    paths that mutate data (see each call site). Deliberately swallows its own errors rather
+    than ever failing the caller's real write: the entry is written after the caller's own
+    commit, so a failure here can never roll back real data. `actor` is optional free text
+    (e.g. a 'reviewed by' name typed into a form); the entry is always tagged to the real
+    signed-in account regardless."""
+    activity_log.write_entry(db, ActivityLogEntry, current_user, company_id, action,
+                             detail=detail, fiscal_year=fiscal_year, actor=actor)
 
 def latest_period_view(company_id):
     periods = _ordered_periods(company_id)
@@ -576,9 +631,26 @@ def bulk_financials_by_company(company_ids=None):
 
 # ---------- PAGE ----------
 
+@app.after_request
+def _mark_finance_intel(resp):
+    # Lets the service worker tell this app's pages from a host's "app is not running" page.
+    resp.headers['X-Finance-Intel'] = '1'
+    return resp
+
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', site_url=web_hardening.site_url())
+
+@app.route('/sw.js')
+def service_worker():
+    # Served from the root so its scope covers the whole app, not just /static/.
+    resp = Response(
+        open(os.path.join(app.root_path, 'static', 'sw.js'), encoding='utf-8').read(),
+        mimetype='application/javascript',
+    )
+    resp.headers['Service-Worker-Allowed'] = '/'
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
 
 # ---------- API: OVERVIEW ----------
 
@@ -1228,7 +1300,12 @@ def _purge_company_rows(company_id):
     GovernancePolicy.query.filter_by(company_id=company_id).delete(synchronize_session=False)
     EvidenceConflict.query.filter_by(company_id=company_id).delete(synchronize_session=False)
     SurveyCompanyData.query.filter_by(company_id=company_id).delete(synchronize_session=False)
-    ActivityLogEntry.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    # The activity log is a permanent record of who did what, so deleting a company must NOT
+    # delete its history. The rows are detached from the company (the foreign key would
+    # otherwise block the delete) and the company's name is kept in the detail text.
+    for _log_row in ActivityLogEntry.query.filter_by(company_id=company_id).all():
+        _log_row.detail = (f"[{c.name}] " + (_log_row.detail or ''))[:300].rstrip()
+        _log_row.company_id = None
 
     # Rows that point at this company without a database-level foreign key
     # on the survey/AI side. AIExtractionItem HAS a real FK to company.id and
@@ -1238,6 +1315,8 @@ def _purge_company_rows(company_id):
     # Review page after their company is gone.
     AIExtractionItem.query.filter_by(company_id=company_id).delete(synchronize_session=False)
     ExtractionIssue.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    extraction_report.ExtractionTrace.query.filter_by(company_id=company_id).delete(synchronize_session=False)
+    extraction_report.ExtractionPages.query.filter_by(company_id=company_id).delete(synchronize_session=False)
     UploadDraft.query.filter_by(forced_company_id=company_id).delete(synchronize_session=False)
     if _doc_ids_for_purge:
         UploadDraft.query.filter(UploadDraft.source_document_id.in_(_doc_ids_for_purge)).delete(synchronize_session=False)
@@ -1251,10 +1330,12 @@ def delete_company(company_id):
     """Deletes a company and everything that hangs off it (see
     _purge_company_rows for the full list and why each table needs
     explicit cleanup)."""
-    Company.query.get_or_404(company_id)
+    _co = Company.query.get_or_404(company_id)
+    _co_name = _co.name
     try:
         _purge_company_rows(company_id)
         db.session.commit()
+        log_activity(None, 'company_deleted', detail=f'Deleted company {_co_name} (id {company_id})')
         return jsonify({'deleted': company_id}), 200
     except Exception as e:
         db.session.rollback()
@@ -1284,8 +1365,10 @@ def bulk_delete_companies():
     deleted, failed = [], []
     for cid in ids:
         try:
+            _co_name = (db.session.query(Company.name).filter_by(id=cid).scalar())
             if _purge_company_rows(cid):
                 db.session.commit()
+                log_activity(None, 'company_deleted', detail=f'Deleted company {_co_name or "?"} (id {cid})')
                 deleted.append(cid)
             else:
                 failed.append({'id': cid, 'error': 'Company not found.'})
@@ -1294,6 +1377,177 @@ def bulk_delete_companies():
             app.logger.exception('Failed to delete company %s (bulk)', cid)
             failed.append({'id': cid, 'error': str(e)})
     return jsonify({'deleted': deleted, 'failed': failed}), (200 if deleted or not failed else 500)
+
+
+def _fy_digits(fiscal_year):
+    d = ''.join(ch for ch in str(fiscal_year or '') if ch.isdigit())
+    return int(d) if len(d) == 4 else None
+
+
+def _year_period_ids(company_id, fiscal_year):
+    """FinancialPeriod ids of this company that are the given full financial year (matched by label or by year number)."""
+    digits = _fy_digits(fiscal_year)
+    out = []
+    for p in FinancialPeriod.query.filter_by(company_id=company_id).all():
+        if p.period_label == fiscal_year or (digits is not None and p.fiscal_year == digits and (p.period_type or 'FY') == 'FY'):
+            out.append(p.id)
+    return out
+
+
+def _company_year_has_data(company_id, fiscal_year):
+    if SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first():
+        return True
+    if _year_period_ids(company_id, fiscal_year):
+        return True
+    return SourceDocument.query.filter_by(company_id=company_id, period_label=fiscal_year).first() is not None
+
+
+def _purge_company_year(company_id, fiscal_year):
+    """Deletes ONE financial year of one company - survey rows, directors, benefits, policies, financial statements,
+    pay rows, committees, import records, the stored report text and the report files for that year - and keeps the
+    company and every other year.  WITHOUT committing (same contract as _purge_company_rows).  Returns counts."""
+    counts = {}
+
+    def n(label, q):
+        counts[label] = counts.get(label, 0) + (q.delete(synchronize_session=False) or 0)
+
+    # survey side (all keyed company_id + fiscal_year string)
+    n('directors', SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('benefits', SurveyDirectorBenefit.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('benefit_categories', SurveyBenefitCategory.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('policies', RemunerationPolicy.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('policies', GovernancePolicy.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('conflicts', EvidenceConflict.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('survey_rows', SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('ai_items', AIExtractionItem.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('issues', ExtractionIssue.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('traces', extraction_report.ExtractionTrace.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+    n('stored_text', extraction_report.ExtractionPages.query.filter_by(company_id=company_id, fiscal_year=fiscal_year))
+
+    # financial-statement side
+    period_ids = _year_period_ids(company_id, fiscal_year)
+    doc_ids = {d.id for d in SourceDocument.query.filter_by(company_id=company_id, period_label=fiscal_year)}
+    if period_ids:
+        statements = FinancialStatement.query.filter(FinancialStatement.period_id.in_(period_ids)).all()
+        doc_ids.update(st.source_document_id for st in statements if st.source_document_id)
+        statement_ids = [st.id for st in statements]
+        if statement_ids:
+            n('line_items', FinancialLineItem.query.filter(FinancialLineItem.statement_id.in_(statement_ids)))
+            n('statements', FinancialStatement.query.filter(FinancialStatement.id.in_(statement_ids)))
+        for model in (CalculatedMetric, FinancialSegment, OperationalMetric, FinancialNote, DirectorRemunerationRow,
+                      MarketDataSnapshot, PrincipalRisk, ManagementGuidance):
+            n('financial_rows', model.query.filter(model.period_id.in_(period_ids)))
+        committee_ids = [c.id for c in Committee.query.filter(Committee.period_id.in_(period_ids))]
+        if committee_ids:
+            n('committees', CommitteeMember.query.filter(CommitteeMember.committee_id.in_(committee_ids)))
+        n('committees', Committee.query.filter(Committee.period_id.in_(period_ids)))
+        n('periods', FinancialPeriod.query.filter(FinancialPeriod.id.in_(period_ids)))
+    n('financials', Financials.query.filter_by(company_id=company_id, period=fiscal_year))
+
+    # report files of that year; a file something else still points at is kept rather than breaking that row
+    from sqlalchemy.exc import IntegrityError
+    for doc_id in sorted(doc_ids):
+        ImportJob.query.filter_by(source_document_id=doc_id).delete(synchronize_session=False)
+        UploadDraft.query.filter_by(source_document_id=doc_id).delete(synchronize_session=False)
+        try:
+            with db.session.begin_nested():
+                SourceDocument.query.filter_by(id=doc_id).delete(synchronize_session=False)
+            counts['files'] = counts.get('files', 0) + 1
+        except IntegrityError:
+            counts['files_kept'] = counts.get('files_kept', 0) + 1
+    return counts
+
+
+@app.route('/api/companies/files', methods=['GET'])
+@require_role('admin')
+def companies_with_files():
+    """Every company with every report file on record for it, by year - the Settings > Companies list.
+    A file is one row: the survey row it produced (or the manual entry) and/or the financial-statement import."""
+    companies = Company.query.order_by(Company.name).all()
+    by_co = {c.id: {'company_id': c.id, 'name': c.name, 'ticker': getattr(c, 'ticker', None), 'sector': c.sector,
+                    'files': {}, 'years': set()} for c in companies}
+    pages = extraction_report.pages_stored_map()
+    for r in SurveyCompanyData.query.with_entities(
+            SurveyCompanyData.company_id, SurveyCompanyData.fiscal_year, SurveyCompanyData.source_filename,
+            SurveyCompanyData.uploaded_at, SurveyCompanyData.field_confidence, SurveyCompanyData.field_review_status).all():
+        co = by_co.get(r.company_id)
+        if co is None or not r.fiscal_year:
+            continue
+        co['years'].add(r.fiscal_year)
+        key = (r.source_filename or '').lower() or f'manual:{r.fiscal_year}'
+        conf, rev = r.field_confidence or {}, r.field_review_status or {}
+        scored = len(conf)
+        f = co['files'].setdefault(key, {'filename': r.source_filename, 'fiscal_year': r.fiscal_year})
+        f.update({'has_survey': True, 'fiscal_year': r.fiscal_year, 'uploaded_at': r.uploaded_at.isoformat() if r.uploaded_at else f.get('uploaded_at'),
+                  'scored_fields': scored, 'reviewed_fields': len([k for k in conf if k in rev]),
+                  'text_stored': (r.company_id, r.fiscal_year) in pages})
+    for d in SourceDocument.query.all():
+        co = by_co.get(d.company_id)
+        if co is None:
+            continue
+        key = (d.filename or '').lower() or f'doc:{d.id}'
+        f = co['files'].setdefault(key, {'filename': d.filename, 'fiscal_year': d.period_label})
+        f.setdefault('fiscal_year', d.period_label)
+        f.update({'has_financials': True, 'pages': d.page_count,
+                  'uploaded_at': f.get('uploaded_at') or (d.uploaded_at.isoformat() if d.uploaded_at else None),
+                  'extraction_score': d.extraction_score})
+        if d.period_label:
+            co['years'].add(d.period_label)
+    for p in FinancialPeriod.query.with_entities(FinancialPeriod.company_id, FinancialPeriod.period_label,
+                                                 FinancialPeriod.period_type).all():
+        co = by_co.get(p.company_id)
+        if co is not None and p.period_label and (p.period_type or 'FY') == 'FY':
+            co['years'].add(p.period_label)
+    out, all_years = [], set()
+    for co in by_co.values():
+        files = sorted(co['files'].values(), key=lambda f: (str(f.get('fiscal_year') or ''), f.get('filename') or ''), reverse=True)
+        years = sorted(co['years'], reverse=True)
+        all_years.update(years)
+        out.append({'company_id': co['company_id'], 'name': co['name'], 'ticker': co['ticker'], 'sector': co['sector'],
+                    'years': years, 'files': files})
+    return jsonify({'companies': out, 'years': sorted(all_years, reverse=True)})
+
+
+@app.route('/api/companies/delete-year', methods=['POST'])
+@require_role('admin')
+def delete_companies_year():
+    """Delete ONE financial year of data for several companies (or all), keeping the companies and their other years.
+    Body: {"fiscal_year": "FY2025", "ids": [1, 2]} or {"fiscal_year": "FY2025", "all": true}.  Each company is its own
+    transaction, so one failure never blocks the rest."""
+    body = request.get_json(silent=True) or {}
+    fy = str(body.get('fiscal_year') or '').strip()
+    if not fy or len(fy) > 20:
+        return jsonify({'error': 'Choose the year to delete (for example FY2025).'}), 400
+    if body.get('all') is True:
+        ids = [c.id for c in Company.query.with_entities(Company.id).all()]
+    else:
+        raw = body.get('ids')
+        if not isinstance(raw, list) or not raw:
+            return jsonify({'error': 'Send {"ids": [..]} with at least one company id, or {"all": true}.'}), 400
+        try:
+            ids = sorted({int(i) for i in raw})
+        except (TypeError, ValueError):
+            return jsonify({'error': 'ids must be integers.'}), 400
+    deleted, skipped, failed = [], [], []
+    for cid in ids:
+        try:
+            co = db.session.get(Company, cid)
+            if co is None:
+                failed.append({'id': cid, 'error': 'Company not found.'})
+                continue
+            if not _company_year_has_data(cid, fy):
+                skipped.append(cid)
+                continue
+            counts = _purge_company_year(cid, fy)
+            db.session.commit()
+            log_activity(cid, 'company_year_deleted', detail=f'Deleted all {fy} data for {co.name}', fiscal_year=fy)
+            deleted.append({'id': cid, 'name': co.name, 'counts': counts})
+        except Exception as e:
+            db.session.rollback()
+            app.logger.exception('Failed to delete %s for company %s', fy, cid)
+            failed.append({'id': cid, 'error': str(e)})
+    status = 200 if deleted or skipped or not failed else 500
+    return jsonify({'fiscal_year': fy, 'deleted': deleted, 'skipped': skipped, 'failed': failed}), status
 
 
 # ---------- API: FINANCIALS ----------
@@ -1981,7 +2235,7 @@ def _detect_pay_table_unit(pdf_bytes, page):
     q = "['\u2018\u2019`]"
     if re.search(r"(?:shs?|kshs?|kes|ksh)\.?\s*" + q + r"?\s*(?:000|thousand)|in\s+thousands", text, re.I):
         return 'thousands'                                       # Shs'000, KShs. ‘000’ (KCB) ...
-    if re.search(r"(?:shs?|kshs?|kes|ksh)\.?\s*" + q + r"?\s*(?:million|m\b)|in\s+millions", text, re.I):
+    if re.search(r"(?:shs?|kshs?|kes|ksh)\.?\s*" + q + r"?\s*(?:million|mn\b|m\b)|in\s+millions", text, re.I):
         return 'millions'
     if re.search(r"\b(?:shs?|kshs?|kes|ksh)\b", text, re.I):
         return 'units'
@@ -1994,7 +2248,123 @@ def _detect_pay_table_unit(pdf_bytes, page):
 # (hand-typed file, survey PDF import, a person's correction) is left alone.
 _AUTO_BOARD_SOURCE_PREFIXES = ('from the board table', 'from the attendance table',
                                'stated in the report', 'from the director roster', 'from the director pay table',
-                               'from the remuneration policy text', 'from the remuneration report')
+                               'from the remuneration policy text', 'from the remuneration report',
+                               'from the document scan')
+
+
+_DYNAMIC_MONEY_FIELDS = (
+    'chairperson_annual_retainer', 'other_ned_annual_retainer', 'chairperson_meeting_allowance',
+    'other_ned_meeting_allowance', 'executive_director_annual_retainer', 'executive_director_meeting_allowance',
+    'committee_chair_annual_retainer', 'committee_member_annual_retainer', 'committee_chair_meeting_allowance',
+    'committee_member_meeting_allowance', 'ceo_monthly_salary', 'ceo_monthly_allowances',
+    'ceo_monthly_incentive_bonus', 'ceo_monthly_deferred_incentive', 'ceo_monthly_non_cash_benefits',
+    'ceo_monthly_pension', 'ceo_monthly_gratuity', 'ceo_monthly_share_value', 'ceo_monthly_cost_of_employment',
+    'ceo_annual_salary_as_stated',
+)
+
+
+def _apply_dynamic_survey(company_id, fiscal_year, source_document_id, pdf_bytes, filename):
+    """Layout-independent pass (dynamic_extract.py) that runs AFTER the older readers.
+
+    It only ever ADDS: a field is written when it is empty, or when the value there came from an automatic
+    reader (source starts with one of _AUTO_BOARD_SOURCE_PREFIXES) and the new value carries higher
+    confidence. Anything typed by hand, imported from a survey file or corrected by a reviewer is never
+    touched. Every value stores the page and the sentence / table row it came from.
+    Returns how many survey fields it wrote."""
+    from dynamic_extract import extract_survey_dynamic
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if row is None:
+        return 0
+    company = db.session.get(Company, company_id)
+    out = extract_survey_dynamic(pdf_bytes, fiscal_year=fiscal_year, company_name=company.name if company else None)
+    fields = out['fields']
+    _decisions = []          # extraction report: what this reader did with each value it found
+    extraction_report.stash_decisions(company_id, fiscal_year, {'rejections': out.get('rejections', []), 'decisions': _decisions})
+    if not fields:
+        return 0
+
+    sources = dict(row.field_sources or {})
+    confidence = dict(row.field_confidence or {})
+    human = set((row.field_review_status or {}).keys())      # fields a reviewer confirmed or corrected
+
+    # pay figures are stored in the row's pay unit; set it only when no pay figure exists yet
+    if not row.director_figures_unit and out.get('pay') and not any(getattr(row, c) is not None for c in _DYNAMIC_MONEY_FIELDS):
+        row.director_figures_unit = out['pay']['unit']
+    to_pay_unit = {'units': 1.0, 'thousands': 1e-3, 'millions': 1e-6}.get(row.director_figures_unit or 'units', 1.0)
+
+    written = 0
+    for col, info in fields.items():
+        if not hasattr(row, col):
+            continue
+        if col in human:
+            _decisions.append({'field': col, 'decision': 'kept_human', 'value': info['value'], 'page': info['page'],
+                               'reason': 'a person already confirmed or corrected this field'})
+            continue
+        value = info['value']
+        if col in _DYNAMIC_MONEY_FIELDS:
+            value = value * to_pay_unit
+        current = getattr(row, col)
+        ours = str(sources.get(col, '')).startswith(_AUTO_BOARD_SOURCE_PREFIXES)
+        old_conf = confidence.get(col, 0.0)
+        if current is None or (ours and info['confidence'] > old_conf):
+            setattr(row, col, value)
+            sources[col] = f"from the document scan (page {info['page']}, {info['method']}): {info['text']}"
+            confidence[col] = info['confidence']
+            written += 1
+            _decisions.append({'field': col, 'decision': 'written', 'value': info['value'], 'page': info['page'], 'reason': 'written'})
+        else:
+            _decisions.append({'field': col, 'decision': 'kept_existing', 'value': info['value'], 'page': info['page'],
+                               'reason': (f"an earlier reader's value ({current}) was kept"
+                                          + (f" - its confidence {old_conf} is not lower than this reader's {info['confidence']}"
+                                             if ours else ' - it came from a source this reader may not overwrite'))})
+    row.field_sources = sources
+    row.field_confidence = confidence
+    db.session.commit()
+
+    # ---- register: replace an implausible one (e.g. subsidiary boards swept in from profile pages)
+    # Clean the roster first: one row per person, and a designation that is a short title rather
+    # than a run of neighbouring names (Safaricom 2026 produced 3 rows - one duplicated - whose
+    # 'position' was 300+ characters of other directors' lines, and they replaced 12 good rows).
+    roster, _seen_names = [], set()
+    for p in out['roster']:
+        key = re.sub(r'[^a-z ]', '', (p.get('name') or '').lower()).strip()
+        des = (p.get('designation') or p.get('role_text') or '')
+        if not key or key in _seen_names or len(des) > 90:
+            continue
+        _seen_names.add(key)
+        roster.append(p)
+    if len(roster) >= 3:
+        existing = SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).all()
+        implausible = (not existing) or len(existing) > 1.5 * len(roster) or \
+            sum(1 for d in existing if any(_dyn_same(d.director_name, p['name']) for p in roster)) < 0.6 * len(roster)
+        # A register the profile-card / table readers built (rows carrying nationality or an
+        # appointment date) is richer than anything this pass produces: never replace it.
+        if sum(1 for d in existing if d.nationality or d.appointed_date) >= 3 and len(existing) >= len(roster):
+            implausible = False
+        if implausible:
+            SurveyDirector.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).delete()
+            for i, p in enumerate(roster):
+                db.session.add(SurveyDirector(
+                    company_id=company_id, fiscal_year=fiscal_year, director_name=p['name'],
+                    position=(p.get('designation') or p.get('role_text') or None),
+                    role=p.get('role') or 'unknown', gender=p.get('gender'), nationality=p.get('nationality'),
+                    independent=p.get('independent'), order_index=i, page=p.get('page'), confidence=0.8))
+            db.session.commit()
+
+    # ---- committees: only when the older readers found none
+    period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fiscal_year).first()
+    if period is not None and out['committees'] and not Committee.query.filter_by(period_id=period.id).count():
+        for i, c in enumerate(out['committees']):
+            db.session.add(Committee(period_id=period.id, source_document_id=source_document_id, name=c['name'].title(),
+                                     member_count=c['members'], meetings_held=c['meetings'], order_index=i,
+                                     page=c['page'], confidence=0.75))
+        db.session.commit()
+    return written
+
+
+def _dyn_same(a, b):
+    from dynamic_extract import _same_person
+    return _same_person(a, b)
 
 
 def _sync_executive_pay_rows(company_id, fiscal_year, source_document_id, pdf_bytes):
@@ -2187,6 +2557,7 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
         for key, col in (('salary', 'ceo_monthly_salary'), ('allowances', 'ceo_monthly_allowances'),
                          ('incentive_bonus', 'ceo_monthly_incentive_bonus'), ('deferred_incentive', 'ceo_monthly_deferred_incentive'),
                          ('non_cash_benefits', 'ceo_monthly_non_cash_benefits'), ('pension', 'ceo_monthly_pension'),
+                         ('share_value', 'ceo_monthly_share_value'),
                          ('cost_of_employment', 'ceo_monthly_cost_of_employment')):
             if ceo['components'].get(key) is not None:
                 _rule_field(col, ceo['components'][key] * cf, src)
@@ -2918,6 +3289,7 @@ def ai_discard(item_id):
 
 @app.route('/api/import/upload-batch', methods=['POST'])
 @require_role('admin')
+@queue_unless_super('upload', lambda k: 'Annual report upload')
 def upload_documents_batch():
     """Upload several annual-report PDFs at once (multipart/form-data,
     repeated 'files' field) - any mix of companies and years in a single
@@ -3549,12 +3921,23 @@ def _run_upload_batch_job(flask_app, file_payloads, batch_id, forced_company_id,
                         app.logger.exception(f'Board extraction failed for {filename}')
                         review_api.record_issue(result['company_id'], period_label, filename, 'board / register / committees', e)
                     try:
+                        # dynamic_extract.py: layout-independent pass that fills what the readers above could not
+                        _apply_dynamic_survey(result['company_id'], period_label, result.get('source_document_id'),
+                                              pdf_bytes, filename)
+                    except Exception as e:
+                        db.session.rollback()
+                        app.logger.exception(f'Dynamic survey extraction failed for {filename}')
+                        review_api.record_issue(result['company_id'], period_label, filename, 'dynamic survey extraction', e)
+                    try:
                         # tab_modules: make the tabs agree using what is stored (register from the pay tables
                         # when no register reader worked, composition from the register, ...)
                         tab_modules.reconcile_tabs(result['company_id'], period_label)
                     except Exception as e:
                         app.logger.exception(f'Tab reconciliation failed for {filename}')
                         review_api.record_issue(result['company_id'], period_label, filename, 'tab reconciliation', e)
+                    # Extraction report: keep why-filled / why-not facts about this PDF (the bytes are discarded after import)
+                    extraction_report.record_import(result['company_id'], period_label, filename,
+                                                    result.get('source_document_id'), pdf_bytes)
 
                     # Store the pages the AI extraction (manual button) will read; nothing is sent anywhere here.
                     try:
@@ -3646,6 +4029,7 @@ def _find_or_create_company_for_survey(name, sector):
 
 @app.route('/api/survey-data/import', methods=['POST'])
 @require_role('admin')
+@queue_unless_super('upload', lambda k: 'Survey data file import')
 def import_survey_data():
     """Accepts an uploaded Survey Data condensed .txt file (multipart/
     form-data, field name 'file') for ONE company/fiscal-year, parses it,
@@ -3709,6 +4093,7 @@ def import_survey_data():
 
 @app.route('/api/survey-data/import-pdf', methods=['POST'])
 @require_role('admin')
+@queue_unless_super('upload', lambda k: 'Survey PDF import')
 def import_survey_data_from_pdf():
     """Accepts a raw filing PDF (multipart/form-data, field name 'file')
     plus REQUIRED form fields 'company_name' and 'fiscal_year' (the
@@ -3898,6 +4283,7 @@ def import_survey_data_from_pdf():
 
 @app.route('/api/survey-data/import-policy-pdf', methods=['POST'])
 @require_role('admin')
+@queue_unless_super('upload', lambda k: 'Remuneration policy PDF import')
 def import_remuneration_policy_from_pdf():
     """Same shape as /api/survey-data/import-pdf, but for
     RemunerationPolicy's yes/no + free-text fields instead of
@@ -3962,6 +4348,28 @@ def import_remuneration_policy_from_pdf():
         'company': company.to_dict(),
         'remuneration_policy': row.to_dict(),
     }), 201
+
+
+@app.route('/api/survey-data/<int:company_id>/<fiscal_year>/unit', methods=['POST'])
+@require_role('admin')
+def set_survey_unit(company_id, fiscal_year):
+    """Correct the Unit that this company's headline figures (turnover / net profit / market cap) were
+    saved in - e.g. figures that are really whole shillings but were tagged 'millions'. The numbers
+    themselves are NOT touched; only how they are read. Pay-table figures have their own unit
+    (director_figures_unit) and are left alone. Body: {"unit": "units"|"thousands"|"millions"|"billions"}."""
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if row is None:
+        return jsonify({'error': 'No survey data found for this company/fiscal year.'}), 404
+    body = request.get_json(silent=True) or {}
+    unit = (body.get('unit') or '').strip().lower()
+    if unit not in ('units', 'thousands', 'millions', 'billions'):
+        return jsonify({'error': "'unit' must be one of: units, thousands, millions, billions."}), 400
+    previous = row.unit
+    row.unit = unit
+    db.session.commit()
+    log_activity(company_id, 'unit_corrected', detail=f"headline unit {previous or 'unset'} -> {unit}",
+                 fiscal_year=fiscal_year, actor=(body.get('reviewed_by') or '').strip() or None)
+    return jsonify({'ok': True, 'previous_unit': previous, 'unit': unit}), 200
 
 
 @app.route('/api/survey-data/<int:company_id>/<fiscal_year>/review', methods=['POST'])
@@ -4032,6 +4440,37 @@ def review_survey_field(company_id, fiscal_year):
     return jsonify({'ok': True, 'survey_data': row.to_dict()}), 200
 
 
+@app.route('/api/survey-data/<int:company_id>/<fiscal_year>/review-bulk', methods=['POST'])
+@require_role('admin')
+def review_survey_fields_bulk(company_id, fiscal_year):
+    """Approve several extracted fields at once (the review page's "Approve selected").  Only approval is bulk:
+    a rejection or a correction always changes a value, so those stay one field at a time.
+    Body: {"fields": ["board_size", ...], "reviewed_by": "name"}.  Fields that are not extracted fields of this row,
+    or have no value, are skipped and reported - nothing is approved blindly."""
+    row = SurveyCompanyData.query.filter_by(company_id=company_id, fiscal_year=fiscal_year).first()
+    if row is None:
+        return jsonify({'error': 'No survey data found for this company/fiscal year.'}), 404
+    body = request.get_json(silent=True) or {}
+    fields = body.get('fields')
+    if not isinstance(fields, list) or not fields:
+        return jsonify({'error': "'fields' must be a non-empty list of field names."}), 400
+    reviewer = (body.get('reviewed_by') or '').strip() or None
+    conf = row.field_confidence or {}
+    status = dict(row.field_review_status or {})
+    approved, skipped = [], []
+    for f in fields:
+        if f not in conf or getattr(row, f, None) is None:
+            skipped.append(f)
+            continue
+        status[f] = 'approved'
+        approved.append(f)
+    if approved:
+        row.field_review_status = status
+        db.session.commit()
+        log_activity(company_id, 'field_approved', detail=f"{len(approved)} fields approved together", fiscal_year=fiscal_year, actor=reviewer)
+    return jsonify({'ok': True, 'approved': approved, 'skipped': skipped, 'survey_data': row.to_dict()}), 200
+
+
 @app.route('/api/survey/companies', methods=['GET'])
 def list_survey_companies():
     """Every company with at least one SurveyCompanyData row, with the
@@ -4052,6 +4491,8 @@ def list_survey_companies():
     ).order_by(Company.name).all()
     by_company = {}
     for r, c in rows:
+        if not is_full_year(r.fiscal_year):
+            continue  # half-year / quarterly labels are hidden - full FY only
         entry = by_company.setdefault(r.company_id, {
             'company_id': r.company_id, 'company_name': c.name,
             'sector': r.sector or c.sector, 'fiscal_years': [],
@@ -4088,6 +4529,7 @@ def list_survey_companies():
 
 
 @app.route('/api/survey/activity', methods=['GET'])
+@require_role('admin')
 def survey_activity_feed():
     """Most recent real ActivityLogEntry rows across all companies, for
     the Admin Dashboard's Recent Activities panel. ?limit=N (default
@@ -4252,7 +4694,7 @@ def company_survey_report(company_id):
         survey_q = survey_q.filter_by(fiscal_year=fiscal_year)
     survey_row = survey_q.order_by(SurveyCompanyData.fiscal_year.desc()).first()
     available_survey_years = [r.fiscal_year for r in SurveyCompanyData.query.filter_by(company_id=company_id)
-                               .order_by(SurveyCompanyData.fiscal_year.desc()).all()]
+                               .order_by(SurveyCompanyData.fiscal_year.desc()).all() if is_full_year(r.fiscal_year)]
 
     # Every year's own field_confidence, for the Data Quality tab's
     # multi-year Quality Trend chart - a genuine per-year score
@@ -4477,6 +4919,37 @@ def export_survey_pdf():
     return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
 
+@app.route('/api/export/combined-report.pdf', methods=['GET'])
+@require_role('admin', 'user')
+def export_combined_report_pdf():
+    """One narrative PDF for the selected fiscal year: Survey Analytics + Intelligence Layer
+    findings together (narrative_reports.py). ?fiscal_year=FY2025."""
+    fy = request.args.get('fiscal_year')
+    overview = build_survey_overview(fy)
+    if not overview.get('has_data'):
+        return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
+    rows = build_company_rows(overview['fiscal_year']).get('rows', [])
+    buf = build_combined_report(overview, rows, build_historical_trends())
+    filename = f"Board_Remuneration_and_Governance_Report_{_safe_filename(overview['fiscal_year'])}.pdf"
+    return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
+
+
+@app.route('/api/companies/<int:company_id>/export/report.pdf', methods=['GET'])
+@require_role('admin', 'user')
+def export_company_report_pdf(company_id):
+    """Narrative PDF for ONE company and fiscal year - what the Survey Report page shows,
+    written as a report. ?fiscal_year=FY2025 (defaults like the page does)."""
+    payload = company_survey_report(company_id).get_json()
+    if not payload.get('survey'):
+        return jsonify({'error': 'No survey data on file for this company and year yet.'}), 404
+    fy = payload['survey']['fiscal_year']
+    overview = build_survey_overview(fy)
+    rows = build_company_rows(fy).get('rows', [])
+    buf = build_company_report(payload, overview, rows)
+    filename = f"{_safe_filename(payload['company']['name'])}_{_safe_filename(fy)}_Remuneration_and_Governance_Report.pdf"
+    return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
+
+
 @app.route('/api/intelligence-layer/companies', methods=['GET'])
 def intelligence_layer_companies():
     """Per-company rows (with an illustrative governance score) for one
@@ -4521,6 +4994,23 @@ def survey_data_quality():
     return jsonify(build_portfolio_data_quality())
 
 
+@app.route('/api/survey-report/company-ranking', methods=['GET'])
+def survey_report_company_ranking():
+    """All companies ranked fewest -> most missing survey fields (each on its own latest survey year); orders the Survey
+    Report page's company drop-down. See data_quality.missing_ranking()."""
+    import data_quality
+    return jsonify(data_quality.missing_ranking())
+
+
+@app.route('/api/survey/data-quality-average', methods=['GET'])
+def survey_data_quality_average():
+    """Average data-quality score across the companies surveyed for one fiscal year (?fiscal_year=FY2025, default the
+    newest year on file), with a per-company breakdown and per-section averages - the Data Quality tab of Survey
+    Analytics & Reporting. Same scoring rules as each company's own Data Quality tab: see data_quality.py."""
+    import data_quality
+    return jsonify(data_quality.portfolio_quality(request.args.get('fiscal_year') or None))
+
+
 @app.route('/api/companies/<int:company_id>/periods')
 def list_periods(company_id):
     """Lightweight list of periods for a company - just enough to build a
@@ -4537,7 +5027,7 @@ def list_periods(company_id):
             'statement_types': [s.statement_type for s in p.statements],
             'calculated_metrics': {m.metric_name: m.value for m in p.calculated_metrics},
         }
-        for p in periods
+        for p in periods if is_full_year(p.period_label)
     ])
 
 @app.route('/api/companies/<int:company_id>/periods/<period_label>')
@@ -4690,7 +5180,11 @@ def _safe_filename(name):
 def export_snapshot(company_id):
     """Single-company snapshot: one sheet, company info + all periods + KPIs."""
     company = Company.query.get_or_404(company_id)
-    financials = Financials.query.filter_by(company_id=company_id).order_by(Financials.period.desc()).all()
+    period = (request.args.get('period') or '').strip()
+    fq = Financials.query.filter_by(company_id=company_id)
+    if period:
+        fq = fq.filter(Financials.period == period)
+    financials = fq.order_by(Financials.period.desc()).all()
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -4701,6 +5195,7 @@ def export_snapshot(company_id):
     ws.append(['Exchange', company.exchange])
     ws.append(['Sector', company.sector])
     ws.append(['Country', company.country])
+    ws.append(['Year shown', period or 'All years on file'])
     ws.append([])
     ws.append(['Period', 'Currency', 'Revenue', 'Net Income', 'Total Assets',
                'Total Liabilities', 'Total Equity', 'Net Margin %', 'ROE %', 'Debt/Equity'])
@@ -4716,12 +5211,12 @@ def export_snapshot(company_id):
 
     export_dir = '/tmp/exports'
     os.makedirs(export_dir, exist_ok=True)
-    filepath = os.path.join(export_dir, f'{_safe_filename(company.name)}_snapshot.xlsx')
+    filepath = os.path.join(export_dir, f'{_safe_filename(company.name)}_snapshot{("_" + _safe_filename(period)) if period else ""}.xlsx')
     wb.save(filepath)
     return send_file(filepath, as_attachment=True)
 
 @app.route('/api/export/comparison')
-@require_role('admin', 'user')
+@require_role('admin')   # whole-portfolio dump: admins only (anti-scraping)
 def export_comparison():
     """All companies, one sheet per company plus a summary ranking sheet."""
     companies = Company.query.order_by(Company.name).all()
@@ -4759,7 +5254,7 @@ def export_comparison():
     return send_file(filepath, as_attachment=True)
 
 @app.route('/api/export/portfolio')
-@require_role('admin', 'user')
+@require_role('admin')   # whole-portfolio dump: admins only (anti-scraping)
 def export_portfolio():
     """Full watchlist: one row per company with latest KPIs, single sheet."""
     companies = Company.query.order_by(Company.name).all()
@@ -4793,7 +5288,11 @@ def export_portfolio():
 def export_raw_csv(company_id):
     """Raw underlying financials rows, CSV, for external modeling."""
     company = Company.query.get_or_404(company_id)
-    financials = Financials.query.filter_by(company_id=company_id).order_by(Financials.period.desc()).all()
+    period = (request.args.get('period') or '').strip()
+    fq = Financials.query.filter_by(company_id=company_id)
+    if period:
+        fq = fq.filter(Financials.period == period)
+    financials = fq.order_by(Financials.period.desc()).all()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -4805,7 +5304,7 @@ def export_raw_csv(company_id):
 
     export_dir = '/tmp/exports'
     os.makedirs(export_dir, exist_ok=True)
-    filepath = os.path.join(export_dir, f'{_safe_filename(company.name)}_raw.csv')
+    filepath = os.path.join(export_dir, f'{_safe_filename(company.name)}_raw{("_" + _safe_filename(period)) if period else ""}.csv')
     with open(filepath, 'w', newline='') as fh:
         fh.write(output.getvalue())
     return send_file(filepath, as_attachment=True, mimetype='text/csv')
@@ -5358,6 +5857,35 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
+    # Activity log: account-tagging columns (user_id, email, role, category...) and an
+    # optional company_id on activity_log_entries. Idempotent, like v5/v6 above.
+    try:
+        from migrate_v7_activity_log_columns import run_migration as _run_activity_log_migration
+        _run_activity_log_migration()
+    except Exception:
+        db.session.rollback()
+
+    # Super admin flag on app_users (+ the earliest admin becomes super admin if none exists).
+    try:
+        from migrate_v8_super_admin import run_migration as _run_super_admin_migration
+        _run_super_admin_migration()
+    except Exception:
+        db.session.rollback()
+
+    # Account lockout + two-step verification columns on app_users.
+    try:
+        from migrate_v9_account_security import run_migration as _run_account_security_migration
+        _run_account_security_migration()
+    except Exception:
+        db.session.rollback()
+
+    # URL slug column on company, then a slug for every existing company.
+    try:
+        from migrate_v10_company_slug import run_migration as _run_company_slug_migration
+        _run_company_slug_migration()
+    except Exception:
+        db.session.rollback()
+
     # One-time seed admin, from env vars so no credential is hardcoded in
     # source. Only fires while zero admin accounts exist - after the
     # first login, every further admin is created from inside the app
@@ -5369,8 +5897,9 @@ with app.app_context():
         _existing = User.query.filter_by(email=_seed_email).first()
         if _existing:
             _existing.role = 'admin'
+            _existing.is_super_admin = True
         else:
-            _seed_user = User(name='Admin', email=_seed_email, role='admin')
+            _seed_user = User(name='Admin', email=_seed_email, role='admin', is_super_admin=True)
             _seed_user.set_password(_seed_password)
             db.session.add(_seed_user)
         try:
@@ -5387,7 +5916,12 @@ def _get_batch_result(batch_id):
     return entry[1] if entry else None
 
 
+activity_log.register(app, db, ActivityLogEntry, Company, current_user, require_role)
+# Guest allow-list, per-account rate limits and the daily export cap (see access_control.py).
+access_control.register(app, db, ActivityLogEntry, current_user, activity_log)
+approvals.register(app, require_role)
 review_api.register(app, require_role, _run_upload_batch_job, _get_batch_result, match_company)
+extraction_report.register(app, require_role)
 
 
 if __name__ == '__main__':

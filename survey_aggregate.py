@@ -13,7 +13,7 @@ up as a market average.
 """
 
 from models import db, Company
-from models_survey import SurveyCompanyData
+from models_survey import SurveyCompanyData, is_full_year
 
 MIN_COMPANIES_FOR_AVERAGE = 2  # below this, an "average" is just one company's own number wearing a label
 
@@ -34,6 +34,42 @@ UNIT_SCALE = {
     'billions': 1_000_000_000,
 }
 CANONICAL_UNIT = 'millions'
+
+# Plausibility ceilings for PERFORMANCE figures, in CANONICAL_UNIT (millions) of KES - generous
+# on purpose (KES 2tn turnover / 1tn profit / 3tn market cap; the whole NSE is a few trillion), so
+# no genuine listed company can trip them, but a value saved with the wrong unit (a figure printed
+# in whole shillings but tagged "millions" is 1,000,000x too big) always does. Such a value is left
+# OUT of every average/total and listed under `implausible_values`, rather than letting one bad row
+# turn the whole survey into nonsense. Only applied when the survey currency is KES.
+PLAUSIBLE_MAX_MILLIONS = {'turnover': 2_000_000, 'net_profit': 1_000_000, 'market_cap': 3_000_000}
+# Floors (whole KES) used ONLY when suggesting which unit a bad row was probably meant to have:
+# below these a value would be too small to be a listed company's figure in that unit.
+PLAUSIBLE_MIN_FULL = {'turnover': 5_000_000, 'market_cap': 20_000_000}
+UNIT_CHOICES = ['units', 'thousands', 'millions', 'billions']
+
+
+def suggest_units_for_row(r):
+    """Which stated Units would make EVERY performance figure on this row (turnover / net profit /
+    market cap that are present) land in a believable KES range. One saved Unit covers all three
+    figures, so a row whose figures only fit different units (mixed scales) gets an empty list and
+    must be corrected field by field instead. Never guesses: the person picks."""
+    fits = []
+    for u in UNIT_CHOICES:
+        scale = UNIT_SCALE[u]
+        ok = True
+        seen = 0
+        for f, ceiling in PLAUSIBLE_MAX_MILLIONS.items():
+            raw = getattr(r, f, None)
+            if raw is None:
+                continue
+            seen += 1
+            full = abs(raw * scale)
+            if full > ceiling * UNIT_SCALE[CANONICAL_UNIT] or full < PLAUSIBLE_MIN_FULL.get(f, 0):
+                ok = False
+                break
+        if ok and seen:
+            fits.append(u)
+    return fits
 
 
 def _unit_scale(unit):
@@ -115,18 +151,25 @@ def _compa_ratio(higher_metric, lower_metric):
 
 
 def available_fiscal_years():
-    return [r[0] for r in db.session.query(SurveyCompanyData.fiscal_year).distinct().all()]
+    return [r[0] for r in db.session.query(SurveyCompanyData.fiscal_year).distinct().all() if is_full_year(r[0])]
+
+
+def _fy_sort_key(fy):
+    """Numeric year first (FY2026 > FY2025), label as tie-break, so the latest
+    reporting year always sorts last/first correctly even for odd labels."""
+    import re as _re
+    m = _re.search(r'(19|20)\d{2}', fy or '')
+    return (int(m.group(0)) if m else 0, fy or '')
 
 
 def default_fiscal_year():
-    """Whichever fiscal_year has the most companies on file - used when
-    the caller doesn't specify one."""
-    counts = db.session.query(
-        SurveyCompanyData.fiscal_year, db.func.count(SurveyCompanyData.id)
-    ).group_by(SurveyCompanyData.fiscal_year).all()
-    if not counts:
+    """The LATEST fiscal year that has any survey on file - used when the
+    caller doesn't specify one. If every survey is FY2025 or earlier this is
+    FY2025; as soon as one FY2026 survey exists it becomes FY2026."""
+    years = [y for y in available_fiscal_years() if y]
+    if not years:
         return None
-    return sorted(counts, key=lambda c: -c[1])[0][0]
+    return max(years, key=_fy_sort_key)
 
 
 def build_survey_overview(fiscal_year=None):
@@ -177,11 +220,26 @@ def build_survey_overview(fiscal_year=None):
         else:
             perf_scale[r.id] = scale / UNIT_SCALE[CANONICAL_UNIT]
 
+    implausible = {}         # (row.id, field) -> details; deduped, surfaced on the Data Quality tab
+
     def normalized_perf(r, field_name):
         raw = getattr(r, field_name)
         if raw is None or perf_scale.get(r.id) is None:
             return None
-        return raw * perf_scale[r.id]
+        value = raw * perf_scale[r.id]
+        ceiling = PLAUSIBLE_MAX_MILLIONS.get(field_name)
+        if ceiling is not None and primary_currency == 'KES' and abs(value) > ceiling:
+            if (r.id, field_name) not in implausible:
+                implausible[(r.id, field_name)] = {
+                    'company': company_by_id[r.company_id].name,
+                    'field': field_name,
+                    'stated_value': raw,
+                    'stated_unit': r.unit or '',
+                    'full_value': round(value * UNIT_SCALE[CANONICAL_UNIT], 2),
+                    'ceiling_full_value': ceiling * UNIT_SCALE[CANONICAL_UNIT],
+                }
+            return None
+        return value
 
     def normalized_pay(r, field_name):
         raw = getattr(r, field_name)
@@ -385,6 +443,22 @@ def build_survey_overview(fiscal_year=None):
         for r in rows
     ], key=lambda c: c['name'])
 
+    row_by_id = {r.id: r for r in rows}
+    implausible_companies = []
+    for rid in sorted({k[0] for k in implausible}):
+        r = row_by_id[rid]
+        implausible_companies.append({
+            'company_id': r.company_id, 'fiscal_year': r.fiscal_year,
+            'company': company_by_id[r.company_id].name, 'current_unit': r.unit or '',
+            'suggested_units': suggest_units_for_row(r),
+            # what each figure would read as (whole KES) under every unit, so the person sees the effect
+            # of a choice before making it - a mixed-scale row can still look plausible under one unit
+            'preview': {u: {f: (None if getattr(r, f) is None else round(getattr(r, f) * UNIT_SCALE[u], 2))
+                            for f in ('turnover', 'net_profit', 'market_cap')}
+                        for u in UNIT_CHOICES},
+        })
+    implausible_companies.sort(key=lambda d: d['company'])
+
     return {
         'has_data': True,
         'fiscal_year': fiscal_year,
@@ -394,6 +468,8 @@ def build_survey_overview(fiscal_year=None):
         'unit': CANONICAL_UNIT,
         'min_companies_for_average': MIN_COMPANIES_FOR_AVERAGE,
         'excluded_from_performance_averages': excluded_companies,
+        'implausible_values': sorted(implausible.values(), key=lambda d: (d['company'], d['field'])),
+        'implausible_companies': implausible_companies,
         'executive_summary': executive_summary,
         'board_overview': board_overview,
         'directors_remuneration': directors_remuneration,
@@ -504,15 +580,56 @@ def build_company_rows(fiscal_year=None):
         chair = r.chairperson_annual_retainer * pay_scale if r.chairperson_annual_retainer is not None else None
         other_ned = r.other_ned_annual_retainer * pay_scale if r.other_ned_annual_retainer is not None else None
         exec_dir = r.executive_director_annual_retainer * pay_scale if r.executive_director_annual_retainer is not None else None
+        def _pay(field_name, _r=r, _ps=pay_scale):
+            v = getattr(_r, field_name, None)
+            return None if v is None else v * _ps
+
+        # Performance figures in whole currency units. Same honesty rules as the overview: an
+        # unrecognised unit or a figure too large to be credible for a listed company is left out
+        # (None) rather than guessed.
+        perf_mult = _unit_scale(r.unit)
+        perf = {}
+        implausible_fields = []
+        for f_ in ('turnover', 'net_profit', 'market_cap'):
+            raw = getattr(r, f_, None)
+            if raw is None or perf_mult is None:
+                perf[f_] = None
+                continue
+            full = raw * perf_mult
+            ceiling = PLAUSIBLE_MAX_MILLIONS.get(f_)
+            if ceiling is not None and (r.currency or 'KES').strip().upper() == 'KES' \
+                    and abs(full) > ceiling * UNIT_SCALE[CANONICAL_UNIT]:
+                perf[f_] = None
+                implausible_fields.append(f_)
+            else:
+                perf[f_] = full
+        margin = (perf['net_profit'] / perf['turnover'] * 100) if (perf['net_profit'] is not None and perf['turnover']) else None
+
         out.append({
             'company_id': c.id, 'name': c.name, 'sector': r.sector or c.sector, 'ticker': c.ticker,
             'fiscal_year': r.fiscal_year, 'currency': r.currency, 'unit': r.unit,
             'board_size': r.board_size, 'board_meetings_per_year': r.board_meetings_per_year,
+            'committees_per_board': r.committees_per_board,
+            'committee_meetings_per_year': r.committee_meetings_per_year,
+            'executive_directors_count': r.executive_directors_count,
+            'non_executive_directors_count': r.non_executive_directors_count,
+            'neds_kenyan_count': r.neds_kenyan_count, 'neds_non_kenyan_count': r.neds_non_kenyan_count,
             'independent_neds_count': r.independent_neds_count, 'non_independent_neds_count': r.non_independent_neds_count,
             'directors_female': r.directors_female, 'directors_male': r.directors_male,
+            'turnover': perf['turnover'], 'net_profit': perf['net_profit'], 'market_cap': perf['market_cap'],
+            'profit_margin': margin, 'implausible_fields': implausible_fields,
             'chairperson_annual_retainer': chair,
             'other_ned_annual_retainer': other_ned,
             'executive_director_annual_retainer': exec_dir,
+            'chairperson_meeting_allowance': _pay('chairperson_meeting_allowance'),
+            'other_ned_meeting_allowance': _pay('other_ned_meeting_allowance'),
+            'executive_director_meeting_allowance': _pay('executive_director_meeting_allowance'),
+            'committee_chair_annual_retainer': _pay('committee_chair_annual_retainer'),
+            'committee_member_annual_retainer': _pay('committee_member_annual_retainer'),
+            'committee_chair_meeting_allowance': _pay('committee_chair_meeting_allowance'),
+            'committee_member_meeting_allowance': _pay('committee_member_meeting_allowance'),
+            'ceo_monthly_salary': _pay('ceo_monthly_salary'),
+            'ceo_monthly_cost_of_employment': _pay('ceo_monthly_cost_of_employment'),
             'total_director_remuneration': _sum_or_none([chair, other_ned, exec_dir]),
             'governance': gov,
         })

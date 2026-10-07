@@ -28,26 +28,49 @@ big aggregate PDF). Kept in its own file, its own table, on purpose:
   upload; the survey IS however many companies have a row for that year.
 """
 
+import re as _re
 from datetime import datetime
 from models import db
 
+_PARTIAL_YEAR_RE = _re.compile(r'(^|[^A-Za-z])(H[12]|[12]H|HY|Q[1-4]|half|interim|semi)', _re.I)
+
+
+def is_full_year(label):
+    """True for a full financial-year label (FY2025, FY 2024, 2023 ...). False for
+    half-year / quarterly / interim labels (H1 2025, H2 2024, Q3 2025 ...) - the
+    app only works in full fiscal years, so those are hidden everywhere."""
+    return bool(label) and not _PARTIAL_YEAR_RE.search(str(label))
+
 
 class ActivityLogEntry(db.Model):
-    """One immutable event in the survey/admin activity feed.
+    """One immutable event in the activity log.
+
+    Every entry is tagged to the ACCOUNT that did it (user_id + a snapshot of
+    that account's name, email and role at the time, so the record still reads
+    correctly if the account is later renamed or deleted) and carries its own
+    UTC timestamp. `category` groups entries for the overall view; the
+    per-day view groups on created_at.
 
     Activity is intentionally stored separately from the survey payload so
     reviews and edits remain visible even when the underlying survey row is
-    replaced by a later import.
+    replaced by a later import. company_id is optional because many actions
+    (sign-in, user management, profile edits) belong to no company.
     """
     __tablename__ = 'activity_log_entries'
 
     id = db.Column(db.Integer, primary_key=True)
-    company_id = db.Column(db.Integer, db.ForeignKey('company.id'), nullable=False)
+    company_id = db.Column(db.Integer, db.ForeignKey('company.id'), nullable=True)
     fiscal_year = db.Column(db.String(20))
     action = db.Column(db.String(80), nullable=False)
     detail = db.Column(db.String(300))
-    actor = db.Column(db.String(150))
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    actor = db.Column(db.String(150))              # display name of the account (or "Guest")
+    user_id = db.Column(db.Integer, index=True)    # app_users.id of the account; NULL for guests / system
+    actor_email = db.Column(db.String(150))
+    actor_role = db.Column(db.String(20))
+    category = db.Column(db.String(40), index=True)
+    http_method = db.Column(db.String(10))
+    path = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     def to_dict(self):
         return {
@@ -57,7 +80,14 @@ class ActivityLogEntry(db.Model):
             'action': self.action,
             'detail': self.detail,
             'actor': self.actor,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'user_id': self.user_id,
+            'actor_email': self.actor_email,
+            'actor_role': self.actor_role,
+            'category': self.category,
+            'http_method': self.http_method,
+            'path': self.path,
+            # stored as naive UTC; the trailing Z makes browsers read it as UTC and show local time
+            'created_at': (self.created_at.isoformat() + 'Z') if self.created_at else None,
         }
 
 

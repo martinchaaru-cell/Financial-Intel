@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Finance Intel{% endblock %}</title>
+<meta name="description" content="{% block description %}{% endblock %}">
+<link rel="canonical" href="{% block canonical %}{{ site_url }}/{% endblock %}">
+<meta name="robots" content="{% block robots %}index, follow{% endblock %}">
+<meta name="theme-color" content="#0a0f1c">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230a0f1c'/%3E%3Cpath d='M20 72V52h14v20zm23 0V34h14v38zm23 0V22h14v50z' fill='%235b9bff'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Finance Intel">
+<meta property="og:title" content="{{ self.title() }}">
+<meta property="og:description" content="{{ self.description() }}">
+<meta property="og:url" content="{{ self.canonical() }}">
+<meta property="og:image" content="{{ site_url }}/static/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+{% block jsonld %}{% endblock %}
+<style>
+:root{--bg:#0a0f1c;--panel:#111a2e;--border:rgba(255,255,255,.08);--text:#f5f7fc;--dim:#aab4cc;--faint:#7986a3;--blue:#5b9bff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+header,main,footer{max-width:900px;margin:0 auto;padding:16px 20px}
+header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)}
+.brand{font-weight:700;color:var(--text)}
+nav a{margin-left:16px;font-size:14px}
+h1{font-size:26px;line-height:1.25;margin:8px 0 4px} h2{font-size:18px;margin:28px 0 10px}
+.crumbs{font-size:13px;color:var(--faint);margin-top:10px}
+.sub{color:var(--dim);margin:0 0 16px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:14px 0}
+.kpi{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px}
+.kpi b{display:block;font-size:24px} .kpi span{font-size:12.5px;color:var(--faint)}
+.scroll{overflow-x:auto} table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap} th{color:var(--faint);font-weight:600}
+.cta{margin-top:24px;border:1px solid rgba(91,155,255,.45);background:rgba(91,155,255,.1);border-radius:14px;padding:16px}
+.btn{display:inline-block;margin-top:8px;background:var(--blue);color:#06101f;font-weight:600;padding:9px 16px;border-radius:9px}
+.btn:hover{text-decoration:none;opacity:.9}
+ul.list{list-style:none;padding:0;margin:0} ul.list li{padding:12px 0;border-bottom:1px solid var(--border)}
+.muted{color:var(--faint);font-size:13px} footer{color:var(--faint);font-size:13px;border-top:1px solid var(--border);margin-top:32px}
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="/">Finance Intel</a>
+  <nav><a href="/companies">Companies</a><a href="/">Open dashboard</a></nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>Finance Intel benchmarks board composition, director remuneration and governance disclosures across NSE-listed companies. Figures come from the companies' published annual reports.</footer>
+</body>
+</html>

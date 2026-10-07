@@ -34,18 +34,13 @@ MUTED = RGBColor(0x6B, 0x72, 0x80)
 
 
 def _fmt_amount(value, currency=''):
+    """Always written in full - no K/M/B abbreviations. Figures are printed exactly as stored
+    (the filing's own scale), with thousands separators and up to 2 decimals only if present."""
     if value is None:
         return '—'
     sign = '-' if value < 0 else ''
-    v = abs(value)
-    if v >= 1e9:
-        s = f"{v / 1e9:,.2f}B"
-    elif v >= 1e6:
-        s = f"{v / 1e6:,.2f}M"
-    elif v >= 1e3:
-        s = f"{v / 1e3:,.1f}K"
-    else:
-        s = f"{v:,.0f}"
+    v = round(abs(value), 2)
+    s = f"{v:,.2f}".rstrip('0').rstrip('.')
     return f"{sign}{currency + ' ' if currency else ''}{s}"
 
 

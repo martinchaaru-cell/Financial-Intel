@@ -19,15 +19,18 @@ import threading
 import uuid
 from datetime import datetime
 
-from flask import jsonify, request
+from flask import jsonify, request, send_file
 from sqlalchemy import inspect, text
 
+import manual_entry_form
+from approvals import queue_unless_super
+import manual_entry_upload
 import review_preview
 import tab_modules
 from models import (db, Company, FinancialPeriod, FinancialStatement, SourceDocument, PrincipalRisk,
                      ManagementGuidance, MarketDataSnapshot, DirectorRemunerationRow, Committee, CommitteeMember)
 from models_ai import UploadDraft, ExtractionIssue, AIExtractionItem
-from models_survey import SurveyCompanyData, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, EvidenceConflict
+from models_survey import SurveyCompanyData, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, EvidenceConflict, is_full_year
 
 _app = None
 _match_company = None
@@ -190,6 +193,12 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
             return app.route(rule, **kw)(admin(fn))
         return deco
 
+    def manual_write(rule, label, **kw):
+        # Manual entry: a super admin saves directly; any other admin's change waits for approval.
+        def deco(fn):
+            return app.route(rule, **kw)(admin(queue_unless_super('manual', lambda k: label)(fn)))
+        return deco
+
     # ---------------------------------------------------------------- summary
     @route('/api/review/summary')
     def review_summary():
@@ -329,23 +338,70 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
     def _period_years(company_id):
         years = {p.period_label for p in FinancialPeriod.query.filter_by(company_id=company_id).all()}
         years |= {r.fiscal_year for r in SurveyCompanyData.query.filter_by(company_id=company_id).all()}
-        return sorted(years, reverse=True)
+        return sorted((y for y in years if is_full_year(y)), reverse=True)
 
     @route('/api/manual/<int:company_id>/years')
     def manual_years(company_id):
         return jsonify({'years': _period_years(company_id)})
+
+    @route('/api/manual/years-index')
+    def manual_years_index():
+        """Every year that has data, with the ids of the companies that have it, so the
+        Manual Entry company drop-down can show only companies for the selected year."""
+        by_year = {}
+        for cid, label in db.session.query(FinancialPeriod.company_id, FinancialPeriod.period_label).all():
+            if is_full_year(label):
+                by_year.setdefault(label, set()).add(cid)
+        for cid, fy in db.session.query(SurveyCompanyData.company_id, SurveyCompanyData.fiscal_year).all():
+            if is_full_year(fy):
+                by_year.setdefault(fy, set()).add(cid)
+        years = sorted(by_year, reverse=True)
+        return jsonify({'years': years, 'by_year': {y: sorted(by_year[y]) for y in years}})
+
+    # Downloadable forms listing what is missing / needs confirmation (manual_entry_form.py).
+    @route('/api/manual/<int:company_id>/<fiscal_year>/form.pdf')
+    def manual_form_pdf(company_id, fiscal_year):
+        """The open company + year: one PDF."""
+        Company.query.get_or_404(company_id)
+        buf, name = manual_entry_form.build_company_form(company_id, fiscal_year)
+        return send_file(buf, as_attachment=True, download_name=name, mimetype='application/pdf')
+
+    @route('/api/manual/forms.zip')
+    def manual_forms_zip():
+        """Every company: one PDF each, zipped. ?fiscal_year=FY2025 (optional - default is each company's latest year)."""
+        buf, name = manual_entry_form.build_all_forms_zip(request.args.get('fiscal_year') or None)
+        return send_file(buf, as_attachment=True, download_name=name, mimetype='application/zip')
+
+    # Upload of filled forms (.pdf or .zip of .pdf) -> preview (writes nothing) -> admin approves -> stored.
+    @route('/api/manual/upload-forms', methods=['POST'])
+    def manual_upload_forms():
+        files = [(f.filename or 'upload', f.read()) for f in request.files.getlist('files') if f and f.filename]
+        if not files:
+            return jsonify({'error': 'Choose one or more filled .pdf forms, or a .zip of them.'}), 400
+        return jsonify(manual_entry_upload.preview_upload(files))
+
+    @manual_write('/api/manual/apply-forms', 'Manual entry - uploaded forms', methods=['POST'])
+    def manual_apply_forms():
+        changes = (request.get_json(silent=True) or {}).get('changes')
+        if not isinstance(changes, list) or not changes:
+            return jsonify({'error': 'Nothing was approved.'}), 400
+        if len(changes) > 5000:
+            return jsonify({'error': 'Too many changes in one go - approve them in smaller batches.'}), 400
+        return jsonify(manual_entry_upload.apply_changes([c for c in changes if isinstance(c, dict)]))
 
     @route('/api/manual/<int:company_id>/<fiscal_year>')
     def manual_snapshot(company_id, fiscal_year):
         Company.query.get_or_404(company_id)
         row = tab_modules.survey_row(company_id, fiscal_year)
         srcs, confs = (row.field_sources or {}, row.field_confidence or {}) if row else ({}, {})
+        text_cols = tab_modules.survey_text_columns()
         groups = []
         for mod in tab_modules.TAB_MODULES:
-            if mod['metrics']:
+            if mod['metrics'] or mod.get('text_metrics'):
                 groups.append({'tab': mod['id'], 'label': mod['label'], 'metrics': [
                     {'key': k, 'label': lbl, 'value': getattr(row, k, None) if row else None,
-                     'source': srcs.get(k), 'confidence': confs.get(k)} for k, lbl in mod['metrics']]})
+                     'source': srcs.get(k), 'confidence': confs.get(k), 'text': k in text_cols}
+                    for k, lbl in list(mod['metrics']) + list(mod.get('text_metrics', []))]})
         period = FinancialPeriod.query.filter_by(company_id=company_id, period_label=fiscal_year).first()
         pay = DirectorRemunerationRow.query.filter_by(period_id=period.id).order_by(DirectorRemunerationRow.order_index).all() if period else []
         comms = Committee.query.filter_by(period_id=period.id).order_by(Committee.order_index).all() if period else []
@@ -357,13 +413,14 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
             'pay_rows': [r.to_dict() for r in pay],
             'ned_benefits': (row.ned_benefits or {}) if row else {}, 'benefit_keys': tab_modules.BENEFIT_KEYS})
 
-    @route('/api/manual/<int:company_id>/<fiscal_year>/metrics', methods=['PUT'])
+    @manual_write('/api/manual/<int:company_id>/<fiscal_year>/metrics', 'Manual entry - survey figures', methods=['PUT'])
     def manual_metrics(company_id, fiscal_year):
         """{'fields': {column: number | null}, 'note': str, 'unit': 'units|thousands|millions'}. A value entered
         here is marked reviewed, so neither the rule-based readers nor the AI will ever overwrite it."""
         Company.query.get_or_404(company_id)
         body = request.get_json(silent=True) or {}
-        allowed = tab_modules.survey_metric_columns()
+        text_cols = tab_modules.survey_text_columns()
+        allowed = tab_modules.survey_metric_columns() | text_cols
         row = tab_modules.survey_row(company_id, fiscal_year, create=True)
         srcs, confs = dict(row.field_sources or {}), dict(row.field_confidence or {})
         status = dict(row.field_review_status or {})
@@ -374,6 +431,11 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
                 continue
             if val in (None, ''):
                 setattr(row, col, None); srcs.pop(col, None); confs.pop(col, None); status.pop(col, None)
+            elif col in text_cols:                      # free-text field (e.g. CEO conversion basis) - stored as text
+                setattr(row, col, str(val).strip()[:120])
+                srcs[col] = 'entered manually' + (f': {note}' if note else '')
+                confs[col] = 1.0
+                status[col] = 'corrected'
             else:
                 try:
                     num = float(str(val).replace(',', ''))
@@ -390,7 +452,7 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         db.session.commit()
         return jsonify({'changed': changed, 'status': tab_modules.tab_status(company_id, fiscal_year)})
 
-    @route('/api/manual/<int:company_id>/<fiscal_year>/directors', methods=['POST'])
+    @manual_write('/api/manual/<int:company_id>/<fiscal_year>/directors', 'Manual entry - director', methods=['POST'])
     def manual_director_save(company_id, fiscal_year):
         b = request.get_json(silent=True) or {}
         name = (b.get('director_name') or '').strip()
@@ -414,7 +476,7 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         db.session.commit()
         return jsonify({'director': d.to_dict(), 'status': tab_modules.tab_status(company_id, fiscal_year)})
 
-    @route('/api/manual/directors/<int:director_id>', methods=['DELETE'])
+    @manual_write('/api/manual/directors/<int:director_id>', 'Manual entry - delete director', methods=['DELETE'])
     def manual_director_delete(director_id):
         d = SurveyDirector.query.get_or_404(director_id)
         cid, fy = d.company_id, d.fiscal_year
@@ -422,7 +484,7 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         db.session.commit()
         return jsonify({'status': tab_modules.tab_status(cid, fy)})
 
-    @route('/api/manual/<int:company_id>/<fiscal_year>/committees', methods=['POST'])
+    @manual_write('/api/manual/<int:company_id>/<fiscal_year>/committees', 'Manual entry - committee', methods=['POST'])
     def manual_committee_save(company_id, fiscal_year):
         b = request.get_json(silent=True) or {}
         name = (b.get('name') or '').strip()
@@ -452,7 +514,7 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         db.session.commit()
         return jsonify({'status': tab_modules.tab_status(company_id, fiscal_year)})
 
-    @route('/api/manual/committees/<int:committee_id>', methods=['DELETE'])
+    @manual_write('/api/manual/committees/<int:committee_id>', 'Manual entry - delete committee', methods=['DELETE'])
     def manual_committee_delete(committee_id):
         c = Committee.query.get_or_404(committee_id)
         period = db.session.get(FinancialPeriod, c.period_id)
@@ -461,7 +523,7 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         db.session.commit()
         return jsonify({'status': tab_modules.tab_status(period.company_id, period.period_label)})
 
-    @route('/api/manual/<int:company_id>/<fiscal_year>/pay-rows', methods=['POST'])
+    @manual_write('/api/manual/<int:company_id>/<fiscal_year>/pay-rows', 'Manual entry - director pay', methods=['POST'])
     def manual_pay_save(company_id, fiscal_year):
         """A named director's pay as printed. `table_kind='manual'` protects the row from being replaced by a re-import."""
         b = request.get_json(silent=True) or {}
@@ -494,7 +556,7 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         db.session.commit()
         return jsonify({'status': tab_modules.tab_status(company_id, fiscal_year)})
 
-    @route('/api/manual/pay-rows/<int:row_id>', methods=['DELETE'])
+    @manual_write('/api/manual/pay-rows/<int:row_id>', 'Manual entry - delete pay row', methods=['DELETE'])
     def manual_pay_delete(row_id):
         r = DirectorRemunerationRow.query.get_or_404(row_id)
         period = db.session.get(FinancialPeriod, r.period_id)
@@ -502,7 +564,7 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         db.session.commit()
         return jsonify({'status': tab_modules.tab_status(period.company_id, period.period_label)})
 
-    @route('/api/manual/<int:company_id>/<fiscal_year>/benefits', methods=['PUT'])
+    @manual_write('/api/manual/<int:company_id>/<fiscal_year>/benefits', 'Manual entry - benefits', methods=['PUT'])
     def manual_benefits(company_id, fiscal_year):
         """{'ned_benefits': {Key: {'provided': bool, 'detail': str}}} - replaces the NED benefits checklist."""
         b = (request.get_json(silent=True) or {}).get('ned_benefits') or {}

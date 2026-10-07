@@ -48,6 +48,9 @@ class User(db.Model):
     email = db.Column(db.String(150), nullable=False, unique=True)
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), nullable=False, default='user')  # 'admin' | 'user'
+    # Only a super admin (an admin with this flag) can add reports directly; every other admin's
+    # uploads/manual entries wait in the approvals queue (approvals.py). See migrate_v8_super_admin.py.
+    is_super_admin = db.Column(db.Boolean, default=False)
     # Profile fields - all optional at the DB level (nullable) so existing
     # rows created before this change stay valid without a backfill. The
     # register endpoint still requires organization + job_title from new
@@ -57,6 +60,12 @@ class User(db.Model):
     job_title = db.Column(db.String(120))
     phone = db.Column(db.String(30))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Account lockout + two-step verification (see account_security.py, migrate_v9_account_security.py).
+    failed_login_count = db.Column(db.Integer, default=0)
+    locked_until = db.Column(db.DateTime)
+    totp_secret = db.Column(db.String(64))
+    mfa_enabled = db.Column(db.Boolean, default=False)
+    mfa_last_step = db.Column(db.BigInteger)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -68,6 +77,8 @@ class User(db.Model):
         return {
             'id': self.id, 'name': self.name, 'email': self.email,
             'role': self.role,
+            'is_super_admin': bool(self.is_super_admin) and self.role == 'admin',
+            'mfa_enabled': bool(self.mfa_enabled),
             'organization': self.organization,
             'job_title': self.job_title,
             'phone': self.phone,
@@ -90,6 +101,8 @@ class Company(db.Model):
     sector = db.Column(db.String(60))
     country = db.Column(db.String(60))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # URL-friendly name for the public pages (/company/kcb-group). Filled by public_pages.ensure_slugs().
+    slug = db.Column(db.String(140), unique=True, index=True)
 
     periods = db.relationship('FinancialPeriod', backref='company', lazy=True,
                                cascade='all, delete-orphan')

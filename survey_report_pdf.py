@@ -21,6 +21,7 @@ Design notes:
 """
 
 from io import BytesIO
+from survey_aggregate import UNIT_SCALE
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
@@ -57,30 +58,25 @@ def _styles():
     ss.add(ParagraphStyle('Body', fontName='Helvetica', fontSize=9.5, leading=14, textColor=colors.HexColor('#222833')))
     ss.add(ParagraphStyle('Faint', fontName='Helvetica', fontSize=8, leading=11, textColor=TEXT_FAINT))
     ss.add(ParagraphStyle('KPILabel', fontName='Helvetica', fontSize=8.5, leading=11, textColor=TEXT_DIM))
-    ss.add(ParagraphStyle('KPIValue', fontName='Helvetica-Bold', fontSize=17, leading=21, textColor=NAVY))
+    ss.add(ParagraphStyle('KPIValue', fontName='Helvetica-Bold', fontSize=14, leading=18, textColor=NAVY))
     ss.add(ParagraphStyle('TableHeader', fontName='Helvetica-Bold', fontSize=8.5, leading=11, textColor=colors.white))
     ss.add(ParagraphStyle('TableCell', fontName='Helvetica', fontSize=8.5, leading=11, textColor=colors.HexColor('#222833')))
     ss.add(ParagraphStyle('TableCellFaint', fontName='Helvetica-Oblique', fontSize=8.5, leading=11, textColor=TEXT_FAINT))
     return ss
 
 
-def _fmt_amount(value):
-    """Matches the app's own fmtAmount() convention: large figures get
-    a K/M/B suffix so a wide retainer table doesn't overflow."""
+def _fmt_amount(value, scale=1):
+    """Always written in full - no K/M/B abbreviations. `scale` converts a figure stored in a
+    larger unit (e.g. 1_000_000 for the performance averages, which survey_aggregate keeps in
+    millions) back to whole currency units."""
     if value is None:
         return None
-    v = abs(value)
-    sign = '-' if value < 0 else ''
-    if v >= 1_000_000_000:
-        return f'{sign}{v/1_000_000_000:.2f}B'
-    if v >= 1_000_000:
-        return f'{sign}{v/1_000_000:.2f}M'
-    if v >= 1_000:
-        return f'{sign}{v/1_000:.1f}K'
-    return f'{sign}{v:.0f}'
+    v = round(value * scale, 2)
+    sign = '-' if v < 0 else ''
+    return f"{sign}{abs(v):,.2f}".rstrip('0').rstrip('.')
 
 
-def _fmt_metric(metric, currency='', suffix='', decimals=0, is_amount=False, with_percentiles=False):
+def _fmt_metric(metric, currency='', suffix='', decimals=0, is_amount=False, with_percentiles=False, scale=1):
     """metric is {'average': float|None, 'p25'/'p50'/'p75': float|None,
     'company_count': int} as produced by survey_aggregate.py. Renders the
     honest not-enough-data fallback rather than ever showing 0 or blank
@@ -92,7 +88,7 @@ def _fmt_metric(metric, currency='', suffix='', decimals=0, is_amount=False, wit
         return f'{NOT_ENOUGH_DATA} ({count} of 2+ companies)'
 
     def _one(val):
-        body = _fmt_amount(val) if is_amount else f'{val:.{decimals}f}'
+        body = _fmt_amount(val, scale) if is_amount else f'{val:.{decimals}f}'
         prefix = f'{currency} ' if currency else ''
         return f'{prefix}{body}{suffix}'
 
@@ -107,17 +103,21 @@ def _fmt_total(value):
 
 
 def _kpi_table(items, styles):
-    """items: list of (label, value_str) tuples, laid out as a 2x2 or
-    1xN row of boxed KPI cells."""
+    """items: list of (label, value_str) tuples, laid out two per row so that amounts written in
+    full (e.g. KES 185,900,000,000) have room and are never cut off."""
     cells = []
     for label, value in items:
-        cell = [
+        cells.append([
             Paragraph(label, styles['KPILabel']),
             Paragraph(value, styles['KPIValue']),
-        ]
-        cells.append(cell)
-    col_width = (170 * mm) / len(cells)
-    table = Table([cells], colWidths=[col_width] * len(cells))
+        ])
+    per_row = 2
+    rows = [cells[i:i + per_row] for i in range(0, len(cells), per_row)]
+    for r in rows:
+        while len(r) < per_row:
+            r.append('')
+    col_width = (170 * mm) / per_row
+    table = Table(rows, colWidths=[col_width] * per_row)
     table.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('BACKGROUND', (0, 0), (-1, -1), PANEL_BG),
@@ -203,7 +203,7 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(Spacer(1, 30))
     story.append(Paragraph(f'Fiscal Year: {fiscal_year}', styles['Body']))
     story.append(Paragraph(f'{n} compan{"y" if n == 1 else "ies"} surveyed', styles['Body']))
-    story.append(Paragraph(f'Figures in {currency} ({unit}) unless stated otherwise', styles['Body']))
+    story.append(Paragraph(f'All amounts are written in full, in {currency}', styles['Body']))
     story.append(Spacer(1, 6))
     story.append(Paragraph(
         f'Generated {datetime.utcnow().strftime("%d %B %Y")} — built from company filings uploaded to FinSight. '
@@ -224,15 +224,14 @@ def build_survey_pdf(overview: dict) -> BytesIO:
         story.append(Paragraph(item, styles['Body']))
 
     # ================= EXECUTIVE SUMMARY =================
-    _section_divider(story, styles, 'Executive Summary', f'Key findings across {n} surveyed compan{"y" if n == 1 else "ies"} — {fiscal_year}')
     story.append(PageBreak())
     story.append(Paragraph('1. Executive Summary', styles['H2']))
 
     es = overview['executive_summary']
     kpis = [
         ('Companies Surveyed', str(n)),
-        ('Avg. Turnover', _fmt_metric(es['avg_turnover'], currency, is_amount=True)),
-        ('Avg. Net Profit', _fmt_metric(es['avg_net_profit'], currency, is_amount=True)),
+        ('Avg. Turnover', _fmt_metric(es['avg_turnover'], currency, is_amount=True, scale=UNIT_SCALE.get(unit, 1))),
+        ('Avg. Net Profit', _fmt_metric(es['avg_net_profit'], currency, is_amount=True, scale=UNIT_SCALE.get(unit, 1))),
         ('Avg. Profit Margin', _fmt_metric(es['avg_profit_margin'], suffix='%')),
     ]
     story.append(_kpi_table(kpis, styles))
@@ -249,7 +248,6 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(_kv_panel('Board Composition Snapshot', board_rows, styles))
 
     # ================= BOARD OVERVIEW =================
-    _section_divider(story, styles, 'Board Overview', 'Composition, gender, independence and age profile')
     story.append(PageBreak())
     story.append(Paragraph('2. Board Overview', styles['H2']))
 
@@ -286,7 +284,6 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(_kv_panel('Governance Cadence', meeting_rows, styles))
 
     # ================= DIRECTORS' REMUNERATION =================
-    _section_divider(story, styles, "Directors' Remuneration", 'Chairperson, Non-Executive and Executive Director pay')
     story.append(PageBreak())
     story.append(Paragraph("3. Directors' Remuneration", styles['H2']))
 
@@ -307,7 +304,6 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(_kv_panel('Executive Directors', ed_rows, styles))
 
     # ================= COMMITTEE REMUNERATION =================
-    _section_divider(story, styles, 'Committee Remuneration', 'Committee chair and member compensation')
     story.append(PageBreak())
     story.append(Paragraph('4. Committee Remuneration', styles['H2']))
 
@@ -321,7 +317,6 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(_kv_panel('Committee Chair vs. Member', committee_rows, styles))
 
     # ================= CEO/MD REMUNERATION =================
-    _section_divider(story, styles, 'CEO/MD Remuneration', 'Chief Executive Officer / Managing Director monthly compensation')
     story.append(PageBreak())
     story.append(Paragraph('5. CEO/MD Remuneration', styles['H2']))
 
@@ -340,7 +335,6 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(_kv_panel('CEO/MD Compensation Components', ceo_rows, styles))
 
     # ================= NED BENEFITS =================
-    _section_divider(story, styles, 'NED Benefits', 'Non-cash benefits and perquisites offered to Non-Executive Directors')
     story.append(PageBreak())
     story.append(Paragraph('6. NED Benefits', styles['H2']))
 
@@ -369,7 +363,6 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(_kv_panel('% of Companies Providing Each Benefit', benefit_rows, styles))
 
     # ================= COMPARATIVE ANALYSIS =================
-    _section_divider(story, styles, 'Comparative Analysis', 'Sector-by-sector comparison')
     story.append(PageBreak())
     story.append(Paragraph('7. Comparative Analysis — by Sector', styles['H2']))
 
@@ -405,7 +398,6 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(sector_table)
 
     # ================= APPENDIX =================
-    _section_divider(story, styles, 'Appendix', 'Companies surveyed and data sources')
     story.append(PageBreak())
     story.append(Paragraph('8. Appendix — Companies Surveyed', styles['H2']))
     story.append(Paragraph(

@@ -43,13 +43,20 @@ POLICY_METRICS = [
     ('executive_director_annual_retainer', 'Executive director annual retainer'),
     ('executive_director_meeting_allowance', 'Executive director meeting allowance'),
     ('committee_chair_annual_retainer', 'Committee chair annual retainer'), ('committee_member_annual_retainer', 'Committee member annual retainer'),
+    ('committee_chair_meeting_allowance', 'Committee chair meeting allowance'),
+    ('committee_member_meeting_allowance', 'Committee member meeting allowance'),
 ]
 CEO_METRICS = [
     ('ceo_monthly_salary', 'CEO monthly salary'), ('ceo_monthly_allowances', 'CEO monthly allowances'),
     ('ceo_monthly_incentive_bonus', 'CEO monthly incentive bonus'), ('ceo_monthly_deferred_incentive', 'CEO monthly deferred incentive'),
     ('ceo_monthly_non_cash_benefits', 'CEO monthly non-cash benefits'), ('ceo_monthly_pension', 'CEO monthly pension'),
+    ('ceo_monthly_gratuity', 'CEO monthly gratuity'), ('ceo_monthly_share_value', 'CEO monthly share value'),
     ('ceo_monthly_cost_of_employment', 'CEO monthly cost of employment'),
+    ('ceo_annual_salary_as_stated', 'CEO annual salary (as stated in the report)'),
 ]
+# Free-text survey columns a person may enter by hand (everything in 'metrics' is numeric).
+# ceo_monthly_conversion_basis is the derivation note that goes with ceo_annual_salary_as_stated, e.g. "annual / 12".
+CEO_TEXT_METRICS = [('ceo_monthly_conversion_basis', 'CEO monthly conversion basis (text, e.g. annual / 12)')]
 BENEFIT_KEYS = ['MedicalCover', 'IndemnityInsurance', 'TravelAccommodation', 'TelephoneAllowance', 'TransportAllowance',
                 'MealAllowance', 'ClubMembership', 'DutyDayAllowance', 'GroupPersonalAccident', 'ShareSchemeParticipation']
 
@@ -58,15 +65,26 @@ TAB_MODULES = [
     {'id': 'company-overview', 'label': 'Company Overview', 'metrics': OVERVIEW_METRICS, 'lists': []},
     {'id': 'board-composition', 'label': 'Board Composition', 'metrics': BOARD_METRICS, 'lists': []},
     {'id': 'directors-register', 'label': "Directors' Register", 'metrics': [], 'lists': ['register']},
-    {'id': 'remuneration', 'label': 'Remuneration', 'metrics': POLICY_METRICS + CEO_METRICS, 'lists': ['pay_rows']},
+    {'id': 'remuneration', 'label': 'Remuneration', 'metrics': POLICY_METRICS + CEO_METRICS, 'text_metrics': CEO_TEXT_METRICS,
+     'lists': ['pay_rows']},
     {'id': 'committees', 'label': 'Committees', 'metrics': [], 'lists': ['committees']},
     {'id': 'benefits', 'label': 'Benefits & Allowances', 'metrics': [], 'lists': ['ned_benefits']},
 ]
 
 
 def survey_metric_columns():
-    """Every survey column a person may enter by hand (numeric metrics only)."""
+    """Every NUMERIC survey column a person may enter by hand."""
     return {k for m in TAB_MODULES for k, _ in m['metrics']}
+
+
+def survey_text_columns():
+    """Free-text survey columns a person may enter by hand (stored as a short string, not a number)."""
+    return {k for m in TAB_MODULES for k, _ in m.get('text_metrics', [])}
+
+
+def all_metric_labels():
+    """{column: label} for every hand-enterable survey column, numeric and text."""
+    return {k: lbl for m in TAB_MODULES for k, lbl in list(m['metrics']) + list(m.get('text_metrics', []))}
 
 
 def ensure_period(company_id, fiscal_year):
@@ -116,12 +134,13 @@ def tab_status(company_id, fiscal_year):
     out = {}
     for mod in TAB_MODULES:
         filled, missing = 0, []
-        for key, label in mod['metrics']:
-            if row is not None and getattr(row, key, None) is not None:
+        for key, label in list(mod['metrics']) + list(mod.get('text_metrics', [])):
+            val = getattr(row, key, None) if row is not None else None
+            if val is not None and str(val).strip() != '':
                 filled += 1
             else:
                 missing.append(key)
-        total = len(mod['metrics'])
+        total = len(mod['metrics']) + len(mod.get('text_metrics', []))
         rows = 0
         for lst in mod['lists']:
             n = {'register': len(reg), 'pay_rows': len([r for r in pay if not r.is_grand_total and not r.is_total_row]),

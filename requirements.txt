@@ -11,3 +11,6 @@ reportlab
 sqlalchemy
 pymupdf
 werkzeug
+pytesseract
+pillow
+Flask-Limiter
