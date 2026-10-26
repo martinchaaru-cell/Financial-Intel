@@ -14,3 +14,4 @@ werkzeug
 pytesseract
 pillow
 Flask-Limiter
+psycopg[binary]

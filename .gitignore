@@ -6,8 +6,8 @@ __pycache__/
 .env
 
 # Replit
-.replit
 .upm/
+.pythonlibs/
 
 # Generated outputs
 .agents/outputs/
@@ -32,3 +32,4 @@ pdf_storage/
 # Test outputs
 coverage/
 .pytest_cache/
+instance/

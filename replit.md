@@ -2,6 +2,22 @@
 
 ## Overview
 
+## Running on Replit
+
+- Click **Run** to start the existing **Start application** workflow (`python app.py`).
+- Flask listens on `0.0.0.0:5000`; open Preview to use the app. There is no frontend build step.
+- Python dependencies are in `requirements.txt`; test tools are in `requirements-dev.txt`.
+- The PostgreSQL connection is supplied through `DATABASE_URL`. Both psycopg 3
+  (`postgresql+psycopg://`) and psycopg2 connection URLs are supported by the installed drivers.
+- Keep `SESSION_SECRET` in Replit Secrets. Do not commit connection strings or account credentials.
+- Optional AI extraction requires `ANTHROPIC_API_KEY`; ordinary parsing and browsing do not.
+- To create the initial administrator, supply `ADMIN_EMAIL` and `ADMIN_PASSWORD` through Secrets
+  before startup. The existing app only seeds an administrator when none exists.
+- Run smoke checks with `DATABASE_URL=sqlite:///:memory: python -m pytest -q test_api_smoke.py test_public_pages.py`.
+  This uses a separate temporary database, not the app's PostgreSQL data.
+
+## Product overview
+
 This is **Finance Intel**, a financial and governance intelligence platform for NSE-listed (Nairobi Securities
 Exchange) companies. It has two linked layers: a **financial statement layer** (import, store, and analyze company
 financials, ratios, risks, and management guidance) and a **survey layer** (board composition, director
@@ -121,7 +137,7 @@ werkzeug.
 | `DATABASE_URL` | Yes (in deployment) | PostgreSQL connection string; falls back to local SQLite if unset |
 | `SESSION_SECRET` | Recommended | Flask session signing key (defaults to a dev-only placeholder if unset) |
 
-### Not Yet Present
+### Existing development infrastructure
 
-No Dockerfile, container config, or CI/CD workflow exists in the repository, and there is no automated test
-suite. These remain open work rather than implemented infrastructure.
+The repository includes a Dockerfile, docker-compose configuration, CI configuration, and pytest tests.
+Replit runs Flask directly; Docker is not required for this workspace.
