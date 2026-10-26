@@ -1030,8 +1030,14 @@ def build_combined_report(overview, rows, trends):
     # data quality
     S += _section(st, 'Method', 'Data quality and method',
                   'What stands behind the numbers, and what has deliberately been left out.')
-    t = [f"This report draws on {n} {_plural(n, 'filing')} for {_e(fy)}. Amounts are in {_e(cur)}; no foreign-exchange conversion is applied, "
-         f"and a company reporting in another currency is left out of the performance averages rather than converted."]
+    t = [f"This report draws on {n} {_plural(n, 'filing')} for {_e(fy)}. Amounts are in {_e(cur)}. A company that reports in another "
+         f"currency is converted into {_e(cur)} at that year's annual-average exchange rate and included in every average; "
+         f"if no rate is on file for its year it is left out rather than guessed."]
+    conv = overview.get('converted_from_other_currency') or []
+    if conv:
+        t.append('Converted into ' + _e(cur) + ': ' + _and([f"{_e(x['name'])} ({_e(x['currency'])}, 1 {_e(x['currency'])} = "
+                                                            f"{x['rate']:.4f} {_e(cur)})" for x in conv])
+                 + f". Rates: {_e(conv[0]['source'])}.")
     exc = overview.get('excluded_from_performance_averages') or []
     if exc:
         t.append('Left out of performance averages: ' + _and([f"{_e(x['name'])} ({_e(x['reason'])})" for x in exc]) + '.')

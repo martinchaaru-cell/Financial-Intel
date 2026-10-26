@@ -95,6 +95,9 @@ h1,h2,h3,h4,h5,h6,
   display:flex;flex-direction:column;gap:10px;flex-shrink:0;}
 .sidebar-footer .nav-btn{flex-shrink:0;}
 .sidebar-footer #navSettings:empty{display:none;}
+.install-steps{margin:0 0 12px;padding-left:20px;color:var(--text-dim);font-size:13.5px;line-height:1.6;}
+.install-steps b{color:var(--text);}
+.install-note{font-size:12px;color:var(--text-faint);margin:6px 0 0;line-height:1.5;}
 
 .sidebar-account{display:flex;align-items:center;gap:9px;padding:8px;border-radius:10px;cursor:default;}
 .sidebar-account .acc-avatar{width:32px;height:32px;border-radius:50%;background:var(--blue);color:#fff;
@@ -971,7 +974,9 @@ tr.li-child td:first-child{color:var(--text-dim);}
 .mini-bar-col .mbc-val{font-size:9.5px;}
 details.panel > summary::-webkit-details-marker{display:none;}
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<!-- Chart.js 4.4.4 is served from the app itself: loading it from a CDN in the page head held the whole page
+     (and the installed app's splash screen) until the CDN answered, which on a slow mobile connection could be never. -->
+<script src="/static/vendor/chart.umd.min.js"></script>
 </head>
 <body>
 <noscript><h1>Finance Intel</h1><p>Board composition, director remuneration and governance benchmarks for NSE-listed companies. Please enable JavaScript to use the application.</p></noscript>
@@ -985,6 +990,9 @@ details.panel > summary::-webkit-details-marker{display:none;}
     </div>
     <div class="nav-list" id="navList"></div>
     <div class="sidebar-footer">
+      <button class="nav-btn" id="installAppBtn" onclick="installApp()" style="display:none;" title="Install Finance Intel on this device">
+        <span class="ic">&#11015;</span><span>Install app</span>
+      </button>
       <div id="navSettings"></div>
     </div>
   </aside>
@@ -1029,6 +1037,16 @@ details.panel > summary::-webkit-details-marker{display:none;}
     </div>
     <button onclick="addCompany()">Add Company</button>
     <div id="add-company-error" class="error"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="installModal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal-box" style="max-width:440px;">
+    <div class="modal-head">
+      <h2>Install Finance Intel</h2>
+      <span class="modal-close" onclick="document.getElementById('installModal').classList.remove('open')">✕</span>
+    </div>
+    <div id="installModalBody"></div>
   </div>
 </div>
 
@@ -1285,11 +1303,13 @@ function updateUserBadge(){
     dd.innerHTML = `
       <button onclick="openProfileModal()">My Profile</button>
       ${u.role === 'admin' ? `<button onclick="goTo('settings')">Settings</button>` : ''}
+      ${(typeof installAppAvailable === 'function' && installAppAvailable()) ? `<button onclick="installApp()">Install app</button>` : ''}
       <button onclick="logout()">Log Out</button>`;
   } else {
     dd.innerHTML = `
       <button onclick="openLoginModal()">Log In</button>
-      ${window.selfRegistrationOpen ? `<button onclick="openRegisterModal()">Register</button>` : ''}`;
+      ${window.selfRegistrationOpen ? `<button onclick="openRegisterModal()">Register</button>` : ''}
+      ${(typeof installAppAvailable === 'function' && installAppAvailable()) ? `<button onclick="installApp()">Install app</button>` : ''}`;
   }
 }
 
@@ -2515,14 +2535,24 @@ function renderUploadBatchResults(data){
 // no way to ever learn whether the upload finished. Polls every 5s, up to
 // 40 minutes (10 files at ~3-4 min each, plus margin), then gives up with
 // an honest message rather than polling forever.
-async function pollBatchResultFallback(batchId, onDone){
+async function pollBatchResultFallback(batchId, onDone, isSettled){
+  // Safety net beside the live log: asks the server every 5 s whether the batch has finished. It stops as
+  // soon as the live log (or this poll) settles the batch. A run the server no longer knows about means
+  // the server restarted mid-batch, and that run is gone - say so instead of waiting the full 40 minutes.
   const maxAttempts = 480; // 480 * 5s = 40 minutes
+  let unknownStreak = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, 5000));
+    if (isSettled && isSettled()) return;
     try {
       const res = await fetch(`/api/import/upload-batch/${batchId}/result`);
       const data = await res.json();
       if (data.done) { onDone(data, null); return; }
+      unknownStreak = data.unknown ? unknownStreak + 1 : 0;
+      if (unknownStreak >= 3) {
+        onDone(null, 'The server restarted while this batch was running, so it stopped part-way. Files that finished before the restart are saved (see Import Activity); upload the rest again.');
+        return;
+      }
     } catch (e) { /* transient network hiccup - just try again next tick */ }
   }
   onDone(null, 'Lost track of this upload — it may still be running on the server. Check Import Activity in a few minutes.');
@@ -2634,6 +2664,9 @@ async function submitUploadReports(){
         renderUploadBatchResults({results: e.results || [], saved: e.saved, failed: e.failed});
         finish(true);
       }
+    } else if (e.type === 'unknown_batch' || e.type === 'timeout') {
+      es.close();
+      startPoll();
     } else if (e.type === 'batch_failed') {
       logLine(`<span style="color:var(--text-faint);">[${t}]</span> <strong style="color:var(--red,#c0392b);">Batch stopped: ${escapeHtml(e.error || 'unknown error')}</strong> — ${e.saved} saved, ${e.failed} failed`);
       if (!settledByPoll) {
@@ -2642,21 +2675,39 @@ async function submitUploadReports(){
       }
     }
   };
-  // A dropped SSE connection is NOT fatal anymore - the upload itself keeps
-  // running server-side regardless (it no longer lives inside the request
-  // this page holds open), so fall back to polling the /result endpoint
-  // until it reports done, instead of leaving the user with a stalled log
-  // and no way to find out what happened.
-  es.onerror = () => {
-    es.close();
+  // A dropped live-log connection is not fatal: the upload runs on the server regardless. The browser
+  // reconnects by itself (the server asks for a 3-second retry) and sends back the id of the last line it
+  // got, so the server replays whatever was missed and the log carries on with no gaps. The /result poll
+  // runs alongside as a safety net in case the live log cannot come back at all.
+  let dropNoted = false, pollStarted = false;
+  const settleFromPoll = (data, errMsg) => {
     if (settledByPoll) return;
-    logLine(`<span style="color:var(--text-faint);">[${fmtTime(new Date().toISOString())}]</span> Live log connection dropped — still checking for a result in the background...`);
-    pollBatchResultFallback(batchId, (data, errMsg) => {
-      if (settledByPoll) return;
-      settledByPoll = true;
-      if (data) { renderUploadBatchResults(data); finish(true); }
-      else { finish(false, errMsg); }
-    });
+    settledByPoll = true;
+    if (data) {
+      logLine(`<span style="color:var(--text-faint);">[${fmtTime(new Date().toISOString())}]</span> <strong>Batch complete</strong> — ${data.saved} saved, ${data.failed} failed`);
+      renderUploadBatchResults(data); finish(true);
+    } else { finish(false, errMsg); }
+  };
+  const startPoll = () => {
+    if (pollStarted) return;
+    pollStarted = true;
+    pollBatchResultFallback(batchId, settleFromPoll, () => settledByPoll);
+  };
+  es.onopen = () => {
+    if (dropNoted) {
+      dropNoted = false;
+      logLine(`<span style="color:var(--text-faint);">[${fmtTime(new Date().toISOString())}]</span> Live log reconnected — picking up where it left off.`);
+    }
+  };
+  es.onerror = () => {
+    if (settledByPoll) { es.close(); return; }
+    if (!dropNoted) {
+      dropNoted = true;
+      logLine(`<span style="color:var(--text-faint);">[${fmtTime(new Date().toISOString())}]</span> Live log connection dropped — reconnecting. The upload keeps running on the server.`);
+    }
+    startPoll();
+    // CLOSED means the browser gave up (for example the sign-in expired). The poll above finishes the job.
+    if (es.readyState === EventSource.CLOSED) es.close();
   };
 
   try {
@@ -5679,6 +5730,7 @@ function docOpenFor(fiscalYear, companyId){
 // Download through fetch() so a refusal (daily download limit, sign-in needed, too many requests)
 // shows a clear message here instead of navigating the browser to a raw JSON error page.
 async function docDownload(url){
+  if (/[?&]fiscal_year=all\b|\/periods\/all\//.test(url)) showToast('Preparing every year - this can take a little while...');
   try {
     const res = await fetch(url, {credentials: 'same-origin'});
     if (!res.ok) {
@@ -5703,6 +5755,11 @@ async function docDownload(url){
   }
 }
 function docFyQuery(){ return docFiscalYear ? '?fiscal_year=' + encodeURIComponent(docFiscalYear) : ''; }
+// 'all' = the person picked "All years". Single-year reports then download as a zip with one file per year.
+const DOC_ALL = 'all';
+function docYearOnly(v){ return (v && v !== DOC_ALL) ? v : null; }
+function docYearLabel(v, none){ return v === DOC_ALL ? 'All years' : (v || none); }
+let docLoadRetried = false;
 
 async function docLoadPeriods(companyId){
   docCache.periods = docCache.periods || {};
@@ -5717,23 +5774,36 @@ async function renderDocumentsPage(){
   document.getElementById('pageTitle').textContent = 'Documents & Reports';
   document.getElementById('pageSub').textContent = 'Every report and export in one place - pick a year or company, then download';
 
+  // A failed request (server busy with a large upload, a brief restart, the rate limit) used to look exactly
+  // like "no data", which greyed out every year picker. Failures are now told apart from empty results.
+  const getJson = async url => { try { return await safeJson(await fetch(url), null); } catch (e) { return null; } };
+  const ovFy = docYearOnly(docFiscalYear);
   const [surveyCos, allCos, years] = await Promise.all([
-    safeJson(await fetch('/api/survey/companies'), []),
-    safeJson(await fetch('/api/companies'), []),
-    safeJson(await fetch('/api/survey/overview' + (docFiscalYear ? `?fiscal_year=${encodeURIComponent(docFiscalYear)}` : '')), null),
+    getJson('/api/survey/companies'),
+    getJson('/api/companies'),
+    getJson('/api/survey/overview' + (ovFy ? `?fiscal_year=${encodeURIComponent(ovFy)}` : '')),
   ]);
-  const surveyList = Array.isArray(surveyCos) ? surveyCos : (surveyCos.companies || []);
+  const loadFailed = surveyCos === null || allCos === null || years === null;
+  if (loadFailed && !docLoadRetried) {          // one quiet retry before showing anything
+    docLoadRetried = true;
+    await new Promise(r => setTimeout(r, 2500));
+    if (currentPage === 'documents') return renderDocumentsPage();
+    return;
+  }
+  docLoadRetried = false;
+  const surveyList = Array.isArray(surveyCos) ? surveyCos : ((surveyCos && surveyCos.companies) || []);
   const fyList = fullYears(years && years.available_fiscal_years);
-  if (!docFiscalYear || (fyList.length && !fyList.includes(docFiscalYear))) docFiscalYear = (years && years.fiscal_year) || fyList[0] || null;
-  const companies = (Array.isArray(allCos) ? allCos : (allCos.companies || [])).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  if (docFiscalYear !== DOC_ALL && (!docFiscalYear || (fyList.length && !fyList.includes(docFiscalYear)))) docFiscalYear = (years && years.fiscal_year) || fyList[0] || null;
+  const companies = (Array.isArray(allCos) ? allCos : ((allCos && allCos.companies) || [])).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const surveyById = {};
   surveyList.forEach(c => { surveyById[c.company_id] = c; });
   docCache = {years: fyList, companies, surveyById, periods: (docCache && docCache.periods) || {}};
   if (!docCompanyId || !companies.some(c => c.id === docCompanyId)) docCompanyId = companies.length ? companies[0].id : null;
 
-  const yearPicker = fyList.length ? `<select title="Fiscal year" onchange="docFiscalYear=this.value;renderDocumentsPage();">
+  const yearPicker = `<select title="Fiscal year" onchange="docFiscalYear=this.value||null;renderDocumentsPage();">
+      <option value="${DOC_ALL}" ${docFiscalYear === DOC_ALL ? 'selected' : ''}>All years</option>
       ${fyList.map(y => `<option value="${escapeHtml(y)}" ${y === docFiscalYear ? 'selected' : ''}>${escapeHtml(y)}</option>`).join('')}
-    </select>` : '';
+    </select>`;
   setPageActions(null, yearPicker);
   // setPageActions(null, extra) renders only the extra block (the year picker), which is what we want here.
 
@@ -5741,6 +5811,7 @@ async function renderDocumentsPage(){
   const co = companies.find(c => c.id === docCompanyId);
   const coSurvey = surveyById[docCompanyId];
   const coHasYear = !!(coSurvey && (coSurvey.fiscal_years || []).includes(docFiscalYear));
+  const failBanner = loadFailed ? `<div class="panel" style="margin-bottom:14px;"><div class="empty">Some of this page could not be loaded (the server may be busy with an upload). The lists below may be incomplete. <a href="#" onclick="renderDocumentsPage();return false;">Retry</a></div></div>` : '';
   const coPicker = `<select onchange="docCompanyId=parseInt(this.value,10);docPeriodLabel=null;docYear={report:null,word:null,snap:null,raw:null,ext:null,extzip:docYear.extzip};renderDocumentsPage();" style="max-width:100%;">
       ${companies.map(c => `<option value="${c.id}" ${c.id === docCompanyId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
     </select>`;
@@ -5763,13 +5834,14 @@ async function renderDocumentsPage(){
       </div>
     </div>`;
 
-  const noYear = hasYear ? '' : 'No survey data on file yet';
+  const noYear = (hasYear && (docFiscalYear !== DOC_ALL || fyList.length)) ? '' : (loadFailed ? 'Could not load - retry above' : 'No survey data on file yet');
+  const surveyYearBadge = docYearLabel(docFiscalYear, 'No year');
   const surveyCards = [
-    card('📘', 'Board Remuneration & Governance Report', ['PDF', docFiscalYear || 'No year'],
+    card('📘', 'Board Remuneration & Governance Report', ['PDF', surveyYearBadge],
       'The full report for the selected year, joining the survey findings with the cross-company analysis.',
       ['Key findings and the year at a glance', 'Board, director, committee and CEO pay with market percentiles', 'Company-by-company tables, rankings and governance scores', 'Sector comparison, trends, data completeness, appendix'],
       '', 'Download full report', `docDownload('/api/export/combined-report.pdf${docFyQuery()}')`, noYear),
-    card('📊', 'Survey Data Tables', ['PDF', docFiscalYear || 'No year'],
+    card('📊', 'Survey Data Tables', ['PDF', surveyYearBadge],
       'The compact tables-only version of the survey, laid out like the Survey Analytics page.',
       ['Executive summary and board overview', "Directors' and committee remuneration", 'CEO/MD pay, NED benefits, sector comparison', 'List of companies surveyed'],
       '', 'Download data tables', `docDownload('/api/survey/export/report.pdf${docFyQuery()}')`, noYear),
@@ -5787,62 +5859,72 @@ async function renderDocumentsPage(){
   const surveyYears = fullYears((coSurvey && coSurvey.fiscal_years)).slice().sort().reverse();
   // Each card has its own year picker. Survey-based report: years with a survey. Word report: financial periods.
   // Snapshot and raw CSV: any financial period, or all of them.
-  if (!docYear.report || !surveyYears.includes(docYear.report)) docYear.report = surveyYears.includes(docFiscalYear) ? docFiscalYear : (surveyYears[0] || null);
-  if (!docYear.word || !periods.includes(docYear.word)) docYear.word = periods[0] || null;
+  // Every year picker is always usable and always offers "All years". Its year list is the years that
+  // card has data for; when that is empty (or failed to load) it falls back to every year known on the page.
+  const knownYears = [...new Set([...fyList, ...surveyYears, ...periods])].sort().reverse();
+  const orKnown = list => (list.length ? list : knownYears);
+  const keep = (v, list) => v === DOC_ALL || (v && list.includes(v));
+  if (!keep(docYear.report, orKnown(surveyYears))) docYear.report = surveyYears.includes(docFiscalYear) ? docFiscalYear : (surveyYears[0] || null);
+  if (!keep(docYear.word, orKnown(periods))) docYear.word = periods[0] || null;
   docPeriodLabel = docYear.word;
-  if (docYear.ext && !surveyYears.includes(docYear.ext)) docYear.ext = null;
-  if (docYear.extzip && !fyList.includes(docYear.extzip)) docYear.extzip = null;
-  if (docYear.snap && !periods.includes(docYear.snap)) docYear.snap = null;
-  if (docYear.raw && !periods.includes(docYear.raw)) docYear.raw = null;
-  const yearSel = (key, opts, allowAll) => `<select onchange="docYear['${key}']=this.value||null;renderDocumentsPage();" style="max-width:100%;" ${opts.length ? '' : 'disabled'}>
-      ${allowAll ? `<option value="" ${!docYear[key] ? 'selected' : ''}>All years</option>` : ''}
-      ${opts.map(l => `<option value="${escapeHtml(l)}" ${l === docYear[key] ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}</select>`;
-  const qy = v => v ? '?period=' + encodeURIComponent(v) : '';
+  if (docYear.ext && !keep(docYear.ext, orKnown(surveyYears))) docYear.ext = null;
+  if (docYear.extzip && !keep(docYear.extzip, orKnown(fyList))) docYear.extzip = null;
+  if (docYear.snap && !keep(docYear.snap, orKnown(periods))) docYear.snap = null;
+  if (docYear.raw && !keep(docYear.raw, orKnown(periods))) docYear.raw = null;
+  const yearSel = (key, opts) => {
+    const list = orKnown(opts);
+    const cur = docYear[key];
+    return `<select onchange="docYear['${key}']=this.value||null;renderDocumentsPage();" style="max-width:100%;">
+      <option value="${DOC_ALL}" ${(cur === DOC_ALL || !cur) ? 'selected' : ''}>All years</option>
+      ${list.map(l => `<option value="${escapeHtml(l)}" ${l === cur ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}</select>`;
+  };
+  const qy = v => docYearOnly(v) ? '?period=' + encodeURIComponent(v) : '';
+  const fyq = v => docYearOnly(v) ? '?fiscal_year=' + encodeURIComponent(v) : '';
   const coName = co ? co.name : 'a company';
   const companyCards = [
-    card('🏢', 'Company Remuneration & Governance Report', ['PDF', docYear.report || 'No year', coName],
+    card('🏢', 'Company Remuneration & Governance Report', ['PDF', docYearLabel(docYear.report, 'All years'), coName],
       "One company's board, pay and governance for the selected year, set against the survey.",
       ['Key figures against the survey median and average', 'Director register, pay and pay components', 'Committees, CEO/MD package, benefits', 'Peer ranking and data notes'],
-      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('report', surveyYears, false)}`, 'Download company report', `docDownload('/api/companies/${docCompanyId}/export/report.pdf?fiscal_year=' + encodeURIComponent(docYear.report || ''))`,
-      !co ? 'No companies yet' : (!surveyYears.length ? `${coName} has no survey data yet` : '')),
-    card('📝', 'Annual Report Summary (Word)', ['Word', docYear.word || 'No year', coName],
+      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('report', surveyYears)}`, 'Download company report', `docDownload('/api/companies/${docCompanyId}/export/report.pdf?fiscal_year=' + encodeURIComponent(docYear.report || DOC_ALL))`,
+      !co ? (loadFailed ? 'Could not load - retry above' : 'No companies yet') : (!surveyYears.length ? `${coName} has no survey data yet` : '')),
+    card('📝', 'Annual Report Summary (Word)', ['Word', docYearLabel(docYear.word, 'All years'), coName],
       "A Word report built from the company's verified financial statements for one period.",
       ['Executive summary and key findings', 'Financial statements and calculated ratios'],
-      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('word', periods, false)}`,
-      'Download Word report', `docDownload('/api/companies/${docCompanyId}/periods/' + encodeURIComponent(docPeriodLabel) + '/report.docx')`,
-      !co ? 'No companies yet' : (!periods.length ? `No financial periods on file for ${coName}` : '')),
-    card('📄', 'Company Snapshot', ['Excel', docYear.snap || 'All years', coName],
+      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('word', periods)}`,
+      'Download Word report', `docDownload('/api/companies/${docCompanyId}/periods/' + encodeURIComponent(docPeriodLabel || DOC_ALL) + '/report.docx')`,
+      !co ? (loadFailed ? 'Could not load - retry above' : 'No companies yet') : (!periods.length ? `No financial periods on file for ${coName}` : '')),
+    card('📄', 'Company Snapshot', ['Excel', docYearLabel(docYear.snap, 'All years'), coName],
       "A single-sheet summary of one company: its details, every period on file and the key ratios.",
       ['Company details', 'All periods with revenue, profit, assets and equity', 'Key ratios'],
-      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('snap', periods, true)}`, 'Download snapshot (.xlsx)', `docDownload('/api/companies/${docCompanyId}/export/snapshot${qy(docYear.snap)}')`,
-      !co ? 'No companies yet' : ''),
-    card('🧮', 'Raw Financials', ['CSV', docYear.raw || 'All years', coName],
+      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('snap', periods)}`, 'Download snapshot (.xlsx)', `docDownload('/api/companies/${docCompanyId}/export/snapshot${qy(docYear.snap)}')`,
+      !co ? (loadFailed ? 'Could not load - retry above' : 'No companies yet') : ''),
+    card('🧮', 'Raw Financials', ['CSV', docYearLabel(docYear.raw, 'All years'), coName],
       "The underlying financial rows for one company, for modelling in your own tools.",
       ['Revenue, net income, assets, liabilities, equity', 'Period, currency and source for each row'],
-      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('raw', periods, true)}`, 'Download CSV', `docDownload('/api/companies/${docCompanyId}/export/raw.csv${qy(docYear.raw)}')`,
-      !co ? 'No companies yet' : ''),
-    card('🔎', 'Text Extraction Report', ['PDF', docYear.ext || 'All years', coName],
+      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('raw', periods)}`, 'Download CSV', `docDownload('/api/companies/${docCompanyId}/export/raw.csv${qy(docYear.raw)}')`,
+      !co ? (loadFailed ? 'Could not load - retry above' : 'No companies yet') : ''),
+    card('🔎', 'Text Extraction Report', ['PDF', docYearLabel(docYear.ext, 'All years'), coName],
       "What the text readers pulled from this company's annual report, and why each missing field was not found.",
       ['Filled, low-confidence and missing survey fields with the cause', 'Directors register, committee and pay-row gaps', 'Source page and reader for every filled value', 'PDF facts: pages, text layer, two-page spreads'],
-      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('ext', surveyYears, true)}`,
-      'Download extraction report', `docDownload('/api/extraction-report/company/${docCompanyId}.pdf' + (docYear.ext ? '?fiscal_year=' + encodeURIComponent(docYear.ext) : ''))`,
-      !co ? 'No companies yet' : (!surveyYears.length ? `${coName} has no survey data yet` : '')),
+      `<label class="doc-label">Company</label>${coPicker}<label class="doc-label">Year</label>${yearSel('ext', surveyYears)}`,
+      'Download extraction report', `docDownload('/api/extraction-report/company/${docCompanyId}.pdf${fyq(docYear.ext)}')`,
+      !co ? (loadFailed ? 'Could not load - retry above' : 'No companies yet') : (!surveyYears.length ? `${coName} has no survey data yet` : '')),
   ].join('');
 
   const extractionCards = [
-    card('🗜️', 'Text Extraction Reports - All Companies', ['ZIP', docYear.extzip || 'All years'],
+    card('🗜️', 'Text Extraction Reports - All Companies', ['ZIP', docYearLabel(docYear.extzip, 'All years')],
       'One extraction report PDF per company, ranked by most missing fields, with a coverage summary (PDF and CSV).',
       ['Summary: score, filled, low confidence, missing per file', 'Whether each file agrees with the Manual Entry form', 'One PDF per company for the chosen year or every year'],
-      `<label class="doc-label">Year</label>${yearSel('extzip', fyList, true)}`,
-      'Download all (.zip)', `docDownload('/api/extraction-report/zip' + (docYear.extzip ? '?fiscal_year=' + encodeURIComponent(docYear.extzip) : ''))`,
-      fyList.length ? '' : 'No survey data on file yet'),
+      `<label class="doc-label">Year</label>${yearSel('extzip', fyList)}`,
+      'Download all (.zip)', `docDownload('/api/extraction-report/zip${fyq(docYear.extzip)}')`,
+      fyList.length ? '' : (loadFailed ? 'Could not load - retry above' : 'No survey data on file yet')),
     card('🧪', 'Diagnose Already-Uploaded Reports', ['Tool', 'Changes no data'],
       'Adds the real reasons for missing fields to files uploaded before extraction reports existed, from the original annual-report PDFs.',
       ['Select all PDFs (or a zip) at once', 'Company and year read from file names like ke-kcb-2025-ar-00.pdf', 'Reports and the zip then show real causes'],
       '', 'Open diagnose tool', `window.open('/extraction-report','_blank')`, ''),
   ].join('');
 
-  app.innerHTML = `
+  app.innerHTML = `${failBanner}
     <div class="doc-group-title">Survey reports <span class="muted">&middot; follow the year selector above</span></div>
     <div class="doc-grid">${surveyCards}</div>
     <div class="doc-group-title" style="margin-top:22px;">Company documents <span class="muted">&middot; pick a company and year in each card</span></div>
@@ -7299,10 +7381,11 @@ async function renderReviewManual(box){
       <button class="btn primary" onclick="manualLoad()">Open</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
-      <button class="btn" onclick="manualDownloadForm()" title="PDF form for the company and year selected above: everything still missing or needing confirmation">⭳ Download form (this company)</button>
-      <button class="btn" onclick="manualDownloadAllForms()" title="One PDF per company, zipped">⭳ Download forms (all companies, .zip)</button>
+      <button class="btn" onclick="manualDownloadForm()" title="PDF form for the company and year selected above: all 40 fields - what is missing, what needs confirming, and every value on file to check against the annual report">⭳ Download form (this company)</button>
+      <button class="btn" onclick="manualDownloadAllForms()" title="One PDF per company for the selected year, zipped, with a summary of the problems found for each company and how to fix them">⭳ Download forms (all companies, .zip)</button>
       <button class="btn primary" onclick="document.getElementById('manFormFiles').click()" title="Upload filled forms: one PDF, several PDFs, or a .zip of PDFs">⭱ Upload filled form(s) (.pdf / .zip)</button>
       <input type="file" id="manFormFiles" accept=".pdf,.zip,application/pdf,application/zip,application/x-zip-compressed" multiple style="display:none" onchange="manualUploadForms(this)">
+      <label title="Each uploaded form becomes the whole truth for its company and year: every survey field and the directors' register are set to exactly what the form says (a box left empty is cleared). Financial statements and the stored report text are kept." style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="manReplace"> Replace the year with the form</label>
     </div>
     <p class="muted" style="margin-top:6px">Fill the downloaded PDF on screen (it has typing boxes), save it, and upload it here. You see what would change and approve it before anything is stored.</p>
     </div><div id="manualUploadPanel"></div><div id="manualBody"></div>`;
@@ -7340,7 +7423,7 @@ function manualDownloadForm(){
 }
 function manualDownloadAllForms(){
   const fy = manualPickedFy();
-  // Each company uses the selected year if it has it, otherwise its own latest year.
+  // Only companies that have the selected year are included; the summary lists the rest.
   window.location.href = '/api/manual/forms.zip' + (fy ? '?fiscal_year=' + encodeURIComponent(fy) : '');
 }
 // ---- upload of filled forms: preview -> approve -> apply ----
@@ -7352,6 +7435,8 @@ async function manualUploadForms(input){
   const box = document.getElementById('manualUploadPanel');
   box.innerHTML = `<div class="panel"><p class="muted">Reading ${files.length} file${files.length === 1 ? '' : 's'}...</p></div>`;
   const fd = new FormData(); files.forEach(f => fd.append('files', f));
+  const rep = document.getElementById('manReplace');
+  if (rep && rep.checked) fd.append('mode', 'replace');
   let d;
   try {
     const r = await fetch('/api/manual/upload-forms', {method:'POST', body: fd});
@@ -7378,7 +7463,8 @@ function manualUploadRender(result){
         return `<tr><td${result ? ' style="display:none"' : ''}>${result ? '' : `<input type="checkbox" ${c.checked ? 'checked' : ''} ${c.broken ? 'disabled' : ''} onchange="manualUpload.changes[${i}].checked=this.checked;manualUploadRender()">`}</td>
           <td>${escapeHtml(c.label)}</td><td class="muted">${escapeHtml(c.current || '')}</td><td>${escapeHtml(c.new || '')}</td>
           <td>${result ? (r ? (r.ok ? '<span style="color:var(--green)">saved</span>' : `<span style="color:var(--red)">${escapeHtml(r.message)}</span>`) : '<span class="muted">not approved</span>')
-                        : `<span class="muted">${escapeHtml(c.warning || '')}</span>`}</td></tr>`; }).join('')}
+                        : `<span class="muted">${escapeHtml(c.warning || '')}</span>`}</td></tr>`
+          + (c.details || []).map(x => `<tr class="muted" style="font-size:12px"><td${result ? ' style="display:none"' : ''}></td><td style="padding-left:18px">${escapeHtml(x.label)}</td><td>${escapeHtml(x.current || '')}</td><td style="color:var(--text)">${escapeHtml(x.new || '')}</td><td></td></tr>`).join(''); }).join('')}
       </tbody></table></details>`).join('');
   const filesLine = (U.files || []).map(f => `${f.company} ${f.fiscal_year} (${f.proposed})`).join(' · ');
   box.innerHTML = `<div class="panel">
@@ -8598,6 +8684,83 @@ try { inFrame = window.self !== window.top; } catch (e) { inFrame = true; }
 if('serviceWorker' in navigator && inFrame){
   navigator.serviceWorker.getRegistrations().then(regs=>regs.forEach(r=>r.unregister())).catch(()=>{});
 }
+// ---- "Install app" link --------------------------------------------------------------------------
+// Browsers only show their own install prompt now and then (and often not at all for a while after the
+// app was uninstalled), so the sidebar and the account menu always carry an "Install app" link. When the
+// browser has a prompt ready, the link opens it; otherwise it shows the steps for this device's browser.
+// The link is hidden inside the installed app itself and inside a frame (where installing is impossible).
+// /install (a shareable link) opens the app with these steps showing.
+let deferredInstallPrompt = null;
+function isRunningInstalled(){
+  return window.matchMedia('(display-mode: standalone)').matches
+      || window.matchMedia('(display-mode: window-controls-overlay)').matches
+      || window.navigator.standalone === true;
+}
+function installAppAvailable(){ return !inFrame && !isRunningInstalled(); }
+function refreshInstallLink(){
+  const b = document.getElementById('installAppBtn');
+  if (b) b.style.display = installAppAvailable() ? '' : 'none';
+}
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();                 // keep it for the link instead of the browser's mini bar
+  deferredInstallPrompt = e;
+  refreshInstallLink();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  document.getElementById('installModal').classList.remove('open');
+  if (typeof showToast === 'function') showToast('Finance Intel is installed - open it from your home screen or app list.');
+});
+function installSteps(){
+  const ua = navigator.userAgent || '';
+  const ios = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const android = /Android/i.test(ua);
+  const samsung = /SamsungBrowser/i.test(ua);
+  const firefox = /Firefox|FxiOS/i.test(ua);
+  const edge = /Edg\//i.test(ua);
+  if (ios) return `<ol class="install-steps">
+      <li>Open this page in <b>Safari</b> (on iPhone and iPad only Safari can install it).</li>
+      <li>Tap the <b>Share</b> button (the square with an arrow pointing up).</li>
+      <li>Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol>`;
+  if (samsung) return `<ol class="install-steps">
+      <li>Tap the <b>menu</b> button (three lines) at the bottom.</li>
+      <li>Tap <b>Add page to</b>, then <b>Home screen</b>.</li></ol>`;
+  if (android && firefox) return `<ol class="install-steps">
+      <li>Tap the <b>menu</b> (three dots).</li><li>Tap <b>Install</b> or <b>Add to Home screen</b>.</li></ol>`;
+  if (android) return `<ol class="install-steps">
+      <li>Tap the <b>menu</b> (three dots, top right) in Chrome.</li>
+      <li>Tap <b>Add to Home screen</b>, then <b>Install</b> (on some phones it reads <b>Install app</b>).</li></ol>`;
+  if (firefox) return `<p class="install-steps" style="padding:0;">Firefox on a computer cannot install web apps. Open this page in <b>Chrome</b> or <b>Edge</b> and use the Install app link there.</p>`;
+  if (edge) return `<ol class="install-steps">
+      <li>Click the <b>App available</b> icon at the right end of the address bar, or open the <b>menu</b> (three dots).</li>
+      <li>Choose <b>Apps</b>, then <b>Install this site as an app</b>.</li></ol>`;
+  return `<ol class="install-steps">
+      <li>Click the <b>install</b> icon at the right end of the address bar (a screen with a down arrow), or open the <b>menu</b> (three dots).</li>
+      <li>Choose <b>Cast, save and share</b>, then <b>Install page as app</b> (older Chrome: <b>Install Finance Intel</b>).</li></ol>`;
+}
+async function installApp(){
+  if (deferredInstallPrompt) {
+    const p = deferredInstallPrompt;
+    deferredInstallPrompt = null;     // a prompt can only be shown once
+    try {
+      await p.prompt();
+      const choice = await p.userChoice;
+      if (choice && choice.outcome === 'accepted') return;
+    } catch (e) { /* fall through to the manual steps */ }
+  }
+  document.getElementById('installModalBody').innerHTML = `
+    <p style="margin:0 0 10px;color:var(--text-dim);font-size:13.5px;">Install Finance Intel on this device:</p>
+    ${installSteps()}
+    <p class="install-note">If you removed the app recently, your browser may take a little while before it offers to install it again - the steps above always work.</p>`;
+  document.getElementById('installModal').classList.add('open');
+}
+refreshInstallLink();
+try { if (window.currentUser) updateUserBadge(); } catch (e) {}
+if (/[?&]install=1\b/.test(location.search)) {
+  history.replaceState(null, '', location.pathname);
+  if (installAppAvailable()) setTimeout(installApp, 600);
+}
+
 if('serviceWorker' in navigator && !inFrame){
   window.addEventListener('load',()=>{
     navigator.serviceWorker.register('/sw.js').catch(err=>console.warn('SW registration failed:',err));

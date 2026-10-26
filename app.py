@@ -641,6 +641,12 @@ def _mark_finance_intel(resp):
 def index():
     return render_template('index.html', site_url=web_hardening.site_url())
 
+@app.route('/install')
+def install_link():
+    # Shareable "install the app" link: opens the app with the install steps showing.
+    from flask import redirect
+    return redirect('/?install=1', code=302)
+
 @app.route('/sw.js')
 def service_worker():
     # Served from the root so its scope covers the whole app, not just /static/.
@@ -2041,7 +2047,7 @@ def event_stream():
             yield ': connected\n\n'
             while True:
                 try:
-                    event = subscriber.get(timeout=25)
+                    event = subscriber.get(timeout=15)
                     yield f"data: {json.dumps(event)}\n\n"
                 except queue.Empty:
                     # Keep proxies from closing an otherwise idle SSE stream.
@@ -2078,47 +2084,84 @@ def favicon():
 # company -> saving -> scoring -> done/failed), plus a final
 # 'batch_done' event with the total elapsed time. Nothing here is
 # simulated - every event fires exactly when that line of code runs.
-_progress_channels = {}  # batch_id -> queue.Queue, one per in-flight upload
+# Every event for a batch is kept in an ordered log (not a one-shot queue), and each SSE message carries
+# its position as the event id. If the live connection drops - a proxy closing a quiet stream, wifi
+# blinking, the phone locking - the browser's EventSource reconnects on its own and sends that id back
+# as Last-Event-ID, so the stream resumes exactly where it stopped and no stage line is lost. While a
+# batch is running the stream never times out: during one long parse (2-5 minutes on a big annual
+# report, with no stage events) it sends a keep-alive comment every 15 seconds so proxies see traffic.
+_progress_logs = {}          # batch_id -> {'events': [...], 'done': bool, 'touched': datetime}
+_progress_cond = threading.Condition()
+_PROGRESS_KEEPALIVE_SECONDS = 15
+_PROGRESS_IDLE_LIMIT_SECONDS = 3 * 3600   # a batch nobody has emitted for in 3 hours is presumed dead
+_PROGRESS_LOG_TTL_SECONDS = 3600          # finished logs are kept an hour so a late reconnect can replay
+
+def _progress_log(batch_id):
+    log_ = _progress_logs.get(batch_id)
+    if log_ is None:
+        log_ = _progress_logs[batch_id] = {'events': [], 'done': False, 'touched': datetime.utcnow()}
+    return log_
+
+def _progress_sweep(now):
+    stale = [bid for bid, lg in _progress_logs.items()
+             if (now - lg['touched']).total_seconds() > (_PROGRESS_LOG_TTL_SECONDS if lg['done'] else _PROGRESS_IDLE_LIMIT_SECONDS)]
+    for bid in stale:
+        _progress_logs.pop(bid, None)
 
 def _progress_emit(batch_id, event):
     if not batch_id:
         return
-    # '+ "Z"' matters: datetime.utcnow().isoformat() alone has no timezone
-    # marker, so the frontend's `new Date(ts)` (templates/index.html) parses
-    # it as browser-LOCAL time rather than UTC. For a browser in a UTC+3
-    # timezone that made every early-stage log line print ~3 hours earlier
-    # than the batch_start/batch_done lines (which use the browser's own
-    # local clock) - making a ~4-minute upload look like it spanned hours,
-    # even though the real elapsed time (the live timer, and *_seconds
-    # fields below) was correct the whole time. The 'Z' tells the browser
-    # this is UTC so it converts to local time like every other timestamp.
-    event = {**event, 'ts': datetime.utcnow().isoformat() + 'Z'}
-    q = _progress_channels.get(batch_id)
-    if q is not None:
-        q.put(event)
+    # '+ "Z"' matters: datetime.utcnow().isoformat() alone has no timezone marker, so the browser's
+    # `new Date(ts)` would read it as LOCAL time and every line would print ~3 hours early in UTC+3.
+    now = datetime.utcnow()
+    event = {**event, 'ts': now.isoformat() + 'Z'}
+    with _progress_cond:
+        _progress_sweep(now)
+        lg = _progress_log(batch_id)
+        lg['events'].append(event)
+        lg['touched'] = now
+        if event.get('type') in ('batch_done', 'batch_failed'):
+            lg['done'] = True
+        _progress_cond.notify_all()
 
 @app.route('/api/upload-progress/<batch_id>')
 @require_role('admin')
 def upload_progress_stream(batch_id):
-    q = _progress_channels.setdefault(batch_id, queue.Queue())
+    # Resume point: the browser sends Last-Event-ID itself on an automatic reconnect; ?from= lets the
+    # page resume by hand after it had to open a brand-new EventSource.
+    try:
+        start = int(request.headers.get('Last-Event-ID') or request.args.get('from') or -1) + 1
+    except ValueError:
+        start = 0
+    with _progress_cond:
+        _progress_log(batch_id)['touched'] = datetime.utcnow()
 
     def gen():
-        try:
-            while True:
-                # NOTE: this is a per-EVENT timeout, not a total-batch timeout - as
-                # long as some stage event (reading/parsing/saving/...) arrives at
-                # least once every 120s the stream stays open indefinitely, which is
-                # why a single slow file was never actually the SSE stream's problem
-                # (see _batch_results / upload_documents_batch below for the real
-                # cause of the old timeout: the POST itself, not this GET).
-                event = q.get(timeout=120)
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get('type') in ('batch_done', 'batch_failed'):
-                    break
-        except queue.Empty:
-            yield f"data: {json.dumps({'type': 'timeout', 'ts': datetime.utcnow().isoformat() + 'Z'})}\n\n"
-        finally:
-            _progress_channels.pop(batch_id, None)
+        nxt = max(0, start)
+        yield 'retry: 3000\n\n'          # reconnect after 3 s if the connection drops
+        while True:
+            with _progress_cond:
+                lg = _progress_logs.get(batch_id)
+                if lg is None:              # swept: the batch is long gone
+                    yield f"data: {json.dumps({'type': 'unknown_batch'})}\n\n"
+                    return
+                if nxt >= len(lg['events']) and not lg['done']:
+                    _progress_cond.wait(timeout=_PROGRESS_KEEPALIVE_SECONDS)
+                    lg = _progress_logs.get(batch_id) or lg
+                pending = lg['events'][nxt:]
+                done = lg['done']
+                idle = (datetime.utcnow() - lg['touched']).total_seconds()
+            if pending:
+                for i, ev in enumerate(pending, start=nxt):
+                    yield f"id: {i}\ndata: {json.dumps(ev)}\n\n"
+                nxt += len(pending)
+            else:
+                yield ': keep-alive\n\n'
+            if done and nxt >= len(lg['events']):
+                return
+            if idle > _PROGRESS_IDLE_LIMIT_SECONDS:
+                yield f"data: {json.dumps({'type': 'timeout', 'ts': datetime.utcnow().isoformat() + 'Z'})}\n\n"
+                return
 
     return Response(gen(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
@@ -2166,7 +2209,11 @@ def upload_batch_result(batch_id):
     with _batch_results_lock:
         entry = _batch_results.get(batch_id)
     if entry is None:
-        return jsonify({'done': False}), 202
+        with _progress_cond:
+            known = batch_id in _progress_logs
+        # unknown=True: this server has never heard of the batch - it restarted (an update, the
+        # workspace going to sleep, an autoscale instance being stopped) and the run was lost with it.
+        return jsonify({'done': False, 'unknown': not known}), 202
     _, result = entry
     return jsonify({'done': True, **result}), 200
 
@@ -2220,7 +2267,7 @@ def _sync_survey_headline_from_financials(company_id, fiscal_year, source_filena
         confidence[column] = 0.85
     row.field_sources = sources
     row.field_confidence = confidence
-    if not row.source_filename:
+    if not row.source_filename and not comparative:   # a comparative column must not label the prior year with this file
         row.source_filename = source_filename
     db.session.commit()
 
@@ -2516,7 +2563,10 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
                      'avg_age_executive_directors', 'avg_age_non_executive_directors',
                      'avg_age_independent_neds', 'avg_age_non_independent_neds',
                      'board_meetings_per_year', 'committees_per_board', 'market_cap'}
+    _reviewed = row.field_review_status or {}
     for col in owned_columns:
+        if col in _reviewed:
+            continue                        # a person confirmed, corrected or deliberately blanked this field
         ours = str(sources.get(col, '')).startswith(_AUTO_BOARD_SOURCE_PREFIXES)
         if col in produced:
             if getattr(row, col) is None or ours:
@@ -2979,6 +3029,8 @@ def _set_ai_field(row, sources, conf, column, value, source_text, confidence=0.8
     """FILL-ONLY. The AI is the fallback tier: it may fill an empty field (or refresh an earlier AI
     value) but never replaces a value the rules or a person already put there. When its value
     disagrees with what is stored, the disagreement is reported (conflicts) instead of applied."""
+    if column in (row.field_review_status or {}):
+        return False                        # a person confirmed, corrected or deliberately blanked this field
     current = getattr(row, column)
     src = str(sources.get(column, ''))
     if current is not None and not src.startswith('from AI extraction'):
@@ -4661,7 +4713,7 @@ def survey_report_default_company():
 
 
 @app.route('/api/companies/<int:company_id>/survey-report')
-def company_survey_report(company_id):
+def company_survey_report(company_id, fiscal_year=None):
     """Everything the Survey Report page's 9 tabs need for ONE company,
     in one call. Pulls from FOUR separate, independently-populated
     sources - a company can have any subset of these:
@@ -4687,7 +4739,8 @@ def company_survey_report(company_id):
     doesn't try to match a Committee member to a DirectorRemunerationRow
     row by name (see Committee model docstring)."""
     c = Company.query.get_or_404(company_id)
-    fiscal_year = request.args.get('fiscal_year')
+    if fiscal_year is None:          # the all-years zip passes each year in directly
+        fiscal_year = request.args.get('fiscal_year')
 
     survey_q = SurveyCompanyData.query.filter_by(company_id=company_id)
     if fiscal_year:
@@ -4905,11 +4958,44 @@ def save_committees(company_id):
         period_id=period.id).order_by(Committee.order_index).all()]})
 
 
+# ---- "All years" downloads -------------------------------------------------------------------------
+# Every year picker on Documents & Reports offers "All years". Reports that only make sense for ONE
+# year (the survey PDFs, a company's report, the Word summary) then come back as a zip holding one file
+# per year on file, newest first, so the person gets every year in a single download.
+def _wants_all_years(value):
+    return (value or '').strip().lower() in ('all', 'all years', '*')
+
+
+def _survey_years_on_file():
+    from survey_aggregate import available_fiscal_years
+    return sorted({y for y in available_fiscal_years() if y and is_full_year(y)}, reverse=True)
+
+
+def _zip_download(files, zip_name):
+    """files = [(name_in_zip, bytes)]. 404 when nothing could be built."""
+    import zipfile
+    if not files:
+        return jsonify({'error': 'No report could be built for any year on file.'}), 404
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+        for name, data in files:
+            z.writestr(name, data)
+    out.seek(0)
+    return send_file(out, as_attachment=True, download_name=zip_name, mimetype='application/zip')
+
+
 @app.route('/api/survey/export/report.pdf', methods=['GET'])
 @require_role('admin', 'user')
 def export_survey_pdf():
     """Renders the same fiscal-year overview as /api/survey/overview,
-    as a downloadable PDF (survey_report_pdf.py). ?fiscal_year=FY2025."""
+    as a downloadable PDF (survey_report_pdf.py). ?fiscal_year=FY2025, or ?fiscal_year=all for a zip."""
+    if _wants_all_years(request.args.get('fiscal_year')):
+        files = []
+        for fy in _survey_years_on_file():
+            ov = build_survey_overview(fy)
+            if ov.get('has_data'):
+                files.append((f"Board_Remuneration_Survey_{_safe_filename(fy)}.pdf", build_survey_pdf(ov).getvalue()))
+        return _zip_download(files, 'Board_Remuneration_Survey_All_Years.zip')
     overview = build_survey_overview(request.args.get('fiscal_year'))
     if not overview.get('has_data'):
         return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
@@ -4923,8 +5009,17 @@ def export_survey_pdf():
 @require_role('admin', 'user')
 def export_combined_report_pdf():
     """One narrative PDF for the selected fiscal year: Survey Analytics + Intelligence Layer
-    findings together (narrative_reports.py). ?fiscal_year=FY2025."""
+    findings together (narrative_reports.py). ?fiscal_year=FY2025, or ?fiscal_year=all for a zip."""
     fy = request.args.get('fiscal_year')
+    if _wants_all_years(fy):
+        files, trends = [], build_historical_trends()
+        for y in _survey_years_on_file():
+            ov = build_survey_overview(y)
+            if not ov.get('has_data'):
+                continue
+            buf = build_combined_report(ov, build_company_rows(y).get('rows', []), trends)
+            files.append((f"Board_Remuneration_and_Governance_Report_{_safe_filename(y)}.pdf", buf.getvalue()))
+        return _zip_download(files, 'Board_Remuneration_and_Governance_Reports_All_Years.zip')
     overview = build_survey_overview(fy)
     if not overview.get('has_data'):
         return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
@@ -4938,7 +5033,20 @@ def export_combined_report_pdf():
 @require_role('admin', 'user')
 def export_company_report_pdf(company_id):
     """Narrative PDF for ONE company and fiscal year - what the Survey Report page shows,
-    written as a report. ?fiscal_year=FY2025 (defaults like the page does)."""
+    written as a report. ?fiscal_year=FY2025 (defaults like the page does), or ?fiscal_year=all for a zip."""
+    if _wants_all_years(request.args.get('fiscal_year')):
+        company = Company.query.get_or_404(company_id)
+        years = sorted({r.fiscal_year for r in SurveyCompanyData.query.filter_by(company_id=company_id).all()
+                        if r.fiscal_year and is_full_year(r.fiscal_year)}, reverse=True)
+        files = []
+        for y in years:
+            payload = company_survey_report(company_id, fiscal_year=y).get_json()
+            if not payload.get('survey'):
+                continue
+            buf = build_company_report(payload, build_survey_overview(y), build_company_rows(y).get('rows', []))
+            files.append((f"{_safe_filename(company.name)}_{_safe_filename(y)}_Remuneration_and_Governance_Report.pdf",
+                          buf.getvalue()))
+        return _zip_download(files, f"{_safe_filename(company.name)}_Remuneration_and_Governance_Reports_All_Years.zip")
     payload = company_survey_report(company_id).get_json()
     if not payload.get('survey'):
         return jsonify({'error': 'No survey data on file for this company and year yet.'}), 404
@@ -5151,7 +5259,22 @@ def generate_period_report(company_id, period_label):
     number in the report is unaffected either way. Falls back to the
     numbers-only template automatically if no ANTHROPIC_API_KEY is set
     or the call fails, so this flag is always safe to pass."""
-    Company.query.get_or_404(company_id)
+    company = Company.query.get_or_404(company_id)
+    if _wants_all_years(period_label):
+        # "All years": one Word report per full-year period on file, zipped.
+        periods = [p for p in FinancialPeriod.query.filter_by(company_id=company_id).all()
+                   if p.period_label and is_full_year(p.period_label)]
+        periods.sort(key=lambda p: p.period_label, reverse=True)
+        files = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for p in periods:
+                ctx = build_report_context(p)
+                fname = f"{_safe_filename(ctx['company']['name'])}_{_safe_filename(p.period_label)}_report.docx"
+                fpath = os.path.join(tmp, fname)
+                generate_docx(ctx, fpath, narrative=None)
+                with open(fpath, 'rb') as fh:
+                    files.append((fname, fh.read()))
+        return _zip_download(files, f"{_safe_filename(company.name)}_Word_Reports_All_Years.zip")
     period = FinancialPeriod.query.filter_by(
         company_id=company_id, period_label=period_label
     ).first_or_404()

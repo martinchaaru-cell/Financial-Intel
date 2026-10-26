@@ -48,6 +48,42 @@ def parse_number(raw):
     return v if math.isfinite(v) else None
 
 
+_PLAIN = {'\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'", '\u201c': '"', '\u201d': '"', '\u201e': '"',
+          '\u2013': '-', '\u2014': '-', '\u2212': '-', '\u2026': '...', '\u00a0': ' ', '\u2022': '-', '\u00b7': '-'}
+
+
+def box_safe(t):
+    """PDF form boxes only hold Latin-1 text (reportlab raises KeyError on e.g. a curly apostrophe, 8217): curly quotes /
+    dashes become plain ones and anything else outside Latin-1 becomes '?'."""
+    t = ''.join(_PLAIN.get(c, c) for c in str(t))
+    return t.encode('latin-1', 'replace').decode('latin-1')
+
+
+def prefill_text(v):
+    """How a stored value is printed in a pre-filled form box (manual_entry_form uses this too). An unchanged box reads
+    back as exactly this text, so 'did the person change it?' is a plain string comparison - no float rounding traps."""
+    if v is None:
+        return ''
+    if isinstance(v, bool):
+        return 'Yes' if v else 'No'
+    if isinstance(v, (int, float)):
+        if float(v) == int(v):
+            return f'{int(v):,}'
+        return f'{v:,.6f}'.rstrip('0').rstrip('.')
+    return box_safe(str(v).strip())
+
+
+def _same_box(a, b):
+    """Equal, or equal once printed in a form box (so 'O'Brien' read back from a box matches 'O\u2019Brien' on file)."""
+    if _same(a, b):
+        return True
+    return isinstance(a, str) and isinstance(b, str) and _norm_box(prefill_text(a)).lower() == _norm_box(prefill_text(b)).lower()
+
+
+def _norm_box(t):
+    return re.sub(r'\s+', ' ', str(t or '')).strip()
+
+
 def _is_int_col(col):
     return col.endswith('_count') or col in INT_COLS
 
@@ -110,7 +146,8 @@ def read_form(pdf_bytes):
         try:
             m = json.loads(raw)
             if isinstance(m, dict) and str(m.get('cid', '')).isdigit() and str(m.get('fy') or '').strip():
-                meta = {'cid': int(m['cid']), 'fy': str(m['fy']).strip(), 'name': str(m.get('name') or '')}
+                meta = {'cid': int(m['cid']), 'fy': str(m['fy']).strip(), 'name': str(m.get('name') or ''),
+                        'v': int(m.get('v') or 1) if str(m.get('v') or 1).isdigit() else 1}
         except ValueError:
             meta = None
     return meta, values
@@ -155,6 +192,17 @@ def intents_from_values(values, label_of=None, metric_cols=None):
                 intents.append({'op': 'conflict', 'key': k, 'data': {'value': int(n) if _is_int_col(k) else n}})
         elif kind in ('dir', 'newdir', 'com', 'newcom', 'pay', 'newpay') and len(parts) == 3:
             rows.setdefault((kind, parts[1]), {})[parts[2]] = val
+        elif kind == 'val' and len(parts) == 2:              # pre-filled value box (v2 forms): changed text = correction
+            k = parts[1]
+            if k in label_of or k in metric_cols or k in tab_modules.survey_text_columns():
+                intents.append({'op': 'val', 'key': k, 'data': {'raw': _norm_box(val),
+                                                                'ok': _checked(values.get(f'confirmok|{k}'))}})
+        elif kind == 'dirname' and len(parts) == 2:
+            rows.setdefault(('dir', parts[1]), {})['name'] = val
+        elif kind == 'dirfix' and len(parts) == 3:          # a pre-filled register cell: unchanged values drop out later
+            r = rows.setdefault(('dir', parts[1]), {})
+            r[parts[2]] = val
+            r.setdefault('_fix', set()).add(parts[2])
         elif kind == 'ben' and len(parts) == 2:
             rows.setdefault(('ben', parts[1]), {})['status'] = val
         elif kind == 'bendetail' and len(parts) == 2:
@@ -166,6 +214,13 @@ def intents_from_values(values, label_of=None, metric_cols=None):
             continue
         k = name.split('|', 1)[1]
         ok = _checked(values.get(f'confirmok|{k}'))
+        if k in tab_modules.survey_text_columns():
+            # free-text field listed under "values on file": a typed correction replaces it, a tick approves it
+            if not _blank(val):
+                intents.append({'op': 'confirm', 'key': k, 'data': {'value': str(val).strip()[:TEXT_MAX]}})
+            elif ok:
+                intents.append({'op': 'confirm', 'key': k, 'data': {'value': None}})
+            continue
         if not _blank(val):
             n = parse_number(val)
             if k not in metric_cols or n is None:
@@ -193,8 +248,14 @@ def intents_from_values(values, label_of=None, metric_cols=None):
                 if not _blank(f.get(a)):
                     data['appointed_date' if a == 'appointed' else a] = f[a].strip()[:60]
             data = {k: v for k, v in data.items() if v is not None}
+            if kind == 'dir' and not _blank(f.get('name')):
+                data['director_name'] = f['name'].strip()[:150]
             if kind == 'dir' and data and ident.isdigit():
-                intents.append({'op': 'dir_update', 'target_id': int(ident), 'data': data})
+                fixed = {'appointed_date' if a == 'appointed' else a for a in f.get('_fix', ())}
+                if 'director_name' in data:
+                    fixed.add('director_name')        # the name box is pre-filled, so an edit is a deliberate correction
+                intents.append({'op': 'dir_update', 'target_id': int(ident), 'data': data,
+                                'fix': sorted(fixed & set(data))})
             elif kind == 'newdir':
                 name = (f.get('name') or '').strip()
                 if name:
@@ -323,6 +384,8 @@ def _fmt(v):
 
 
 def _same(a, b):
+    if isinstance(a, bool) or isinstance(b, bool):          # Independent: No (False) is an answer, not a blank
+        return a is b or (isinstance(a, bool) and isinstance(b, bool) and a == b)
     if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
         return abs(float(a) - float(b)) < 1e-9
     return str(a or '').strip().lower() == str(b or '').strip().lower()
@@ -337,7 +400,7 @@ def _owned_period(period_id, cid, fy):
     return p if p is not None and p.company_id == cid and p.period_label == fy else None
 
 
-DIR_ATTR_LABEL = {'role': 'Role', 'independent': 'Independent', 'gender': 'Gender', 'nationality': 'Nationality',
+DIR_ATTR_LABEL = {'director_name': 'Name', 'role': 'Role', 'independent': 'Independent', 'gender': 'Gender', 'nationality': 'Nationality',
                   'appointed_date': 'Appointed'}
 
 
@@ -347,8 +410,31 @@ def _annotate(intent, cid, fy):
     labels = _labels()
     op, data = intent['op'], intent['data']
     ch = {'op': op, 'company_id': cid, 'fiscal_year': fy, 'data': data, 'warning': None, 'checked': True,
-          'target_id': intent.get('target_id'), 'key': intent.get('key')}
+          'target_id': intent.get('target_id'), 'key': intent.get('key'), 'fix': intent.get('fix') or []}
     row = tab_modules.survey_row(cid, fy)
+
+    if op == 'val':
+        k = intent['key']
+        cur = getattr(row, k, None) if row is not None else None
+        raw, ok = data['raw'], data.get('ok')
+        ch['key'] = k
+        if raw == _norm_box(prefill_text(cur)) or not raw:       # unchanged (or emptied: use Replace mode to clear)
+            if ok and cur is not None:
+                ch.update(op='confirm', data={'value': None}, label=f'{labels.get(k, k)} (confirm)',
+                          current=_fmt(cur), new=f'{_fmt(cur)} (confirmed correct)')
+                return ch
+            return None
+        if k in tab_modules.survey_text_columns():
+            v = raw[:TEXT_MAX]
+        else:
+            n = parse_number(raw)
+            if n is None:
+                ch.update(op='confirm', data={'value': None}, label=labels.get(k, k), current=_fmt(cur), new=raw,
+                          warning=f'"{raw}" is not a number - not saved.', checked=False, broken=True)
+                return ch
+            v = int(n) if _is_int_col(k) else n
+        ch.update(op='confirm', data={'value': v}, label=f'{labels.get(k, k)} (corrected)', current=_fmt(cur), new=_fmt(v))
+        return ch
 
     if op in ('metric', 'confirm', 'conflict'):
         k = intent['key']
@@ -395,14 +481,17 @@ def _annotate(intent, cid, fy):
                     return None
         attrs = {k: v for k, v in data.items() if k in DIR_ATTR_LABEL}
         if d is not None:
-            changed = {k: v for k, v in attrs.items() if not _same(getattr(d, k, None), v)}
+            changed = {k: v for k, v in attrs.items() if not _same_box(getattr(d, k, None), v)}
             if not changed:
                 return None
             ch['data'] = dict(changed)
             ch['label'] = f'Register: {d.director_name}'
             ch['current'] = ', '.join(f'{DIR_ATTR_LABEL[k]}: {_fmt(getattr(d, k, None))}' for k in changed)
-            if any(getattr(d, k, None) not in (None, '', 'unknown') for k in changed):
+            fix = set(ch.get('fix') or [])
+            if any(getattr(d, k, None) not in (None, '', 'unknown') and k not in fix for k in changed):
                 ch['warning'], ch['checked'] = 'Some of these cells were filled since the form was made - they would be replaced.', False
+            elif changed.keys() & fix:
+                ch['warning'] = 'Correction - replaces the value on file.'
         else:
             ch['label'] = f'Register: new director {data["director_name"]}'
             ch['current'] = '(not in register)'
@@ -480,8 +569,10 @@ def _annotate(intent, cid, fy):
     return None
 
 
-def preview_upload(files):
-    """[(filename, bytes)] -> {'files': [...], 'changes': [...], 'notes': [...], 'problems': [...]}. Writes nothing."""
+def preview_upload(files, replace=False):
+    """[(filename, bytes)] -> {'files': [...], 'changes': [...], 'notes': [...], 'problems': [...]}. Writes nothing.
+    replace=True: each form REPLACES its company + year's survey fields and directors' register (one 'replace' change
+    per form); committees / pay rows / benefits / conflicts on the form are still applied as normal changes."""
     pdfs, notes = collect_pdfs(files)
     labels = _labels()
     metric_cols = tab_modules.survey_metric_columns()
@@ -506,8 +597,19 @@ def preview_upload(files):
             notes.append(f'{fname}: a second form for {company.name} {meta["fy"]} - the earlier one in this upload is used, this one skipped.')
             continue
         seen.add(key)
+        if replace and meta.get('v', 1) < REPLACE_MIN_VERSION:
+            notes.append(f'{fname}: made before forms carried every value, so it cannot replace a year - download a new '
+                         'form for this company and year, check it, and upload that one. Skipped.')
+            continue
         intents, problems = intents_from_values(values, labels, metric_cols)
         n_before = len(changes)
+        if replace:
+            rc, rprobs = replace_change(meta['cid'], meta['fy'], values, fname, company.name)
+            problems += rprobs
+            if rc is not None:
+                rc.update({'id': f'c{len(changes)}', 'file': fname, 'company': company.name})
+                changes.append(rc)
+            intents = [i for i in intents if i['op'] not in ('val', 'metric', 'confirm', 'dir_update', 'dir_new')]
         for it in intents:
             ch = _annotate(it, meta['cid'], meta['fy'])
             if ch is not None:
@@ -517,6 +619,199 @@ def preview_upload(files):
                           'proposed': len(changes) - n_before, 'filled_boxes': len(intents)})
         problems_all += [f'{company.name} {meta["fy"]}: {p}' for p in problems]
     return {'files': out_files, 'changes': changes, 'notes': notes, 'problems': problems_all}
+
+
+# ------------------------------------------------------------------ replace mode
+REPLACE_MIN_VERSION = 2       # forms from before pre-filled boxes cannot be used to replace a year (ticks carry no value)
+_KEEP = object()
+_DIR_ATTRS = ('role', 'independent', 'gender', 'nationality', 'appointed')
+
+
+def _parse_box(k, raw, label):
+    raw = _norm_box(raw)
+    if raw in BLANKS:
+        return None, None
+    if k in tab_modules.survey_text_columns():
+        return raw[:TEXT_MAX], None
+    n = parse_number(raw)
+    if n is None:
+        return _KEEP, f'{label}: "{raw}" is not a number - the stored value is kept'
+    return (int(n) if _is_int_col(k) else n), None
+
+
+def _dir_value(attr, raw):
+    raw = _norm_box(raw)
+    if raw in BLANKS:
+        return None
+    if attr == 'role':
+        return _norm_role(raw)
+    if attr == 'independent':
+        return _norm_yesno(raw)
+    if attr == 'gender':
+        return _norm_gender(raw)
+    return raw[:60]
+
+
+def replace_change(cid, fy, values, fname, company_name):
+    """One form -> ONE 'replace' change for that company + year: the 40 survey fields and the directors' register become
+    exactly what the form says (blank box = not disclosed = cleared). Financial statements, committees, pay rows, the
+    stored report text and import traces are not touched. -> (change | None, [problem])"""
+    labels = _labels()
+    row = tab_modules.survey_row(cid, fy)
+    sets, clears, verified, details, probs = {}, [], [], [], []
+    for k, lbl in labels.items():
+        if f'val|{k}' in values:
+            raw = values[f'val|{k}']
+        elif f'metric|{k}' in values:
+            raw = values[f'metric|{k}']
+        else:
+            continue                                   # not on this form: left exactly as it is
+        cur = getattr(row, k, None) if row is not None else None
+        if cur is not None and _norm_box(raw) == _norm_box(prefill_text(cur)):
+            verified.append(k)
+            continue
+        v, prob = _parse_box(k, raw, lbl)
+        if prob:
+            probs.append(prob)
+            continue
+        if v is None:
+            if cur is not None:
+                clears.append(k)
+                details.append({'label': lbl, 'current': _fmt(cur), 'new': '(cleared - left blank on the form)'})
+            continue
+        if cur is not None and _same(cur, v):
+            verified.append(k)
+            continue
+        sets[k] = v
+        details.append({'label': lbl, 'current': _fmt(cur), 'new': _fmt(v)})
+
+    # directors' register: every row printed on the form, plus any new rows typed in
+    existing = {d.id: d for d in SurveyDirector.query.filter_by(company_id=cid, fiscal_year=fy).all()}
+    on_form = {}
+    for name, val in values.items():
+        parts = name.split('|')
+        if parts[0] == 'dirname' and len(parts) == 2 and parts[1].isdigit():
+            on_form.setdefault(int(parts[1]), {})['name'] = val
+        elif parts[0] in ('dir', 'dirfix') and len(parts) == 3 and parts[1].isdigit():
+            on_form.setdefault(int(parts[1]), {})[parts[2]] = val
+    d_upd, d_del, d_add = [], [], []
+    for did, f in sorted(on_form.items()):
+        d = existing.get(did)
+        if d is None or 'name' not in f:
+            continue                                   # old-style row without a name box, or a row deleted since
+        name = _norm_box(f['name'])
+        if name in BLANKS:
+            d_del.append(did)
+            details.append({'label': f'Register: {d.director_name}', 'current': 'in the register', 'new': '(removed)'})
+            continue
+        new = {'director_name': name[:150]}
+        for a in _DIR_ATTRS:
+            if a in f:
+                new['appointed_date' if a == 'appointed' else a] = _dir_value(a, f[a])
+        cur = {'director_name': d.director_name, 'role': d.role if d.role in ('executive', 'non_executive') else None,
+               'independent': d.independent, 'gender': d.gender, 'nationality': d.nationality, 'appointed_date': d.appointed_date}
+        for k, v in list(new.items()):
+            if _same_box(cur.get(k), v):
+                new[k] = cur.get(k) if k != 'role' else d.role      # unchanged: keep the stored spelling exactly
+        diff = {k: v for k, v in new.items() if not _same_box(cur.get(k), v)}
+        if diff:
+            d_upd.append({'id': did, **new})
+            details.append({'label': f'Register: {d.director_name}',
+                            'current': ', '.join(f'{DIR_ATTR_LABEL[k]}: {_fmt(cur.get(k))}' for k in diff),
+                            'new': ', '.join(f'{DIR_ATTR_LABEL[k]}: {_fmt(v)}' for k, v in diff.items())})
+    newrows = {}
+    for name, val in values.items():
+        parts = name.split('|')
+        if parts[0] == 'newdir' and len(parts) == 3:
+            newrows.setdefault(parts[1], {})[parts[2]] = val
+    def _key(x):
+        return re.sub(r'[^a-z]', '', str(x or '').lower())
+    upd_ids = {x['id'] for x in d_upd}
+    # Every register row that survives this upload counts - including rows added after the form was downloaded
+    # (they are not on the form, so Replace leaves them alone). Checking only rows printed on the form let an older
+    # form re-add directors a newer upload had already added, creating duplicates.
+    kept = {_key(x.get('director_name')) for x in d_upd} | {
+        _key(d.director_name) for did, d in existing.items() if did not in d_del and did not in upd_ids}
+    for n, f in sorted(newrows.items()):
+        name = _norm_box(f.get('name'))
+        if name in BLANKS:
+            continue
+        if _key(name) in kept:
+            continue                                   # already in the register (e.g. the same form uploaded twice)
+        kept.add(_key(name))
+        add = {'director_name': name[:150]}
+        for a in _DIR_ATTRS:
+            add['appointed_date' if a == 'appointed' else a] = _dir_value(a, f.get(a))
+        d_add.append(add)
+        details.append({'label': f'Register: {name}', 'current': '(not in register)', 'new': 'added'})
+
+    if not (sets or clears or verified or d_upd or d_del or d_add):
+        return None, probs
+    summary = (f"{len(sets)} changed, {len(clears)} cleared, {len(verified)} confirmed"
+               + (f"; register: {len(d_upd)} updated, {len(d_del)} removed, {len(d_add)} added" if (d_upd or d_del or d_add) else ''))
+    ch = {'op': 'replace', 'company_id': cid, 'fiscal_year': fy, 'checked': True, 'key': None, 'target_id': None,
+          'label': f'Replace {fy} with the form', 'current': 'what is stored now', 'new': summary, 'details': details,
+          'warning': (f'{len(clears)} value(s) left blank on the form will be cleared.' if clears else None),
+          'data': {'set': sets, 'clear': clears, 'verified': verified, 'dir_update': d_upd, 'dir_delete': d_del, 'dir_add': d_add}}
+    return ch, probs
+
+
+def _apply_replace(cid, fy, data, file=''):
+    allowed = tab_modules.survey_metric_columns() | tab_modules.survey_text_columns()
+    row = tab_modules.survey_row(cid, fy, create=True)
+    srcs, confs = dict(row.field_sources or {}), dict(row.field_confidence or {})
+    status, corr = dict(row.field_review_status or {}), dict(row.field_review_corrections or {})
+    note = f'{SOURCE_TAG} (replace{": " + file[:60] if file else ""})'
+    now = datetime.utcnow().isoformat()
+    for k, v in (data.get('set') or {}).items():
+        if k not in allowed:
+            continue
+        before = getattr(row, k, None)
+        if k in tab_modules.survey_text_columns():
+            setattr(row, k, str(v)[:TEXT_MAX])
+        elif isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+            setattr(row, k, int(v) if _is_int_col(k) else float(v))
+        else:
+            continue
+        srcs[k], confs[k], status[k] = note, 1.0, 'corrected'
+        if before is not None:
+            corr[k] = {'extracted_value': before, 'approved_value': v, 'reviewed_by': 'form upload (replace)', 'reviewed_at': now}
+    for k in data.get('clear') or []:
+        if k in allowed:
+            before = getattr(row, k, None)
+            setattr(row, k, None)
+            # a deliberate blank: marked 'rejected' (as in the review workflow) so no reader, AI pass or
+            # tab reconciliation fills the field back in later
+            srcs[k], confs[k], status[k] = f'{note} - left blank on the form (not disclosed)', 1.0, 'rejected'
+            corr[k] = {'extracted_value': before, 'approved_value': None, 'reviewed_by': 'form upload (replace)', 'reviewed_at': now}
+    for k in data.get('verified') or []:
+        if k in allowed and getattr(row, k, None) is not None:
+            confs[k], status[k] = 1.0, 'approved'
+    row.field_sources, row.field_confidence, row.field_review_status, row.field_review_corrections = srcs, confs, status, corr
+
+    def fill(d, x):
+        d.director_name = str(x['director_name'])[:150]
+        d.role = x.get('role') if x.get('role') in ('executive', 'non_executive') else 'unknown'
+        d.independent = x.get('independent') if isinstance(x.get('independent'), bool) else None
+        d.gender = x.get('gender') if x.get('gender') in ('Male', 'Female') else None
+        d.nationality = (str(x['nationality'])[:60] if x.get('nationality') else None)
+        d.appointed_date = (str(x['appointed_date'])[:40] if x.get('appointed_date') else None)
+        d.confidence = 1.0
+
+    for x in data.get('dir_update') or []:
+        d = db.session.get(SurveyDirector, x.get('id'))
+        if d is not None and d.company_id == cid and d.fiscal_year == fy:
+            fill(d, x)
+    for did in data.get('dir_delete') or []:
+        d = db.session.get(SurveyDirector, did)
+        if d is not None and d.company_id == cid and d.fiscal_year == fy:
+            db.session.delete(d)
+    n = SurveyDirector.query.filter_by(company_id=cid, fiscal_year=fy).count()
+    for i, x in enumerate(data.get('dir_add') or []):
+        d = SurveyDirector(company_id=cid, fiscal_year=fy, director_name=str(x['director_name'])[:150], order_index=n + i)
+        db.session.add(d)
+        fill(d, x)
+    return True, 'replaced'
 
 
 # ------------------------------------------------------------------ apply
@@ -549,18 +844,24 @@ def _apply_one(ch):
     allowed = tab_modules.survey_metric_columns() | tab_modules.survey_text_columns()
     note = f'{SOURCE_TAG} ({ch.get("file", "")[:60]})' if ch.get('file') else SOURCE_TAG
 
+    if op == 'replace':
+        return _apply_replace(cid, fy, data, ch.get('file', ''))
+
     if op in ('metric', 'confirm', 'conflict'):
         col = ch.get('key')
         if col not in allowed:
             return False, f'{col} is not an enterable field'
         row = tab_modules.survey_row(cid, fy, create=True)
+        if op == 'confirm' and data.get('value') is None:     # "stored value is right" - numeric or text field
+            _set_metric(row, col, None, note, confirm_only=True)
+            return True, 'confirmed'
         if col in tab_modules.survey_text_columns():          # free-text field: only a plain 'metric' entry, stored as text
             v = data.get('value')
-            if op != 'metric' or not isinstance(v, str) or not v.strip():
+            if op not in ('metric', 'confirm') or not isinstance(v, str) or not v.strip():
                 return False, 'not text'
             if data.get('note'):
                 note = f'{note} - {str(data["note"])[:80]}'
-            _set_metric(row, col, v.strip(), note)
+            _set_metric(row, col, v.strip(), note, fix=(op == 'confirm'))
             return True, 'saved'
         if op == 'confirm' and data.get('value') is None:
             _set_metric(row, col, None, note, confirm_only=True)
@@ -589,6 +890,8 @@ def _apply_one(ch):
             d = SurveyDirector(company_id=cid, fiscal_year=fy, director_name=name[:150], role='unknown',
                                order_index=SurveyDirector.query.filter_by(company_id=cid, fiscal_year=fy).count())
             db.session.add(d)
+        if op == 'dir_update' and data.get('director_name'):
+            d.director_name = str(data['director_name'])[:150]
         if data.get('role') in ('executive', 'non_executive'):
             d.role = data['role']
         if data.get('gender') in ('Male', 'Female'):

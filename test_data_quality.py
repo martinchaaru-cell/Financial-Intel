@@ -103,14 +103,16 @@ def test_zip_is_ranked_from_most_missing_and_forms_still_upload(client, db):
     assert names[:2] == ['00_Data_Quality_Summary.pdf', '00_Data_Quality_Summary.csv']
     forms = [n for n in names if n.endswith('.pdf') and not n.startswith('00_')]
     assert [f.split('_Manual_Entry_Form_')[0] for f in forms] == ['01', '02', '03']
-    assert [('C_Bank' in f, 'B_Bank' in f, 'A_Bank' in f) for f in forms] == [(True, False, False), (False, True, False), (False, False, True)]
+    # every form is for the chosen year; companies with data first (most problems, then most missing), no-data last
+    assert [('B_Bank' in f, 'A_Bank' in f, 'C_Bank' in f) for f in forms] == [(True, False, False), (False, True, False), (False, False, True)]
+    assert all(f.endswith('_FY2025.pdf') for f in forms)
     rows = list(csv.reader(io.StringIO(z.read('00_Data_Quality_Summary.csv').decode('utf-8-sig'))))
     body = [r for r in rows[1:] if r and r[0].isdigit()]
-    assert [r[1] for r in body] == ['C Bank', 'B Bank', 'A Bank'] and [int(r[4]) for r in body] == [40, 39, 36]
-    assert [r[10] for r in body] == forms                                          # CSV rows point at the matching file
-    assert len(body[0][11].split('; ')) == 40                                      # the missing field NAMES are listed
+    assert [r[1] for r in body] == ['B Bank', 'A Bank', 'C Bank'] and [int(r[8]) for r in body] == [39, 36, 40]
+    assert [r[11] for r in body] == forms                                          # CSV rows point at the matching file
+    assert len(body[2][15].split('; ')) == 40                                      # the missing field NAMES are listed
     avg = data_quality.portfolio_quality('FY2025')['average_score']                # average = the 2 companies with data
-    assert rows[-1][0].startswith('AVERAGE') and int(rows[-1][8]) == avg
+    assert rows[-1][0].startswith('AVERAGE') and int(rows[-1][10]) == avg
     assert f'{avg}%' in _pdf_text(z.read('00_Data_Quality_Summary.pdf'))
     buf.seek(0)
     prev = meu.preview_upload([(name, buf.getvalue())])                            # summary skipped, all 3 forms read

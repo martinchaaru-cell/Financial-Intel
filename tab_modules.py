@@ -158,6 +158,8 @@ def tab_status(company_id, fiscal_year):
 def _fill(row, sources, conf, col, value, text, confidence=0.6):
     """Fill an empty survey field, or refresh one this module wrote earlier. Never touches a value that
     came from anywhere else (rules, AI, a person)."""
+    if col in (row.field_review_status or {}):
+        return False          # a person confirmed, corrected or deliberately blanked this field
     ours = str(sources.get(col, '')).startswith('from the director roster')
     if getattr(row, col, None) is None or ours:
         setattr(row, col, value)
@@ -294,7 +296,10 @@ def fill_policy_from_pay_rows(company_id, fiscal_year):
         wanted.append(('other_ned_annual_retainer', most_common(other_fees), len(other_fees)))
     if chair_fees:
         wanted.append(('chairperson_annual_retainer', most_common(chair_fees), len(chair_fees)))
+    reviewed = row.field_review_status or {}
     for col, value, n in wanted:
+        if col in reviewed:
+            continue          # a person confirmed, corrected or deliberately blanked this field
         ours = str(sources.get(col, '')).startswith(PAY_TABLE_SOURCE)
         if getattr(row, col, None) is None or ours:
             setattr(row, col, value)

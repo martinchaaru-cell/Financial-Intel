@@ -378,7 +378,8 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
         files = [(f.filename or 'upload', f.read()) for f in request.files.getlist('files') if f and f.filename]
         if not files:
             return jsonify({'error': 'Choose one or more filled .pdf forms, or a .zip of them.'}), 400
-        return jsonify(manual_entry_upload.preview_upload(files))
+        replace = (request.form.get('mode') or '').strip().lower() == 'replace'
+        return jsonify(manual_entry_upload.preview_upload(files, replace=replace))
 
     @manual_write('/api/manual/apply-forms', 'Manual entry - uploaded forms', methods=['POST'])
     def manual_apply_forms():

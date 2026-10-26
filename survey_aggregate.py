@@ -12,6 +12,7 @@ enough data yet" instead of a misleading single-company figure dressed
 up as a market average.
 """
 
+import fx_rates
 from models import db, Company
 from models_survey import SurveyCompanyData, is_full_year
 
@@ -193,10 +194,9 @@ def build_survey_overview(fiscal_year=None):
         return {'has_data': False, 'fiscal_year': fiscal_year, 'available_fiscal_years': sorted(all_years, reverse=True)}
 
     # ---- Normalize PERFORMANCE figures to a common scale before averaging ----
-    # Currency is NOT auto-converted (no exchange-rate source in this app) -
-    # a fiscal year mixing currencies excludes the non-primary-currency
-    # companies from PERFORMANCE figures and flags them, rather than
-    # silently combining e.g. KES and UGX. Unit IS auto-converted (a pure
+    # Currency: a company reporting in another currency (BK Group RWF, Umeme UGX) is converted into the
+    # survey currency at the annual-average rate in fx_rates.py; with no rate on file for that year it is
+    # excluded from the averages and flagged, never added as if it were KES. Unit IS auto-converted (a pure
     # multiplier, unlike currency) - an unrecognized Unit string is
     # likewise excluded and flagged rather than guessed.
     currency_counts = {}
@@ -205,20 +205,27 @@ def build_survey_overview(fiscal_year=None):
         currency_counts[cur] = currency_counts.get(cur, 0) + 1
     primary_currency = max(currency_counts, key=currency_counts.get)
 
-    perf_scale = {}          # row.id -> multiplier to CANONICAL_UNIT
+    perf_scale = {}          # row.id -> multiplier to CANONICAL_UNIT (and to the survey currency)
+    fx = {}                  # row.id -> survey-currency units per one unit of the row's currency (None = no rate)
     excluded_companies = []  # surfaced, not silently dropped
+    converted_companies = [] # companies brought into the survey currency at an annual-average rate
     for r in rows:
         cur = (r.currency or 'KES').strip().upper()
         scale = _unit_scale(r.unit)
         name = company_by_id[r.company_id].name
-        if cur != primary_currency:
-            excluded_companies.append({'name': name, 'reason': f'currency {cur} (survey is in {primary_currency}, no FX conversion applied)'})
+        rate = fx_rates.rate_to(primary_currency, cur, r.fiscal_year)
+        fx[r.id] = rate
+        if rate is None:
+            excluded_companies.append({'name': name, 'reason': f'currency {cur} (survey is in {primary_currency}, no exchange rate on file for {r.fiscal_year})'})
             perf_scale[r.id] = None
-        elif scale is None:
+            continue
+        if cur != primary_currency:
+            converted_companies.append({'name': name, 'currency': cur, 'rate': round(rate, 6), 'source': fx_rates.SOURCE})
+        if scale is None:
             excluded_companies.append({'name': name, 'reason': f'unrecognized Unit "{r.unit}"'})
             perf_scale[r.id] = None
         else:
-            perf_scale[r.id] = scale / UNIT_SCALE[CANONICAL_UNIT]
+            perf_scale[r.id] = scale / UNIT_SCALE[CANONICAL_UNIT] * rate
 
     implausible = {}         # (row.id, field) -> details; deduped, surfaced on the Data Quality tab
 
@@ -242,8 +249,12 @@ def build_survey_overview(fiscal_year=None):
         return value
 
     def normalized_pay(r, field_name):
+        # Pay in another currency (e.g. BK Group in RWF, Umeme in UGX) is converted at the same annual-average
+        # rate as the performance figures; with no rate on file it is left out - never added to KES as if it were KES.
+        if fx.get(r.id) is None:
+            return None
         raw = getattr(r, field_name)
-        return None if raw is None else raw * _pay_scale(r)
+        return None if raw is None else raw * _pay_scale(r) * fx[r.id]
 
     def field(name):
         return [getattr(r, name) for r in rows]
@@ -468,6 +479,7 @@ def build_survey_overview(fiscal_year=None):
         'unit': CANONICAL_UNIT,
         'min_companies_for_average': MIN_COMPANIES_FOR_AVERAGE,
         'excluded_from_performance_averages': excluded_companies,
+        'converted_from_other_currency': converted_companies,
         'implausible_values': sorted(implausible.values(), key=lambda d: (d['company'], d['field'])),
         'implausible_companies': implausible_companies,
         'executive_summary': executive_summary,
@@ -574,20 +586,31 @@ def build_company_rows(fiscal_year=None):
         return {'has_data': False, 'fiscal_year': fiscal_year,
                 'available_fiscal_years': sorted(available_fiscal_years(), reverse=True), 'rows': []}
     out = []
+    # Same survey currency as build_survey_overview: the most common one (KES).
+    counts = {}
+    for r, _c in row_pairs:
+        k = (r.currency or 'KES').strip().upper()
+        counts[k] = counts.get(k, 0) + 1
+    survey_cur = max(counts, key=counts.get)
     for r, c in row_pairs:
         gov = _governance_score(r)
-        pay_scale = _pay_scale(r)
-        chair = r.chairperson_annual_retainer * pay_scale if r.chairperson_annual_retainer is not None else None
-        other_ned = r.other_ned_annual_retainer * pay_scale if r.other_ned_annual_retainer is not None else None
-        exec_dir = r.executive_director_annual_retainer * pay_scale if r.executive_director_annual_retainer is not None else None
-        def _pay(field_name, _r=r, _ps=pay_scale):
+        reported_cur = (r.currency or 'KES').strip().upper()
+        fx = fx_rates.rate_to(survey_cur, reported_cur, r.fiscal_year)
+        # Every money figure below is shown in the survey currency; a company with no rate on file shows none.
+        pay_scale = _pay_scale(r) * fx if fx is not None else 0
+        pay_ok = fx is not None
+        chair = r.chairperson_annual_retainer * pay_scale if (pay_ok and r.chairperson_annual_retainer is not None) else None
+        other_ned = r.other_ned_annual_retainer * pay_scale if (pay_ok and r.other_ned_annual_retainer is not None) else None
+        exec_dir = r.executive_director_annual_retainer * pay_scale if (pay_ok and r.executive_director_annual_retainer is not None) else None
+        def _pay(field_name, _r=r, _ps=pay_scale, _ok=pay_ok):
             v = getattr(_r, field_name, None)
-            return None if v is None else v * _ps
+            return None if (v is None or not _ok) else v * _ps
 
         # Performance figures in whole currency units. Same honesty rules as the overview: an
         # unrecognised unit or a figure too large to be credible for a listed company is left out
         # (None) rather than guessed.
         perf_mult = _unit_scale(r.unit)
+        perf_mult = perf_mult * fx if (perf_mult is not None and fx is not None) else None
         perf = {}
         implausible_fields = []
         for f_ in ('turnover', 'net_profit', 'market_cap'):
@@ -597,7 +620,7 @@ def build_company_rows(fiscal_year=None):
                 continue
             full = raw * perf_mult
             ceiling = PLAUSIBLE_MAX_MILLIONS.get(f_)
-            if ceiling is not None and (r.currency or 'KES').strip().upper() == 'KES' \
+            if ceiling is not None and survey_cur == 'KES' \
                     and abs(full) > ceiling * UNIT_SCALE[CANONICAL_UNIT]:
                 perf[f_] = None
                 implausible_fields.append(f_)
@@ -607,7 +630,8 @@ def build_company_rows(fiscal_year=None):
 
         out.append({
             'company_id': c.id, 'name': c.name, 'sector': r.sector or c.sector, 'ticker': c.ticker,
-            'fiscal_year': r.fiscal_year, 'currency': r.currency, 'unit': r.unit,
+            'fiscal_year': r.fiscal_year, 'currency': survey_cur, 'unit': r.unit,
+            'reported_currency': reported_cur, 'fx_rate': (round(fx, 6) if fx is not None and reported_cur != survey_cur else None),
             'board_size': r.board_size, 'board_meetings_per_year': r.board_meetings_per_year,
             'committees_per_board': r.committees_per_board,
             'committee_meetings_per_year': r.committee_meetings_per_year,
