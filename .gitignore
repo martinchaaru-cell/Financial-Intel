@@ -32,4 +32,5 @@ pdf_storage/
 # Test outputs
 coverage/
 .pytest_cache/
-instance/
+instance/backup.dump
+part_*
