@@ -1,6 +1,6 @@
 entrypoint = "app.py"
 run = "python app.py"
-modules = ["python-3.11", "nodejs-24", "postgresql-16"]
+modules = ["python-3.12", "web", "nodejs-20", "bash"]
 
 [deployment]
 deploymentTarget = "autoscale"
