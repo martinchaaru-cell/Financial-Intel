@@ -66,7 +66,9 @@ def contact_details():
             'phone': (os.environ.get('CONTACT_PHONE') or '').strip(),
             'whatsapp': re.sub(r'\D', '', os.environ.get('CONTACT_WHATSAPP') or os.environ.get('CONTACT_PHONE') or ''),
             'address': (os.environ.get('CONTACT_ADDRESS') or os.environ.get('BILLING_SELLER_ADDRESS') or 'Nairobi, Kenya').strip(),
-            'hours': (os.environ.get('CONTACT_HOURS') or 'Monday to Friday, 8am – 5pm EAT').strip()}
+            'hours': (os.environ.get('CONTACT_HOURS') or 'Monday to Friday, 8am – 5pm EAT').strip(),
+            # What the contact page's map shows: a place name or full street address (defaults to the address).
+            'map_query': (os.environ.get('CONTACT_MAP_QUERY') or '').strip()}
 
 
 # ---------------------------------------------------------------- tokens

@@ -1,6 +1,6 @@
 """The public website (guests) and the members' home summary.
 
-Guests see the website: Home, About, What you get, Coverage (/companies), Pricing, Contact, plus Sign in and
+Guests see the website: Home, About, What you get, Pricing, Contact, plus Sign in and
 Create account. Reading actual survey content needs an account: every "view" link leads to /register (or
 /login), then into the app at /app. The app itself moved from / to /app; a guest who opens /app is sent to
 the sign-in page first.

@@ -5,6 +5,17 @@ from models import db as _db, Company
 from models_survey import SurveyCompanyData
 
 
+@pytest.fixture(autouse=True)
+def _pages_on(monkeypatch):
+    monkeypatch.setenv('PUBLIC_COMPANY_PAGES', '1')      # switched off by default; these tests cover the pages themselves
+
+
+def test_pages_are_off_by_default_and_send_visitors_home(client, monkeypatch):
+    monkeypatch.delenv('PUBLIC_COMPANY_PAGES')
+    r = client.get('/companies')
+    assert r.status_code == 301 and r.headers['Location'].endswith('/')
+
+
 @pytest.fixture()
 def seeded(app):
     kcb = Company(name='KCB Group Plc', ticker='KCB', sector='Banking')
@@ -65,5 +76,5 @@ def test_sitemap_lists_directory_and_company_pages(client, seeded):
 
 def test_switch_off(client, seeded, monkeypatch):
     monkeypatch.setenv('PUBLIC_COMPANY_PAGES', '0')
-    assert client.get('/company/kcb-group').status_code == 404
+    assert client.get('/company/kcb-group').status_code == 301           # sent to the home page
     assert '/company/' not in client.get('/sitemap.xml').get_data(as_text=True)

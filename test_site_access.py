@@ -42,7 +42,7 @@ def member(app, db, email, plan=None, plans=None):
 
 
 # ---------------------------------------------------------------- website
-@pytest.mark.parametrize('path', ['/', '/about', '/features', '/pricing', '/contact', '/login', '/register', '/companies'])
+@pytest.mark.parametrize('path', ['/', '/about', '/features', '/pricing', '/contact', '/login', '/register'])
 def test_website_pages_load_for_guests(client, plans, path):
     r = client.get(path)
     assert r.status_code == 200

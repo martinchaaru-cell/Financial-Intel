@@ -14,7 +14,9 @@ What is public (a teaser, by design): company name, ticker, sector, and board CO
 What is NOT public: any pay figure, financial statement, extraction detail or source file. Those stay
 behind the login. Edit `_board_rows()` below to change that line.
 
-Env:  PUBLIC_COMPANY_PAGES=0  switches the pages (and their sitemap entries) off.
+Env:  The pages are OFF by default (the public Coverage page was removed from the website on 27 Oct 2026):
+      /companies and /company/<slug> redirect to the home page and are left out of the sitemap.
+      PUBLIC_COMPANY_PAGES=1 switches them back on.
 """
 import os
 import re
@@ -27,7 +29,7 @@ _TRAILING = re.compile(r'[\s,.-]+(plc|limited|ltd|company|co)\.?$', re.I)
 
 
 def enabled():
-    return os.environ.get('PUBLIC_COMPANY_PAGES', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+    return os.environ.get('PUBLIC_COMPANY_PAGES', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 # ---------------------------------------------------------------- slugs
@@ -144,7 +146,7 @@ def init(app):
     @app.route('/companies')
     def public_directory():
         if not enabled():
-            abort(404)
+            return redirect('/', code=301)      # the Coverage pages are switched off: send old links home
         base = site_url()
         items = [{'name': c.name, 'ticker': c.ticker, 'sector': c.sector, 'slug': c.slug,
                   'year': rows[0]['year'], 'board_size': rows[0]['board_size']}
@@ -154,7 +156,7 @@ def init(app):
     @app.route('/company/<slug>')
     def public_company(slug):
         if not enabled():
-            abort(404)
+            return redirect('/', code=301)      # the Coverage pages are switched off: send old links home
         ensure_slugs()
         if slug.isdigit():                       # old id-style link -> permanent redirect to the readable URL
             c = Company.query.get(int(slug))
