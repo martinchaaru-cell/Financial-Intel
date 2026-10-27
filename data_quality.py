@@ -32,8 +32,8 @@ def company_quality(row):
     sections, missing_labels = [], []
     for mod in tab_modules.TAB_MODULES:
         fields = list(mod['metrics']) + list(mod.get('text_metrics', []))
-        if not fields:
-            continue
+        if not fields or mod.get('extended'):
+            continue                     # extended fields are reported on the company pages, not scored here
         sc = sr = sm = 0
         for key, label in fields:
             v = getattr(row, key, None) if row else None
@@ -64,7 +64,7 @@ def portfolio_quality(fiscal_year=None):
     out = {'has_data': False, 'fiscal_year': fy, 'available_fiscal_years': years, 'companies_counted': 0,
            'average_score': 0, 'pooled_score': 0, 'grade': grade(0), 'best': None, 'lowest': None,
            'totals': {'complete': 0, 'needs_review': 0, 'missing': 0, 'total': 0}, 'sections': [],
-           'companies': [], 'not_on_file': [], 'fields_per_company': len(tab_modules.all_metric_labels())}
+           'companies': [], 'not_on_file': [], 'fields_per_company': len(tab_modules.core_metric_labels())}
     if fy is None:
         return out
     rows = {r.company_id: r for r in SurveyCompanyData.query.filter_by(fiscal_year=fy).all()}

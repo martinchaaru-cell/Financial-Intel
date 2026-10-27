@@ -1,0 +1,31 @@
+{% extends "site/base.html" %}
+{% block title %}About | Financial Intel{% endblock %}
+{% block content %}
+<div class="band"><div class="wrap"><div class="crumbs"><a href="/">Home</a> › About</div>
+  <h1>Independent pay intelligence for Kenyan boards</h1>
+  <p class="lead">We turn the governance and remuneration disclosures in listed companies' annual reports into clean, comparable benchmarks.</p></div></div>
+<section>
+  <div class="wrap grid g2" style="align-items:start;gap:56px;">
+    <div>
+      <span class="eyebrow">Why we exist</span>
+      <h2 style="margin-bottom:18px;">Board pay decisions deserve better evidence</h2>
+      <p>Every year, nomination and remuneration committees decide what to pay their chair, non-executive directors and chief executive. The information they need is already public, spread across dozens of annual reports in different formats, units and levels of detail.</p>
+      <p>Financial Intel collects those reports, reads the governance and remuneration sections, puts every figure on the same basis and checks it against the page it came from. The result is a benchmark a board can rely on and a company secretary can cite.</p>
+    </div>
+    <div class="grid" style="gap:16px;">
+      <div class="card"><h3>Sourced, not surveyed</h3><p>Our figures come from what companies publish, not from questionnaires, so every number can be traced and checked.</p></div>
+      <div class="card"><h3>Comparable</h3><p>Pay reported per year, per month or in thousands is converted to the same units, and other currencies to Kenya shillings at the year's average rate.</p></div>
+      <div class="card"><h3>Independent</h3><p>We don't sell pay advice or board placements. We provide the evidence; your committee makes the call.</p></div>
+    </div>
+  </div>
+</section>
+<section class="soft">
+  <div class="wrap">
+    <div class="sec-head center"><span class="eyebrow">Coverage today</span><h2>{{ stats.companies }} companies · {{ stats.years }} financial years</h2></div>
+    <div class="grid g4">
+      {% for s, n in stats.sectors[:8] %}<div class="card" style="padding:20px;"><h3 style="font-size:16px;">{{ s }}</h3><p>{{ n }} compan{{ 'y' if n == 1 else 'ies' }}</p></div>{% endfor %}
+    </div>
+    <p class="center" style="margin-top:26px;"><a class="btn btn-navy" href="/companies">Browse the companies</a></p>
+  </div>
+</section>
+{% endblock %}

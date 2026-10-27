@@ -1,0 +1,50 @@
+{% extends "public_base.html" %}
+{% block title %}{{ page_title }}{% endblock %}
+{% block description %}{{ page_description }}{% endblock %}
+{% block canonical %}{{ canonical }}{% endblock %}
+{% block robots %}{% if noindex %}noindex, follow{% else %}index, follow{% endif %}{% endblock %}
+{% block jsonld %}
+<script type="application/ld+json">{{ {"@context":"https://schema.org","@graph":[
+  {"@type":"Corporation","name": company.name,"tickerSymbol": company.ticker,"url": canonical},
+  {"@type":"BreadcrumbList","itemListElement":[
+    {"@type":"ListItem","position":1,"name":"Financial Intel","item": site_url ~ "/"},
+    {"@type":"ListItem","position":2,"name":"Companies","item": site_url ~ "/companies"},
+    {"@type":"ListItem","position":3,"name": company.name,"item": canonical}]}]} | tojson }}</script>
+{% endblock %}
+{% block page %}
+<div class="crumbs"><a href="/">Financial Intel</a> › <a href="/companies">Companies</a> › {{ company.name }}</div>
+<h1>{{ company.name }}{% if company.ticker %} <span class="muted">({{ company.ticker }})</span>{% endif %}</h1>
+<p class="sub">{% if company.sector %}{{ company.sector }} · {% endif %}{{ company.exchange or 'NSE' }}{% if latest %} · Board data for {{ latest.year }}{% endif %}</p>
+
+{% if latest %}
+<div class="kpis">
+  <div class="kpi"><b>{{ latest.board_size }}</b><span>Directors</span></div>
+  {% if latest.executive is not none %}<div class="kpi"><b>{{ latest.executive }}</b><span>Executive</span></div>{% endif %}
+  {% if latest.non_executive is not none %}<div class="kpi"><b>{{ latest.non_executive }}</b><span>Non-executive</span></div>{% endif %}
+  {% if latest.independent is not none %}<div class="kpi"><b>{{ latest.independent }}</b><span>Independent</span></div>{% endif %}
+  {% if latest.women is not none %}<div class="kpi"><b>{{ latest.women }}</b><span>Women on the board</span></div>{% endif %}
+  {% if latest.meetings is not none %}<div class="kpi"><b>{{ latest.meetings }}</b><span>Board meetings a year</span></div>{% endif %}
+</div>
+
+<h2>Board composition by year</h2>
+<div class="panel scroll">
+<table>
+  <thead><tr><th>Year</th><th>Directors</th><th>Executive</th><th>Non-exec.</th><th>Independent</th><th>Women</th><th>Meetings</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr><td>{{ r.year }}</td><td>{{ r.board_size }}</td><td>{{ r.executive if r.executive is not none else '–' }}</td><td>{{ r.non_executive if r.non_executive is not none else '–' }}</td><td>{{ r.independent if r.independent is not none else '–' }}</td><td>{{ r.women if r.women is not none else '–' }}</td><td>{{ r.meetings if r.meetings is not none else '–' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted">Source: {{ company.name }} published annual report{{ 's' if rows|length > 1 else '' }}. A dash means the report did not state the figure.</p>
+
+<div class="cta-box">
+  <b>See how {{ company.name }} pays its directors</b><br>
+  <span class="muted">Chair and member retainers, meeting allowances, CEO pay structure and peer benchmarks are available to signed-in members.</span><br>
+  <a class="btn btn-gold" href="/register">Create a free account</a>
+</div>
+{% else %}
+<p class="muted">Board data for this company has not been published yet.</p>
+{% endif %}
+{% endblock %}

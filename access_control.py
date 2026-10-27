@@ -44,6 +44,8 @@ GUEST_GET_ALLOWED = frozenset({
     '/api/survey/companies',
     '/api/survey/data-quality',
     '/api/import-jobs',
+    '/api/billing/plans',      # the price list is public
+    '/api/billing/me',         # tells the page there is no plan yet / nobody signed in
 })
 
 # Not counted against the general per-minute / per-day API limits.
@@ -99,6 +101,9 @@ def register(app, db, ActivityLogEntry, current_user, activity_log):
         user = current_user()
         if user is None or user.role == 'admin':
             return None                    # guests were already refused above; admins are exempt
+        import billing
+        if billing.governs_downloads(user):
+            return None                    # the customer's plan sets their download allowance (billing.py)
         used = ActivityLogEntry.query.filter(
             ActivityLogEntry.user_id == user.id,
             ActivityLogEntry.category == activity_log.CAT_EXPORT,
@@ -126,7 +131,11 @@ def register(app, db, ActivityLogEntry, current_user, activity_log):
         ],
         default_limits_exempt_when=lambda: (not request.path.startswith('/api/')
                                             or request.path in RATE_LIMIT_EXEMPT),
+        # Shared counters: set RATELIMIT_STORAGE_URI to a Redis address (e.g. a free Upstash database,
+        # rediss://default:<password>@<host>:6379) so every copy of the app counts together. If Redis cannot be
+        # reached, each copy falls back to counting in its own memory rather than refusing requests.
         storage_uri=os.environ.get('RATELIMIT_STORAGE_URI', 'memory://'),
+        in_memory_fallback_enabled=True,
         headers_enabled=True,
     )
 

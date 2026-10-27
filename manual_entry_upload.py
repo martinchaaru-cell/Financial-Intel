@@ -85,7 +85,28 @@ def _norm_box(t):
 
 
 def _is_int_col(col):
-    return col.endswith('_count') or col in INT_COLS
+    return col.endswith('_count') or col in INT_COLS or col in tab_modules.INT_FIELDS
+
+
+def _text_value(k, raw):
+    """Free-text survey value as stored: Yes / No questions are normalised, everything else kept as typed."""
+    t = str(raw).strip()[:TEXT_MAX]
+    return tab_modules.normalise_yes_no(t) if k in tab_modules.YESNO_FIELDS else t
+
+
+# Per-director extended columns on the form: dirx|<id>|<attribute>
+DIR_EXTRA = dict(tab_modules.DIRECTOR_EXTRA)
+
+
+def _dir_extra_value(attr, raw):
+    """-> (value, problem). Blank = None. Whole numbers except shares held."""
+    raw = _norm_box(raw)
+    if raw in BLANKS:
+        return None, None
+    n = parse_number(raw)
+    if n is None or n < 0:
+        return _KEEP, f'{DIR_EXTRA[attr]}: "{raw}" is not a number - the stored value is kept'
+    return (float(n) if attr == 'shares_held' else int(round(n))), None
 
 
 def _blank(v):
@@ -170,7 +191,7 @@ def intents_from_values(values, label_of=None, metric_cols=None):
         if kind == 'metric' and len(parts) == 2 and not _blank(val) and parts[1] in tab_modules.survey_text_columns():
             k = parts[1]                       # free-text field (e.g. CEO conversion basis "annual / 12") - kept as text
             note = (values.get(f'metricnote|{k}') or '').strip()[:80]
-            intents.append({'op': 'metric', 'key': k, 'data': {'value': str(val).strip()[:TEXT_MAX], 'note': note}})
+            intents.append({'op': 'metric', 'key': k, 'data': {'value': _text_value(k, val), 'note': note}})
         elif kind == 'metric' and len(parts) == 2 and not _blank(val):
             k = parts[1]
             n = parse_number(val)
@@ -199,6 +220,9 @@ def intents_from_values(values, label_of=None, metric_cols=None):
                                                                 'ok': _checked(values.get(f'confirmok|{k}'))}})
         elif kind == 'dirname' and len(parts) == 2:
             rows.setdefault(('dir', parts[1]), {})['name'] = val
+        elif kind == 'dirx' and len(parts) == 3 and parts[2] in DIR_EXTRA:   # attendance / directorships / shares
+            r = rows.setdefault(('dir', parts[1]), {})
+            r.setdefault('_extra', {})[parts[2]] = val
         elif kind == 'dirfix' and len(parts) == 3:          # a pre-filled register cell: unchanged values drop out later
             r = rows.setdefault(('dir', parts[1]), {})
             r[parts[2]] = val
@@ -217,7 +241,7 @@ def intents_from_values(values, label_of=None, metric_cols=None):
         if k in tab_modules.survey_text_columns():
             # free-text field listed under "values on file": a typed correction replaces it, a tick approves it
             if not _blank(val):
-                intents.append({'op': 'confirm', 'key': k, 'data': {'value': str(val).strip()[:TEXT_MAX]}})
+                intents.append({'op': 'confirm', 'key': k, 'data': {'value': _text_value(k, val)}})
             elif ok:
                 intents.append({'op': 'confirm', 'key': k, 'data': {'value': None}})
             continue
@@ -248,6 +272,12 @@ def intents_from_values(values, label_of=None, metric_cols=None):
                 if not _blank(f.get(a)):
                     data['appointed_date' if a == 'appointed' else a] = f[a].strip()[:60]
             data = {k: v for k, v in data.items() if v is not None}
+            for a, raw in (f.get('_extra') or {}).items():
+                v, prob = _dir_extra_value(a, raw)
+                if prob:
+                    problems.append(prob)
+                elif v is not None and v is not _KEEP:
+                    data[a] = v
             if kind == 'dir' and not _blank(f.get('name')):
                 data['director_name'] = f['name'].strip()[:150]
             if kind == 'dir' and data and ident.isdigit():
@@ -401,7 +431,7 @@ def _owned_period(period_id, cid, fy):
 
 
 DIR_ATTR_LABEL = {'director_name': 'Name', 'role': 'Role', 'independent': 'Independent', 'gender': 'Gender', 'nationality': 'Nationality',
-                  'appointed_date': 'Appointed'}
+                  'appointed_date': 'Appointed', **dict(tab_modules.DIRECTOR_EXTRA)}
 
 
 def _annotate(intent, cid, fy):
@@ -632,7 +662,7 @@ def _parse_box(k, raw, label):
     if raw in BLANKS:
         return None, None
     if k in tab_modules.survey_text_columns():
-        return raw[:TEXT_MAX], None
+        return _text_value(k, raw), None
     n = parse_number(raw)
     if n is None:
         return _KEEP, f'{label}: "{raw}" is not a number - the stored value is kept'
@@ -694,6 +724,8 @@ def replace_change(cid, fy, values, fname, company_name):
             on_form.setdefault(int(parts[1]), {})['name'] = val
         elif parts[0] in ('dir', 'dirfix') and len(parts) == 3 and parts[1].isdigit():
             on_form.setdefault(int(parts[1]), {})[parts[2]] = val
+        elif parts[0] == 'dirx' and len(parts) == 3 and parts[1].isdigit() and parts[2] in DIR_EXTRA:
+            on_form.setdefault(int(parts[1]), {}).setdefault('_extra', {})[parts[2]] = val
     d_upd, d_del, d_add = [], [], []
     for did, f in sorted(on_form.items()):
         d = existing.get(did)
@@ -710,6 +742,13 @@ def replace_change(cid, fy, values, fname, company_name):
                 new['appointed_date' if a == 'appointed' else a] = _dir_value(a, f[a])
         cur = {'director_name': d.director_name, 'role': d.role if d.role in ('executive', 'non_executive') else None,
                'independent': d.independent, 'gender': d.gender, 'nationality': d.nationality, 'appointed_date': d.appointed_date}
+        # attendance / directorships / shares: only when the form carries those boxes (older forms leave them alone)
+        for a, raw in (f.get('_extra') or {}).items():
+            v, prob = _dir_extra_value(a, raw)
+            if prob:
+                probs.append(prob)
+                continue
+            new[a], cur[a] = v, getattr(d, a, None)
         for k, v in list(new.items()):
             if _same_box(cur.get(k), v):
                 new[k] = cur.get(k) if k != 'role' else d.role      # unchanged: keep the stored spelling exactly
@@ -790,6 +829,10 @@ def _apply_replace(cid, fy, data, file=''):
     row.field_sources, row.field_confidence, row.field_review_status, row.field_review_corrections = srcs, confs, status, corr
 
     def fill(d, x):
+        for a in DIR_EXTRA:                               # only the extended boxes that were on the form
+            if a in x:
+                v = x[a]
+                setattr(d, a, None if v is None else (float(v) if a == 'shares_held' else int(v)))
         d.director_name = str(x['director_name'])[:150]
         d.role = x.get('role') if x.get('role') in ('executive', 'non_executive') else 'unknown'
         d.independent = x.get('independent') if isinstance(x.get('independent'), bool) else None
@@ -902,6 +945,9 @@ def _apply_one(ch):
             d.nationality = str(data['nationality'])[:60]
         if data.get('appointed_date'):
             d.appointed_date = str(data['appointed_date'])[:40]
+        for a in DIR_EXTRA:
+            if isinstance(data.get(a), (int, float)) and not isinstance(data.get(a), bool):
+                setattr(d, a, float(data[a]) if a == 'shares_held' else int(data[a]))
         d.confidence = 1.0
         return True, 'saved'
 

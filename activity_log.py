@@ -62,7 +62,14 @@ ACTION_INFO = {
     'committees_updated': (CAT_DATA, 'Saved committees'),
     'company_year_deleted': (CAT_COMPANY, "Deleted a company's year of data"),
     'company_deleted': (CAT_COMPANY, 'Deleted a company'),
+    'company_viewed': (CAT_COMPANY, "Opened a company's report"),
+    'email_verified': (CAT_AUTH, 'Confirmed their email address'),
+    'password_reset': (CAT_AUTH, 'Reset their password by email link'),
+    'invite_accepted': (CAT_AUTH, 'Set their password from an invitation'),
 }
+# A member opening a company's survey report is logged once per account, company and day (it feeds the
+# admin dashboard's "what clients look at"); staff reading reports is not logged.
+COMPANY_VIEW_RULE = '/api/survey/companies/<int:company_id>/<fiscal_year>'
 
 # Request-derived entries: (method, url rule) -> (action, category, label). Anything not listed
 # here is still logged, categorised and labelled by the generic rules in classify_request().
@@ -304,6 +311,23 @@ def _parse_int(v, default=None):
         return default
 
 
+def _log_company_view(db, Model, current_user):
+    who = getattr(g, '_activity_actor', None) or {}
+    if who.get('actor_role') != 'user' or not who.get('user_id'):
+        return
+    args = request.view_args or {}
+    cid = args.get('company_id')
+    if not cid:
+        return
+    from datetime import datetime
+    day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    seen = Model.query.filter(Model.user_id == who['user_id'], Model.company_id == cid,
+                              Model.action == 'company_viewed', Model.created_at >= day).first()
+    if seen is None:
+        write_entry(db, Model, current_user, cid, 'company_viewed', detail="Opened a company's report",
+                    fiscal_year=args.get('fiscal_year'), category=CAT_COMPANY)
+
+
 def register(app, db, Model, Company, current_user, require_role):
     """Attach the capture hooks and the admin-only read routes to the Flask app."""
 
@@ -342,7 +366,11 @@ def register(app, db, Model, Company, current_user, require_role):
                                 detail='Incorrect email or password', category=CAT_AUTH)
                     return resp
             elif method == 'GET':
-                # Only exports/downloads count as activity; ordinary page reads do not.
+                # Only exports/downloads count as activity; ordinary page reads do not - except a member
+                # opening a company's report (once a day per company).
+                if rule == COMPANY_VIEW_RULE and resp.status_code < 400:
+                    _log_company_view(db, Model, current_user)
+                    return resp
                 if cat != CAT_EXPORT or resp.status_code >= 400:
                     return resp
             else:

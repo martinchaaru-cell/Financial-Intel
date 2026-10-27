@@ -1,0 +1,36 @@
+{% extends "site/base.html" %}
+{% block title %}What you get | Financial Intel{% endblock %}
+{% block style %}
+.feat{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center;padding:28px 0}
+.feat + .feat{border-top:1px solid var(--line)}
+.feat ul{padding-left:20px;color:var(--dim)} .feat li{margin-bottom:6px}
+.shot{background:var(--soft);border:1px solid var(--line);border-radius:16px;padding:24px}
+.shot .row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);font-size:14.5px}
+.shot .row:last-child{border-bottom:none}
+.shot .row b{filter:blur(5px);color:var(--navy)}
+.tier{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;background:var(--blue-soft);color:var(--blue);margin-left:6px;vertical-align:middle}
+@media (max-width:1020px){.feat{grid-template-columns:1fr;gap:24px}}
+{% endblock %}
+{% block content %}
+<div class="band"><div class="wrap"><div class="crumbs"><a href="/">Home</a> › What you get</div>
+  <h1>What's inside Financial Intel</h1>
+  <p class="lead">Company reports, market analytics and an intelligence layer, built from the annual reports of Kenya's listed companies.</p></div></div>
+<section style="padding-top:40px">
+  <div class="wrap">
+    <div class="feat"><div><span class="eyebrow">Company reports <span class="tier">Professional</span></span><h2 style="margin-bottom:14px;">Any company, any year, in one place</h2>
+      <ul><li>Company overview: turnover, profit and market value</li><li>Board composition and the full directors' register</li><li>Director and CEO remuneration, committees and benefits</li><li>The report page behind every figure</li></ul></div>
+      <div class="shot"><div class="row"><span>Chair annual retainer</span><b>KES 0,000,000</b></div><div class="row"><span>NED sitting allowance</span><b>KES 000,000</b></div><div class="row"><span>CEO monthly cost of employment</span><b>KES 0,000,000</b></div><div class="row"><span>Independent directors</span><b>0 of 00</b></div></div></div>
+    <div class="feat"><div><span class="eyebrow">Survey analytics <span class="tier">Professional</span></span><h2 style="margin-bottom:14px;">The whole market, for any year</h2>
+      <ul><li>Averages, medians and quartiles for every pay element</li><li>Executive and non-executive pay compared by sector</li><li>Committee pay and board structure across the market</li><li>Board-ready PDF and Word reports</li></ul></div>
+      <div class="shot"><div class="row"><span>Median NED retainer, Banking</span><b>KES 0,000,000</b></div><div class="row"><span>Upper quartile chair fee</span><b>KES 0,000,000</b></div><div class="row"><span>Average board size</span><b>00.0</b></div></div></div>
+    <div class="feat"><div><span class="eyebrow">Intelligence report <span class="tier">Team</span></span><h2 style="margin-bottom:14px;">Rankings, trends and governance checks</h2>
+      <ul><li>Benchmark one company against its peers</li><li>Company rankings by pay and governance</li><li>Trends across every year on file</li><li>Independence and gender compliance, flagged</li></ul></div>
+      <div class="shot"><div class="row"><span>Rank by chair fee</span><b>00 of 00</b></div><div class="row"><span>Change in NED fees since first year</span><b>+00%</b></div><div class="row"><span>Boards meeting the gender guide</span><b>00%</b></div></div></div>
+    <div class="feat"><div><span class="eyebrow">Data quality &amp; downloads <span class="tier">Team</span></span><h2 style="margin-bottom:14px;">Evidence you can defend</h2>
+      <ul><li>Completeness and confidence for every company</li><li>Source page for each figure</li><li>Excel and CSV data files; bulk downloads on Enterprise</li></ul></div>
+      <div class="shot"><div class="row"><span>Fields verified</span><b>000 of 000</b></div><div class="row"><span>Source pages linked</span><b>000</b></div></div></div>
+  </div>
+</section>
+<section class="soft"><div class="wrap center"><h2 style="margin-bottom:14px;">Ready to look inside?</h2><p class="lead">Create a free account to see the dashboard, then choose the plan that fits.</p>
+  <p style="margin-top:22px;">{% if user %}<a class="btn btn-navy" href="/app">Open dashboard</a>{% else %}{% if self_registration %}<a class="btn btn-gold" href="/register">Create free account</a> {% endif %}<a class="btn btn-ghost" href="/pricing">Compare plans</a>{% endif %}</p></div></section>
+{% endblock %}

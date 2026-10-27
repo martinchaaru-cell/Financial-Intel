@@ -1,0 +1,7 @@
+{# Public company directory and company pages, inside the website's header and footer (site/base.html). #}
+{% extends "site/base.html" %}
+{% set active = 'coverage' %}
+{% block style %}.crumbs{color:var(--faint);margin-bottom:8px}.crumbs a{color:var(--blue)}h1{font-size:clamp(28px,3.4vw,38px);margin-top:6px}h2{font-size:22px;margin:30px 0 12px}{% endblock %}
+{% block content %}
+<section style="padding:36px 0 72px"><div class="wrap" style="max-width:1000px">{% block page %}{% endblock %}</div></section>
+{% endblock %}

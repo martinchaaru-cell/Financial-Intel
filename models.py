@@ -66,6 +66,16 @@ class User(db.Model):
     totp_secret = db.Column(db.String(64))
     mfa_enabled = db.Column(db.Boolean, default=False)
     mfa_last_step = db.Column(db.BigInteger)
+    # Billing (see billing.py, migrate_v11_billing.py): the paying organisation this account belongs to,
+    # its role there ('owner' manages colleagues and payment, 'member' just uses the app), and the token of
+    # its one active sign-in - a new sign-in replaces it, which signs out the older device.
+    organization_id = db.Column(db.Integer, index=True)
+    org_role = db.Column(db.String(20))
+    session_token = db.Column(db.String(64))
+    # The member's own listed company for the dashboard comparison, when the account has no organisation.
+    home_company_id = db.Column(db.Integer)
+    # False only for a self-registered account whose email link has not been clicked yet (accounts_email.py).
+    email_verified = db.Column(db.Boolean, default=True, server_default=db.true())
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -79,10 +89,13 @@ class User(db.Model):
             'role': self.role,
             'is_super_admin': bool(self.is_super_admin) and self.role == 'admin',
             'mfa_enabled': bool(self.mfa_enabled),
+            'email_verified': self.email_verified is not False,
             'organization': self.organization,
             'job_title': self.job_title,
             'phone': self.phone,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'organization_id': self.organization_id,
+            'org_role': self.org_role,
         }
 
 

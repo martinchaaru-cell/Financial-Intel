@@ -159,6 +159,7 @@ for _k, _v in _NEEDS.items():
     _PAGE_FILTER[_k] = [_v]
 
 _TOPIC_NAME = {k: v for k, v in tab_modules.all_metric_labels().items()}
+_CORE_KEYS = set(tab_modules.core_metric_labels())      # what the report scores (same as the data-quality score)
 
 # why a field might be absent even when the topic is present, per field family
 _HINTS = {
@@ -522,14 +523,14 @@ def _table_items(company_id, fiscal_year, trace, fields):
     for c in d['conflicts']:
         items.append({'section': 'Conflicting readings', 'item': c['label'], 'status': 'to_confirm',
                       'reason': f"Reading A {c['a']} (p.{c['a_page'] or '?'}) vs reading B {c['b']} (p.{c['b_page'] or '?'}); no one has chosen."})
-    form_missing = {k for _, ms in d['missing_metrics'] for k, _ in ms}
+    form_missing = {k for _, ms in d['missing_metrics'] for k, _ in ms if k in _CORE_KEYS}
     report_missing = {f['field'] for f in fields if f['status'] == 'missing'}
     return items, {'form_only': sorted(form_missing - report_missing), 'report_only': sorted(report_missing - form_missing),
                    'agree': form_missing == report_missing}
 
 
 def build_report(company_id=None, fiscal_year=None, evidence=None):
-    labels = tab_modules.all_metric_labels()
+    labels = tab_modules.core_metric_labels()        # the 40 scored fields; extended fields have no reader yet
     section_of = _section_of()
     q = SurveyCompanyData.query
     if company_id:

@@ -1,0 +1,24 @@
+{% extends "public_base.html" %}
+{% block title %}NSE-Listed Companies: Board Composition & Governance | Financial Intel{% endblock %}
+{% block description %}Browse board size, independence and gender balance for NSE-listed companies, compiled from published annual reports by Financial Intel.{% endblock %}
+{% block canonical %}{{ site_url }}/companies{% endblock %}
+{% block jsonld %}
+<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"CollectionPage","name":"NSE-listed companies: board composition and governance","url": site_url ~ "/companies","isPartOf":{"@type":"WebSite","name":"Financial Intel","url": site_url ~ "/"}} | tojson }}</script>
+{% endblock %}
+{% block page %}
+<h1>NSE-listed companies</h1>
+<p class="sub">Board composition and governance, compiled from each company's published annual report.</p>
+{% if items %}
+<ul class="list">
+  {% for c in items %}
+  <li>
+    <a href="/company/{{ c.slug }}"><b>{{ c.name }}</b></a>{% if c.ticker %} <span class="muted">· {{ c.ticker }}</span>{% endif %}
+    <div class="muted">{% if c.sector %}{{ c.sector }} · {% endif %}{{ c.board_size }} directors in {{ c.year }}</div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No company pages are published yet.</p>
+{% endif %}
+<div class="cta-box"><b>Want the remuneration detail?</b><br><span class="muted">Director pay, peer benchmarks and year-on-year comparisons are available inside the dashboard.</span><br><a class="btn btn-gold" href="/register">Create a free account</a></div>
+{% endblock %}

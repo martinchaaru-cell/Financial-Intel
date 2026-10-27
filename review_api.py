@@ -108,7 +108,8 @@ def gate_payloads(flask_app, file_payloads, forced_company_id):
             if flask_app.config.get('REVIEW_SYNC_PREVIEW'):
                 _run_preview(flask_app, dup.id)
             else:
-                threading.Thread(target=_run_preview, args=(flask_app, dup.id), daemon=True).start()
+                import job_runner
+                job_runner.submit_preview(_run_preview, dup.id)     # read in the worker process (job_runner.py)
         draft_ids[filename] = dup.id
     return file_payloads, draft_ids
 

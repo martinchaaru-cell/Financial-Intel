@@ -1,0 +1,40 @@
+entrypoint = "app.py"
+run = "python app.py"
+modules = ["python-3.12", "web", "nodejs-20", "bash"]
+
+[deployment]
+deploymentTarget = "autoscale"
+run = ["gunicorn", "-c", "gunicorn.conf.py", "app:app"]
+build = ["pip", "install", "-r", "requirements.txt"]
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[nix]
+packages = ["freetype", "glibcLocales", "gumbo", "harfbuzz", "jbig2dec", "lcms2", "libimagequant", "libjpeg", "libjpeg_turbo", "libtiff", "libwebp", "libxcrypt", "mailutils", "mupdf", "openjpeg", "postgresql", "swig", "tcl", "tesseract", "tk", "xcbuild", "zlib"]
+channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python app.py"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"

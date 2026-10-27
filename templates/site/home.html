@@ -1,0 +1,233 @@
+{% extends "site/base.html" %}
+{% block jsonld %}
+<script type="application/ld+json">{{ {"@context":"https://schema.org","@graph":[
+  {"@type":"Organization","name":"Financial Intel","url": site_url ~ "/"},
+  {"@type":"WebSite","name":"Financial Intel","url": site_url ~ "/"}]} | tojson }}</script>
+{% endblock %}
+{% block style %}
+.hero{background:linear-gradient(115deg,#081a3a 0%,#0b1f44 40%,#16408f 100%);color:#fff;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;inset:0;background:radial-gradient(circle at 78% 30%,rgba(91,155,255,.25),transparent 45%),radial-gradient(circle at 10% 110%,rgba(245,179,1,.12),transparent 40%)}
+.hero .wrap{position:relative;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:84px;padding-bottom:96px}
+.hero .kicker{font-weight:600;font-size:15px;color:#c9d6f2;margin-bottom:10px;display:flex;align-items:center;gap:10px}
+.hero .kicker i{display:inline-block;width:28px;height:2px;background:var(--gold)}
+.hero h1{color:#fff;font-size:clamp(34px,4.6vw,56px);font-weight:900;margin-bottom:18px;letter-spacing:-.01em}
+.hero h1 em{font-style:italic;color:var(--gold)}
+.hero p.lead{color:#cfdaf3;font-size:18.5px;margin-bottom:30px}
+.hero-act{display:flex;gap:12px;flex-wrap:wrap}
+.trust{display:flex;gap:22px;flex-wrap:wrap;margin-top:30px;color:#a9bbe0;font-size:14px}
+.trust span{display:flex;align-items:center;gap:8px}
+.trust svg{width:17px;height:17px;fill:none;stroke:var(--gold);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+
+/* product preview */
+.mock{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);border-radius:18px;padding:22px;backdrop-filter:blur(6px);box-shadow:0 30px 60px rgba(0,0,0,.35)}
+.mock-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.mock-title{font-weight:600;font-size:15px} .mock-sub{font-size:12.5px;color:#a9bbe0}
+.lock-chip{white-space:nowrap;flex-shrink:0;display:inline-flex;align-items:center;gap:6px;background:rgba(245,179,1,.16);color:var(--gold);border:1px solid rgba(245,179,1,.35);border-radius:999px;font-size:12px;font-weight:600;padding:5px 11px}
+.lock-chip svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2.4}
+.mock-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px}
+.mock-kpi{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px}
+.mock-kpi span{display:block;font-size:11.5px;color:#a9bbe0;margin-bottom:6px}
+.mock-kpi b{font-size:17px;filter:blur(5px);user-select:none}
+.bars{display:flex;align-items:flex-end;gap:10px;height:130px;padding:0 4px;border-bottom:1px solid rgba(255,255,255,.12)}
+.bars i{flex:1;border-radius:6px 6px 0 0;background:linear-gradient(180deg,#5b9bff,#2b5fc8)}
+.bars i:nth-child(4){background:linear-gradient(180deg,var(--gold-2),#d89b00)}
+.bar-lab{display:flex;gap:10px;padding:8px 4px 0;font-size:11px;color:#a9bbe0} .bar-lab span{flex:1;text-align:center}
+.mock-foot{margin-top:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;color:#cfdaf3;flex-wrap:wrap}
+.mock-foot a{color:var(--gold);font-weight:600}
+
+/* stats band */
+.stats{background:#fff;border-bottom:1px solid var(--line)}
+.stats .wrap{display:grid;grid-template-columns:repeat(4,1fr)}
+.stat{display:flex;align-items:center;gap:16px;padding:30px 24px;border-right:1px solid var(--line)}
+.stat:last-child{border-right:none}
+.stat svg{width:40px;height:40px;fill:none;stroke:var(--navy);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.stat b{display:block;font-family:var(--serif);font-size:30px;color:var(--navy);line-height:1.05}
+.stat span{color:var(--dim);font-size:14.5px}
+
+/* steps */
+.steps{counter-reset:s}
+.step{position:relative;padding-top:8px}
+.step .num{width:44px;height:44px;border-radius:50%;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-weight:900;font-size:18px;margin-bottom:16px;box-shadow:0 0 0 6px var(--blue-soft)}
+
+/* locked insights */
+.insight{position:relative;overflow:hidden}
+.insight .val{font-family:var(--serif);font-size:32px;color:var(--navy);filter:blur(7px);user-select:none;margin:8px 0 6px}
+.insight .lbl{font-size:13px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.insight .lock{margin-top:16px;display:flex;align-items:center;gap:8px;font-size:14px;color:var(--navy);font-weight:600}
+.insight .lock svg{width:16px;height:16px;fill:none;stroke:var(--gold);stroke-width:2.4}
+.insight .spark{height:46px;display:flex;align-items:flex-end;gap:5px;margin-top:10px;filter:blur(2px)}
+.insight .spark i{flex:1;background:#d6e2ff;border-radius:3px}
+
+/* audience */
+.aud{display:flex;gap:16px;align-items:flex-start}
+.aud .ic{margin:0;flex-shrink:0}
+
+/* pricing preview */
+.price-card{display:flex;flex-direction:column}
+.price-card.pop{border:2px solid var(--navy);position:relative}
+.price-card.pop .pop-tag{position:absolute;top:-13px;left:28px;background:var(--gold);color:var(--navy);font-size:12px;font-weight:700;padding:4px 12px;border-radius:999px}
+.price{font-family:var(--serif);font-size:32px;color:var(--navy);margin:10px 0 2px}
+.price small{font-family:var(--sans);font-size:14px;color:var(--dim);font-weight:400}
+.price{white-space:nowrap;font-size:clamp(24px,2.4vw,32px)}
+.ticks{list-style:none;padding:0;margin:18px 0 24px;font-size:15px}
+.ticks li{padding:6px 0 6px 28px;position:relative}
+.ticks li::before{content:'';position:absolute;left:0;top:11px;width:16px;height:16px;border-radius:50%;background:var(--blue-soft) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/10px no-repeat}
+.price-card .btn{margin-top:auto;justify-content:center}
+
+.cta-band{background:linear-gradient(115deg,#0b1f44,#16408f);border-radius:22px;padding:56px;color:#fff;display:flex;justify-content:space-between;align-items:center;gap:30px;flex-wrap:wrap}
+.cta-band h2{color:#fff;margin-bottom:8px} .cta-band p{color:#c9d6f2;margin:0;font-size:17px}
+
+@media (max-width:1020px){
+  .hero .wrap{grid-template-columns:1fr;padding-top:56px;padding-bottom:64px;gap:40px}
+  .stats .wrap{grid-template-columns:repeat(2,1fr)}
+  .stat:nth-child(2){border-right:none} .stat:nth-child(-n+2){border-bottom:1px solid var(--line)}
+}
+@media (max-width:640px){
+  .stat{padding:20px 8px;gap:10px} .stat svg{width:30px;height:30px} .stat b{font-size:24px} .stat span{font-size:13px}
+  .mock-kpis{grid-template-columns:1fr 1fr} .mock-kpi:last-child{display:none}
+  .cta-band{padding:34px 24px}
+}
+{% endblock %}
+{% block content %}
+<section class="hero" style="padding:0">
+  <div class="wrap">
+    <div>
+      <div class="kicker"><i></i>Nairobi Securities Exchange · {{ stats.companies or 'Listed' }} companies</div>
+      <h1>Know what boards <em>really</em> pay.</h1>
+      <p class="lead">Director fees, CEO pay and board composition for Kenya's listed companies, taken from their annual reports and checked line by line. Benchmark any board in minutes.</p>
+      <div class="hero-act">
+        {% if user %}<a class="btn btn-gold" href="/app">Open your dashboard
+          <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        {% else %}
+          {% if self_registration %}<a class="btn btn-gold" href="/register">{{ 'Start your free trial' if trial_days else 'Create a free account' }}
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>{% endif %}
+          <a class="btn btn-line" href="/pricing"><svg viewBox="0 0 24 24"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8z"/><path d="M7 7h.01"/></svg>See pricing</a>
+          <a class="btn btn-line" href="/features"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>What's inside</a>
+        {% endif %}
+      </div>
+      <div class="trust">
+        <span><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Sourced from published reports</span>
+        <span><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Every figure checked</span>
+        {% if trial_days %}<span><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>{{ trial_days }}-day free trial</span>{% endif %}
+      </div>
+    </div>
+    <div class="mock" aria-label="Preview of the member dashboard">
+      <div class="mock-top"><div><div class="mock-title">Board remuneration benchmark</div><div class="mock-sub">{{ stats.last_year or 'Latest year' }} · all sectors</div></div>
+        <span class="lock-chip"><svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Members only</span></div>
+      <div class="mock-kpis">
+        <div class="mock-kpi"><span>Median chair fee</span><b>KES 0,000,000</b></div>
+        <div class="mock-kpi"><span>Median NED fee</span><b>KES 0,000,000</b></div>
+        <div class="mock-kpi"><span>CEO pay / month</span><b>KES 0,000,000</b></div>
+      </div>
+      <div class="bars"><i style="height:52%"></i><i style="height:68%"></i><i style="height:44%"></i><i style="height:88%"></i><i style="height:61%"></i><i style="height:74%"></i></div>
+      <div class="bar-lab"><span>Banking</span><span>Insur.</span><span>Agric.</span><span>Telco</span><span>Energy</span><span>Manuf.</span></div>
+      <div class="mock-foot"><span>Sector benchmarks, peer rankings and trends</span>{% if not user %}<a href="/register">Unlock with a free account →</a>{% endif %}</div>
+    </div>
+  </div>
+</section>
+
+<div class="stats">
+  <div class="wrap">
+    <div class="stat"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/></svg><div><b>{{ stats.companies }}</b><span>Listed companies</span></div></div>
+    <div class="stat"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><div><b>{{ stats.years }}</b><span>Financial years{% if stats.first_year %} ({{ stats.first_year }}–{{ stats.last_year }}){% endif %}</span></div></div>
+    <div class="stat"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2M16 3.1a4 4 0 0 1 0 7.8M21 21v-2a4 4 0 0 0-3-3.9"/></svg><div><b>{{ '{:,}'.format(stats.directors) }}</b><span>Directors profiled</span></div></div>
+    <div class="stat"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9v9z"/><path d="M21 12h-9V3a9 9 0 0 1 9 9z"/></svg><div><b>{{ stats.sector_count }}</b><span>Sectors covered</span></div></div>
+  </div>
+</div>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head center"><span class="eyebrow">What you get</span><h2>Everything a board needs to set fair pay</h2>
+      <p class="lead" style="margin-top:12px;">Stop relying on consultants' anecdotes and last year's guesswork. Compare your board with the market, using the figures companies themselves publish.</p></div>
+    <div class="grid g3">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><h3>Director fee benchmarks</h3><p>Chair and non-executive retainers and sitting allowances, with medians and quartiles by sector and company size.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg></div><h3>CEO pay structure</h3><p>Salary, allowances, bonus, deferred pay, pension and benefits, put on the same monthly basis so they compare fairly.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2M16 3.1a4 4 0 0 1 0 7.8M21 21v-2a4 4 0 0 0-3-3.9"/></svg></div><h3>Board composition</h3><p>Board size, independence, gender balance, nationality and age, company by company and across the market.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div><h3>Committee pay</h3><p>What committee chairs and members earn, and how committee work is structured across listed boards.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></div><h3>Governance checks</h3><p>Independence and gender thresholds, board evaluation, diversity and succession policies, flagged company by company.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/></svg></div><h3>Every number sourced</h3><p>Each figure links back to the annual report page it came from, so you can quote it to a board with confidence.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="soft">
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">A look inside</span><h2>The market at a glance, once you sign in</h2>
+      <p class="lead" style="margin-top:12px;">Members see the live figures behind these cards, for every year and sector we cover.</p></div>
+    <div class="grid g3">
+      <div class="card insight"><div class="lbl">Median chair retainer</div><div class="val">KES 0.0m</div><div class="spark"><i style="height:40%"></i><i style="height:55%"></i><i style="height:50%"></i><i style="height:70%"></i><i style="height:82%"></i></div>
+        <a class="lock" href="{{ '/app' if user else '/register' }}"><svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>{{ 'View in your dashboard' if user else 'Register free to view' }}</a></div>
+      <div class="card insight"><div class="lbl">CEO pay, highest-paying sector</div><div class="val">KES 0.0m / month</div><div class="spark"><i style="height:30%"></i><i style="height:45%"></i><i style="height:60%"></i><i style="height:58%"></i><i style="height:90%"></i></div>
+        <a class="lock" href="{{ '/app' if user else '/register' }}"><svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>{{ 'View in your dashboard' if user else 'Register free to view' }}</a></div>
+      <div class="card insight"><div class="lbl">Boards meeting the one-third women guide</div><div class="val">00% of boards</div><div class="spark"><i style="height:25%"></i><i style="height:32%"></i><i style="height:38%"></i><i style="height:44%"></i><i style="height:52%"></i></div>
+        <a class="lock" href="{{ '/app' if user else '/register' }}"><svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>{{ 'View in your dashboard' if user else 'Register free to view' }}</a></div>
+    </div>
+    <p class="muted" style="margin-top:18px;">Figures on this page are blurred placeholders. Board composition for each company is free to browse under <a href="/companies">Coverage</a>.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head center"><span class="eyebrow">How it works</span><h2>From annual report to benchmark</h2></div>
+    <div class="grid g3 steps">
+      <div class="step"><div class="num">1</div><h3>We read every annual report</h3><p class="sub">Each listed company's integrated report is collected for every year we cover, including the governance and remuneration sections.</p></div>
+      <div class="step"><div class="num">2</div><h3>Every figure is checked</h3><p class="sub">Fees, pay and board data are extracted, converted to the same units and verified against the report page they came from.</p></div>
+      <div class="step"><div class="num">3</div><h3>You benchmark in minutes</h3><p class="sub">Compare any company with its sector or the whole market, track trends over the years and download board-ready reports.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="soft">
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">Who it's for</span><h2>Built for the people who set board pay</h2></div>
+    <div class="grid g2">
+      <div class="card aud"><div class="ic"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-5 7 5v13"/></svg></div><div><h3>Company secretaries</h3><p>Prepare board and AGM papers on director fees with market evidence attached.</p></div></div>
+      <div class="card aud"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="5"/><path d="M3 21a9 9 0 0 1 18 0"/></svg></div><div><h3>Nomination &amp; remuneration committees</h3><p>Set chair, NED and CEO pay against the right peer group, not a guess.</p></div></div>
+      <div class="card aud"><div class="ic"><svg viewBox="0 0 24 24"><path d="M20 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg></div><div><h3>HR &amp; reward teams</h3><p>Benchmark executive packages and explain each component to the board.</p></div></div>
+      <div class="card aud"><div class="ic"><svg viewBox="0 0 24 24"><path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/></svg></div><div><h3>Consultants &amp; investors</h3><p>Review governance and pay practice across the listed market, with sources.</p></div></div>
+    </div>
+  </div>
+</section>
+
+{% set tiers = [] %}
+{% for p in plans if p.interval_months == 12 and p.tier in ('professional', 'team', 'enterprise') %}{% if tiers.append(p) %}{% endif %}{% endfor %}
+{% if tiers %}
+<section>
+  <div class="wrap">
+    <div class="sec-head center"><span class="eyebrow">Pricing</span><h2>Simple plans for every board</h2>
+      <p class="lead" style="margin-top:12px;">Annual prices shown, excluding VAT. Monthly billing is also available.</p></div>
+    <div class="grid g3">
+      {% for p in tiers %}
+      <div class="card price-card {{ 'pop' if p.tier == 'team' }}">
+        {% if p.tier == 'team' %}<span class="pop-tag">Most popular</span>{% endif %}
+        <h3>{{ p.name.replace(' - annual', '') }}</h3>
+        <div class="price">{{ 'From ' if not p.self_serve }}{{ p.currency }} {{ '{:,}'.format(p.price) }}<small> / year</small></div>
+        <p class="sub" style="font-size:15px;">{{ p.description }}</p>
+        <ul class="ticks">
+          <li>{{ p.seats }} user{{ 's' if p.seats != 1 }}</li>
+          {% if p.tier == 'professional' %}<li>Company reports &amp; survey analytics</li><li>All years and sectors</li>
+          {% elif p.tier == 'team' %}<li>Everything in Professional</li><li>Intelligence report, rankings &amp; trends</li><li>Data quality and source evidence</li>
+          {% else %}<li>Everything in Team</li><li>Bulk downloads and all countries</li><li>Custom analysis</li>{% endif %}
+        </ul>
+        {% if p.self_serve %}<a class="btn {{ 'btn-gold' if p.tier == 'team' else 'btn-navy' }}" href="/register?plan={{ p.code }}">{{ 'Start free trial' if trial_days else 'Choose plan' }}</a>
+        {% else %}<a class="btn btn-ghost" href="/contact">Contact us</a>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <p class="center" style="margin-top:24px;"><a href="/pricing">Compare all plans →</a></p>
+  </div>
+</section>
+{% endif %}
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="cta-band">
+      <div><h2>See how your board compares</h2><p>{{ 'Start a ' ~ trial_days ~ '-day free trial. No payment until it ends.' if trial_days else 'Create a free account to get started.' }}</p></div>
+      <div class="hero-act">
+        {% if user %}<a class="btn btn-gold" href="/app">Open your dashboard</a>
+        {% else %}{% if self_registration %}<a class="btn btn-gold" href="/register">Create free account</a>{% endif %}<a class="btn btn-line" href="/login">Sign in</a>{% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

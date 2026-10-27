@@ -10,7 +10,7 @@ import manual_entry_form as mef
 import manual_entry_upload as meu
 import tab_modules
 
-N = len(tab_modules.all_metric_labels())        # 40 hand-enterable survey fields
+N = len(tab_modules.core_metric_labels())       # 40 scored survey fields (extended fields are not scored)
 
 
 def _co(db, name, ticker):
@@ -127,10 +127,12 @@ def test_every_form_has_a_box_for_every_missing_field(client, db):
     _row(db, a, board_size=9, ceo_monthly_conversion_basis='annual / 12', market_cap=1.0)
     for co, fy in ((a, 'FY2025'), (e, None)):
         d = mef.collect(co.id, fy or mef.latest_year(co.id) or 'No year yet')
-        form_keys = {k for _, ms in d['missing_metrics'] for k, _ in ms}
+        form_keys = {k for _, ms in d['missing_metrics'] for k, _ in ms if k in tab_modules.core_metric_labels()}
+        ext_keys = {k for _, ms in d['missing_metrics'] for k, _ in ms} - form_keys
+        assert ext_keys <= set(tab_modules.FIELD_KIND)      # the rest of the form is the extended fields
         row = tab_modules.survey_row(co.id, fy) if fy else None
         q = data_quality.company_quality(row)
-        want = {k for k, lbl in tab_modules.all_metric_labels().items() if lbl in q['missing_fields']}
+        want = {k for k, lbl in tab_modules.core_metric_labels().items() if lbl in q['missing_fields']}
         assert want == form_keys, (co.name, want ^ form_keys)
         blob = mef.build_company_form(co.id, fy)[0].getvalue()
         names = _form_names(blob)

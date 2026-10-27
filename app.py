@@ -29,6 +29,12 @@ import tab_modules
 from models_ai import AIExtractionJob, AIExtractionItem, UploadDraft, ExtractionIssue
 import activity_log
 import access_control
+import billing
+import job_runner
+import secrets
+import accounts_email
+import models_billing  # noqa: F401  (registers the billing tables for db.create_all)
+import models_auth  # noqa: F401  (email links, sent-email log, contact enquiries)
 from models_survey import is_full_year, SurveyCompanyData, RemunerationPolicy, GovernancePolicy, EvidenceConflict, SurveyDirector, SurveyDirectorBenefit, SurveyBenefitCategory, ActivityLogEntry
 from survey_data_parse import is_survey_data_format, parse_survey_data
 from intelligence_extractor import extract_survey_schema, extract_policy_disclosures
@@ -243,16 +249,24 @@ def register():
     phone = (data.get('phone') or '').strip()
     if not name or not email or not password or not organization or not job_title:
         return jsonify({'error': 'Name, email, password, organization, and job title are all required.'}), 400
-    if len(password) < 6:
-        return jsonify({'error': 'Password must be at least 6 characters.'}), 400
+    if len(password) < 8:
+        return jsonify({'error': 'Use a password of at least 8 characters.'}), 400
+    if not accounts_email.valid_email(email):
+        return jsonify({'error': 'Enter a valid email address, e.g. name@company.com.'}), 400
     if User.query.filter_by(email=email).first():
-        return jsonify({'error': 'An account with that email already exists.'}), 409
-    user = User(name=name, email=email, role='user',
+        return jsonify({'error': 'An account with that email already exists. Sign in, or use "Forgot password".'}), 409
+    must_verify = accounts_email.verification_required()
+    user = User(name=name, email=email, role='user', email_verified=not must_verify,
                 organization=organization, job_title=job_title, phone=phone or None)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
+    if must_verify:
+        # No sign-in until the emailed link is clicked (accounts_email.py).
+        accounts_email.send_verify(user)
+        return jsonify(dict(user.to_dict(), verification_sent=True)), 201
     session['user_id'] = user.id
+    billing.start_login_session(user)
     return jsonify(user.to_dict()), 201
 
 @app.route('/api/login', methods=['POST'])
@@ -264,9 +278,12 @@ def login():
     status, payload = account_security.attempt_login(user, password, data.get('code'), db)
     if status != 200:
         return jsonify(payload), status
+    if user.role != 'admin' and user.email_verified is False and accounts_email.verification_required():
+        return jsonify({'error': f'Please confirm your email first: open the link we sent to {user.email}.',
+                        'needs_verification': True, 'email': user.email}), 403
     session.clear()                 # fresh session once authenticated
-    session.permanent = True        # expires after SESSION_HOURS (default 12)
-    session['user_id'] = user.id
+    session['user_id'] = user.id    # session_policy.start() (via start_login_session) sets how long it lasts
+    billing.start_login_session(user)   # one active sign-in per member account (see billing.py)
     return jsonify(user.to_dict())
 
 @app.route('/api/logout', methods=['POST'])
@@ -348,18 +365,52 @@ def create_user():
     job_title = (data.get('job_title') or '').strip()
     if role not in ('admin', 'user'):
         return jsonify({'error': "Role must be 'admin' or 'user'."}), 400
-    if not name or not email or not password or not organization or not job_title:
-        return jsonify({'error': 'Name, email, password, organization and job title are all required.'}), 400
-    if len(password) < 6:
+    if not name or not email or not organization or not job_title:
+        return jsonify({'error': 'Name, email, organization and job title are all required.'}), 400
+    if password and len(password) < 6:
         return jsonify({'error': 'Password must be at least 6 characters.'}), 400
+    if not accounts_email.valid_email(email):
+        return jsonify({'error': 'Enter a valid email address, e.g. name@company.com.'}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({'error': 'An account with that email already exists.'}), 409
-    user = User(name=name, email=email, role=role,
+    # With no password the person is emailed an invitation to choose their own (accounts_email.py).
+    user = User(name=name, email=email, role=role, email_verified=bool(password),
                 organization=organization or None, job_title=job_title or None)
-    user.set_password(password)
+    user.set_password(password or secrets.token_urlsafe(24))
     db.session.add(user)
     db.session.commit()
-    return jsonify(user.to_dict()), 201
+    out = user.to_dict()
+    if not password:
+        status, url = accounts_email.send_invite(user, current_user())
+        out['invite'] = {'status': status, **({} if status == 'sent' else {'link': url})}
+    return jsonify(out), 201
+
+@app.route('/api/users/<int:user_id>', methods=['PATCH'])
+@require_super_admin
+def update_user(user_id):
+    """Super admin edits another account's details - name, email (e.g. the person changed address), organisation,
+    job title and phone. Role, super admin and password keep their own routes."""
+    user = User.query.get_or_404(user_id)
+    data = request.get_json(force=True) or {}
+    name = (data.get('name') or '').strip()
+    email = (data.get('email') or '').strip().lower()
+    organization = (data.get('organization') or '').strip()
+    job_title = (data.get('job_title') or '').strip()
+    phone = (data.get('phone') or '').strip()
+    if not name or not email:
+        return jsonify({'error': 'Name and email are required.'}), 400
+    if '@' not in email or '.' not in email.split('@')[-1] or ' ' in email:
+        return jsonify({'error': 'Enter a valid email address, e.g. name@company.com.'}), 400
+    clash = User.query.filter(db.func.lower(User.email) == email, User.id != user.id).first()
+    if clash:
+        return jsonify({'error': 'Another account already uses that email.'}), 409
+    user.name = name
+    user.email = email
+    user.organization = organization or None
+    user.job_title = job_title or None
+    user.phone = phone or None
+    db.session.commit()
+    return jsonify(user.to_dict())
 
 @app.route('/api/users/<int:user_id>/role', methods=['PATCH'])
 @require_super_admin
@@ -637,15 +688,15 @@ def _mark_finance_intel(resp):
     resp.headers['X-Finance-Intel'] = '1'
     return resp
 
-@app.route('/')
-def index():
-    return render_template('index.html', site_url=web_hardening.site_url())
+# The app page itself is served at /app, and / is the public website: both live in site_pages.py.
+import site_pages
+site_pages.init(app, current_user)
 
 @app.route('/install')
 def install_link():
     # Shareable "install the app" link: opens the app with the install steps showing.
     from flask import redirect
-    return redirect('/?install=1', code=302)
+    return redirect('/app?install=1', code=302)
 
 @app.route('/sw.js')
 def service_worker():
@@ -3437,11 +3488,8 @@ def upload_documents_batch():
     # deletes that document's data, which is what removes a bad upload from the Survey Report page.
     file_payloads, draft_ids = review_api.gate_payloads(app, file_payloads, forced_company_id)
 
-    threading.Thread(
-        target=_run_upload_batch_job,
-        args=(app, file_payloads, batch_id, forced_company_id, batch_started, None, draft_ids),
-        daemon=True,
-    ).start()
+    # Reading runs in a separate worker process so other users are not slowed down (job_runner.py).
+    job_runner.submit_batch(_run_upload_batch_job, file_payloads, batch_id, forced_company_id, batch_started, None, draft_ids)
 
     return jsonify({'accepted': True, 'batch_id': batch_id, 'file_count': len(files)}), 202
 
@@ -4862,6 +4910,11 @@ def company_survey_report(company_id, fiscal_year=None):
         'source_documents': [d.to_dict(include_score=(current_role() == 'admin')) for d in SourceDocument.query.filter_by(company_id=company_id).all()],
         'evidence_conflicts': evidence_conflicts,
         'quality_by_year': quality_by_year,
+        # extended survey fields (tab_modules.EXTENDED_GROUPS): labels and how each is measured, for the report tabs
+        'extended_groups': [{'id': g['id'], 'label': g['label'],
+                             'fields': [[k, lbl] for k, lbl in list(g['metrics']) + list(g.get('text_metrics', []))]}
+                            for g in tab_modules.EXTENDED_GROUPS],
+        'field_kinds': tab_modules.FIELD_KIND,
     })
 
 
@@ -5341,70 +5394,21 @@ def export_snapshot(company_id):
 @app.route('/api/export/comparison')
 @require_role('admin')   # whole-portfolio dump: admins only (anti-scraping)
 def export_comparison():
-    """All companies, one sheet per company plus a summary ranking sheet."""
-    companies = Company.query.order_by(Company.name).all()
-    wb = openpyxl.Workbook()
-    summary = wb.active
-    summary.title = 'Summary'
-    summary.append(['Company', 'Ticker', 'Period', 'Net Margin %', 'ROE %', 'Debt/Equity'])
-
-    for c in companies:
-        f = latest_financials(c.id)
-        if f:
-            d = f.to_dict()
-            summary.append([
-                c.name, c.ticker, d['period'],
-                round(d['net_margin'], 2) if d['net_margin'] is not None else None,
-                round(d['roe'], 2) if d['roe'] is not None else None,
-                round(d['debt_equity'], 2) if d['debt_equity'] is not None else None
-            ])
-        else:
-            summary.append([c.name, c.ticker, '-', None, None, None])
-
-        sheet_name = _safe_filename(c.name)[:30] or f'Company{c.id}'
-        ws = wb.create_sheet(title=sheet_name)
-        ws.append(['Period', 'Currency', 'Revenue', 'Net Income', 'Total Assets',
-                   'Total Liabilities', 'Total Equity'])
-        rows = Financials.query.filter_by(company_id=c.id).order_by(Financials.period.desc()).all()
-        for f in rows:
-            ws.append([f.period, f.currency, f.revenue, f.net_income,
-                       f.total_assets, f.total_liabilities, f.total_equity])
-
-    export_dir = '/tmp/exports'
-    os.makedirs(export_dir, exist_ok=True)
-    filepath = os.path.join(export_dir, 'comparison_report.xlsx')
-    wb.save(filepath)
-    return send_file(filepath, as_attachment=True)
+    """Summary ranking sheet plus one sheet per company (every year on file), from the survey figures - all amounts
+    in full and in one currency. See market_exports.py."""
+    import market_exports
+    buf = market_exports.build_comparison(Company, Financials)
+    return send_file(buf, as_attachment=True, download_name='comparison_report.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 @app.route('/api/export/portfolio')
 @require_role('admin')   # whole-portfolio dump: admins only (anti-scraping)
 def export_portfolio():
-    """Full watchlist: one row per company with latest KPIs, single sheet."""
-    companies = Company.query.order_by(Company.name).all()
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = 'Portfolio'
-    ws.append(['Company', 'Ticker', 'Exchange', 'Sector', 'Country',
-               'Latest Period', 'Revenue', 'Net Income', 'Net Margin %', 'ROE %', 'Debt/Equity'])
-    for c in companies:
-        f = latest_financials(c.id)
-        if f:
-            d = f.to_dict()
-            ws.append([
-                c.name, c.ticker, c.exchange, c.sector, c.country, d['period'],
-                d['revenue'], d['net_income'],
-                round(d['net_margin'], 2) if d['net_margin'] is not None else None,
-                round(d['roe'], 2) if d['roe'] is not None else None,
-                round(d['debt_equity'], 2) if d['debt_equity'] is not None else None
-            ])
-        else:
-            ws.append([c.name, c.ticker, c.exchange, c.sector, c.country, '-', None, None, None, None, None])
-
-    export_dir = '/tmp/exports'
-    os.makedirs(export_dir, exist_ok=True)
-    filepath = os.path.join(export_dir, 'portfolio_export.xlsx')
-    wb.save(filepath)
-    return send_file(filepath, as_attachment=True)
+    """One row per company with its latest year's figures, from the survey figures. See market_exports.py."""
+    import market_exports
+    buf = market_exports.build_portfolio(Company, Financials)
+    return send_file(buf, as_attachment=True, download_name='portfolio_export.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 @app.route('/api/companies/<int:company_id>/export/raw.csv')
 @require_role('admin', 'user')
@@ -6009,6 +6013,48 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
+    # Billing: organisation / sign-in columns on app_users, and the default price plans (first boot only).
+    try:
+        from migrate_v11_billing import run_migration as _run_billing_migration
+        _run_billing_migration()
+    except Exception:
+        db.session.rollback()
+
+    # Download allowances by kind (reports / data files / bulk ZIP) on the billing plans.
+    try:
+        from migrate_v12_download_limits import run_migration as _run_download_limits_migration
+        _run_download_limits_migration()
+    except Exception:
+        db.session.rollback()
+
+    # Extended survey fields (executive pay, board effectiveness, audit, workforce, shareholders, per-director attendance).
+    try:
+        from migrate_v14_survey_fields import run_migration as _run_survey_fields_migration
+        _run_survey_fields_migration()
+    except Exception:
+        db.session.rollback()
+
+    # The member dashboard's own company (organisation / account).
+    try:
+        from migrate_v15_my_company import run_migration as _run_my_company_migration
+        _run_my_company_migration()
+    except Exception:
+        db.session.rollback()
+
+    # Sign-up email confirmation flag (existing accounts count as confirmed).
+    try:
+        from migrate_v16_email_verified import run_migration as _run_email_verified_migration
+        _run_email_verified_migration()
+    except Exception:
+        db.session.rollback()
+
+    # Plan tier (professional / team / enterprise): which pages each plan unlocks.
+    try:
+        from migrate_v13_plan_tier import run_migration as _run_plan_tier_migration
+        _run_plan_tier_migration()
+    except Exception:
+        db.session.rollback()
+
     # One-time seed admin, from env vars so no credential is hardcoded in
     # source. Only fires while zero admin accounts exist - after the
     # first login, every further admin is created from inside the app
@@ -6043,8 +6089,20 @@ activity_log.register(app, db, ActivityLogEntry, Company, current_user, require_
 # Guest allow-list, per-account rate limits and the daily export cap (see access_control.py).
 access_control.register(app, db, ActivityLogEntry, current_user, activity_log)
 approvals.register(app, require_role)
-review_api.register(app, require_role, _run_upload_batch_job, _get_batch_result, match_company)
+job_runner.init(app, progress_emit=_progress_emit, store_result=_store_batch_result, event_emit=_event_emit)
+review_api.register(app, require_role,
+                    lambda _a, payloads, bid, cid, started: job_runner.submit_batch(_run_upload_batch_job, payloads, bid, cid, started, wait=True),
+                    _get_batch_result, match_company)
 extraction_report.register(app, require_role)
+# Plans, subscriptions, invoices, Paystack, plan-based access and one sign-in per account (see billing.py).
+billing.register(app, current_user, require_super_admin, activity_log, ActivityLogEntry)
+# Sign-in ends when the person leaves the app, or after SESSION_MAX_HOURS (see session_policy.py).
+import session_policy  # noqa: E402
+session_policy.register(app)
+import dashboards  # noqa: E402
+dashboards.register(app, current_user, require_super_admin)
+# Email confirmation, forgotten password, invitations, sent-email log and contact enquiries.
+accounts_email.register(app, current_user, require_super_admin)
 
 
 if __name__ == '__main__':

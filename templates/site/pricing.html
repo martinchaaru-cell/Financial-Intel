@@ -1,0 +1,98 @@
+{% extends "site/base.html" %}
+{% block title %}Pricing | Financial Intel{% endblock %}
+{% block style %}
+.toggle{display:inline-flex;background:#fff;border:1px solid var(--line);border-radius:12px;padding:4px;margin-top:26px}
+.toggle button{border:0;background:none;font:600 14px var(--sans);padding:10px 20px;border-radius:9px;color:var(--dim);cursor:pointer}
+.toggle button.on{background:var(--navy);color:#fff}
+.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:40px;align-items:stretch}
+.plan{display:flex;flex-direction:column}
+.plan.pop{border:2px solid var(--navy);position:relative}
+.plan .pop-tag{position:absolute;top:-13px;left:28px;background:var(--gold);color:var(--navy);font-size:12px;font-weight:700;padding:4px 12px;border-radius:999px}
+.price{font-family:var(--serif);font-size:34px;color:var(--navy);margin:12px 0 2px}
+.price small{font-family:var(--sans);font-size:14px;color:var(--dim);font-weight:400}
+.price{white-space:nowrap;font-size:clamp(24px,2.4vw,32px)}
+.save{display:inline-block;font-size:12.5px;font-weight:700;color:var(--green);background:#e7f6ec;padding:3px 9px;border-radius:999px;margin-bottom:6px}
+.plan .btn{margin-top:auto;justify-content:center}
+.ticks{list-style:none;padding:0;margin:18px 0 24px;font-size:15px}
+.ticks li{padding:6px 0 6px 28px;position:relative}
+.ticks li::before{content:'';position:absolute;left:0;top:11px;width:16px;height:16px;border-radius:50%;background:var(--blue-soft) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/10px no-repeat}
+.ticks li.no{color:var(--faint)} .ticks li.no::before{background:#f0f2f6 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a94ab' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M6 12h12'/%3E%3C/svg%3E") center/10px no-repeat}
+.matrix td,.matrix th{text-align:center} .matrix td:first-child,.matrix th:first-child{text-align:left;white-space:normal}
+.yes{color:var(--green);font-weight:700} .nope{color:var(--faint)}
+.faq details{border-bottom:1px solid var(--line);padding:18px 0} .faq summary{cursor:pointer;font-weight:600;color:var(--navy);font-size:16.5px}
+.faq p{margin:10px 0 0;color:var(--dim)}
+@media (max-width:1020px){.plans{grid-template-columns:1fr;max-width:520px;margin-left:auto;margin-right:auto}}
+{% endblock %}
+{% block content %}
+<div class="band"><div class="wrap center"><div class="crumbs"><a href="/">Home</a> › Pricing</div>
+  <h1>Plans for every board</h1>
+  <p class="lead">Prices in KES, excluding VAT.{% if trial_days %} Every self-serve plan starts with a {{ trial_days }}-day free trial.{% endif %}</p>
+  <div class="toggle" role="tablist"><button id="t-12" class="on" onclick="setPer(12)">Annual · 2 months free</button><button id="t-1" onclick="setPer(1)">Monthly</button></div></div></div>
+<section style="padding-top:20px">
+  <div class="wrap">
+    <div class="plans">
+    {% for tier in ['professional', 'team', 'enterprise'] %}
+      {% for p in plans if p.tier == tier %}
+      <div class="card plan {{ 'pop' if tier == 'team' }}" data-per="{{ p.interval_months if p.self_serve else 'any' }}">
+        {% if tier == 'team' %}<span class="pop-tag">Most popular</span>{% endif %}
+        <h3>{{ p.name.replace(' - annual', '').replace(' - monthly', '') }}</h3>
+        <div class="price">{{ 'From ' if not p.self_serve }}{{ p.currency }} {{ '{:,}'.format(p.price) }}<small> / {{ 'year' if p.interval_months == 12 else 'month' if p.interval_months == 1 else p.interval_months ~ ' months' }}</small></div>
+        {% if p.interval_months == 12 and p.self_serve %}<span class="save">Two months free</span>{% endif %}
+        <p class="sub" style="font-size:15px;">{{ p.description }}</p>
+        <ul class="ticks">
+          <li>{{ p.seats }} user{{ 's' if p.seats != 1 }}</li>
+          <li>Company reports &amp; survey analytics</li>
+          <li class="{{ 'no' if tier == 'professional' }}">Intelligence report, rankings &amp; trends</li>
+          <li class="{{ 'no' if tier == 'professional' }}">Data quality &amp; source evidence</li>
+          <li>{{ 'Unlimited' if p.report_downloads_per_month is none else p.report_downloads_per_month }} report downloads{{ '' if p.report_downloads_per_month is none else ' a month' }}</li>
+          <li>{{ 'Unlimited' if p.data_downloads_per_month is none else p.data_downloads_per_month }} data files (CSV, Excel){{ '' if p.data_downloads_per_month is none else ' a month' }}</li>
+          <li class="{{ 'no' if p.bulk_downloads_per_month == 0 }}">{% if p.bulk_downloads_per_month == 0 %}No bulk (ZIP) downloads{% elif p.bulk_downloads_per_month is none %}Unlimited bulk (ZIP) downloads{% else %}{{ p.bulk_downloads_per_month }} bulk (ZIP) downloads a month{% endif %}</li>
+        </ul>
+        {% if p.self_serve %}<a class="btn {{ 'btn-gold' if tier == 'team' else 'btn-navy' }}" href="{{ '/app#billing' if user else '/register?plan=' ~ p.code }}">{{ 'Start free trial' if trial_days and not user else 'Choose plan' }}</a>
+        {% else %}<a class="btn btn-ghost" href="/contact">Contact us for a quote</a>{% endif %}
+      </div>
+      {% endfor %}
+    {% endfor %}
+    </div>
+  </div>
+</section>
+<section class="soft">
+  <div class="wrap">
+    <div class="sec-head center"><h2>Compare plans</h2></div>
+    <div class="panel scroll"><table class="matrix">
+      <thead><tr><th>What's included</th><th>Free account</th><th>Professional</th><th>Team</th><th>Enterprise</th></tr></thead>
+      <tbody>
+        <tr><td>Member dashboard with headline market figures</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Company reports (board, pay, committees, benefits)</td><td class="nope">–</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Survey analytics for every year</td><td class="nope">–</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Documents &amp; report downloads</td><td class="nope">–</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Intelligence report: benchmarking, rankings, trends</td><td class="nope">–</td><td class="nope">–</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Data quality &amp; source evidence</td><td class="nope">–</td><td class="nope">–</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Bulk (ZIP) downloads</td><td class="nope">–</td><td class="nope">–</td><td>Limited</td><td class="yes">✓</td></tr>
+        <tr><td>Users</td><td>1</td><td>1</td><td>Up to 5</td><td>10+</td></tr>
+      </tbody></table></div>
+  </div>
+</section>
+<section>
+  <div class="wrap" style="max-width:820px">
+    <div class="sec-head center"><h2>Questions</h2></div>
+    <div class="faq">
+      <details open><summary>Where do the figures come from?</summary><p>From each company's published annual or integrated report. Every figure is linked to the page it came from and checked before it is included.</p></details>
+      <details><summary>How do I pay?</summary><p>By card or M-Pesa from your Billing page, or by bank transfer against an invoice. Invoices carry our KRA PIN and can be issued through eTIMS.</p></details>
+      <details><summary>What happens when my trial ends?</summary><p>Pay the invoice to continue. If you don't, your account returns to a free account; nothing is charged automatically during a trial.</p></details>
+      <details><summary>Can several colleagues share one account?</summary><p>Each person gets their own sign-in, and each account can be signed in on one device at a time. Team and Enterprise plans include several users.</p></details>
+      <details><summary>Can I cancel?</summary><p>Yes. You keep access until the end of the period you have paid for, and nothing more is charged.</p></details>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block script %}
+<script>
+function setPer(m){
+  document.getElementById('t-12').classList.toggle('on', m === 12);
+  document.getElementById('t-1').classList.toggle('on', m === 1);
+  document.querySelectorAll('.plan').forEach(el => { const p = el.dataset.per; el.style.display = (p === 'any' || Number(p) === m) ? '' : 'none'; });
+}
+setPer(12);
+</script>
+{% endblock %}

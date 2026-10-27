@@ -43,8 +43,9 @@ def test_every_mapping_field_has_a_tab_module_entry():
     block = html.split('const MAPPING_FIELDS = [', 1)[1].split('\n];', 1)[0]
     fields = set(re.findall(r"field:\s*'([a-z_]+)'", block))
     assert len(fields) == 40, f'MAPPING_FIELDS parsed {len(fields)} fields'
-    enterable = set(tab_modules.all_metric_labels())
+    enterable = set(tab_modules.core_metric_labels())
     assert fields == enterable            # exact: nothing flagged on the page can be un-enterable, nothing enterable is unscored
+    assert set(tab_modules.all_metric_labels()) - enterable == set(tab_modules.FIELD_KIND)   # the rest are the extended fields
 
 
 def test_form_has_a_box_for_each_previously_missing_field(client, db):

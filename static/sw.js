@@ -1,7 +1,7 @@
 // Finance Intel service worker.
 // Deliberately light: caches static assets only. Pages and /api/ data always go to the
 // network so financial figures are never served stale. Offline shows a friendly message.
-const CACHE = 'finance-intel-static-v5';
+const CACHE = 'finance-intel-static-v7';
 const SHELL = '/__shell';   // the last good copy of the app page (header + navigation)
 const PRECACHE = [
   '/static/manifest.json',
@@ -82,7 +82,7 @@ self.addEventListener('fetch', e => {
         const network = fetch(req);
         // Keep the latest good copy even if it arrives after the timeout below.
         e.waitUntil(network.then(async r => {
-          if (r.ok && r.headers.get('X-Finance-Intel') === '1' && url.pathname === '/') {
+          if (r.ok && r.headers.get('X-Finance-Intel') === '1' && url.pathname === '/app') {
             const c = await caches.open(CACHE); await c.put(SHELL, r.clone());
           }
         }).catch(() => {}));
@@ -90,6 +90,10 @@ self.addEventListener('fetch', e => {
           network.then(r => r.clone()),
           new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), PAGE_TIMEOUT_MS)),
         ]);
+        // A redirect (e.g. to the sign-in page after the person was signed out) is passed straight to the browser.
+        // Page requests do not follow redirects inside the service worker, so they arrive here as "opaqueredirect";
+        // treating that as "server down" showed the maintenance page to anyone who was signed out.
+        if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) return res;
         // Only our own app sets this header, so a host's "app is not running" page is never mistaken for the app.
         if (res.ok && res.headers.get('X-Finance-Intel') === '1') return res;
         if (res.headers.get('X-Finance-Intel') === '1') return res;     // a real app error page (e.g. 403)

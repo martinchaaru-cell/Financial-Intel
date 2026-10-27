@@ -71,6 +71,103 @@ TAB_MODULES = [
     {'id': 'benefits', 'label': 'Benefits & Allowances', 'metrics': [], 'lists': ['ned_benefits']},
 ]
 
+# ---- extended survey fields (migrate_v14_survey_fields.py) ------------------------------------------------------
+# Same pipeline as the core fields (Manual Entry form, upload, review, company report), but 'extended': True keeps
+# them OUT of the core data-quality score, so adding them does not drop every company's score overnight.
+EXEC_PAY_METRICS = [
+    ('kmp_count', 'Key management personnel (number of people)'),
+    ('kmp_short_term_benefits', 'Key management: salaries and short-term benefits'),
+    ('kmp_post_employment_benefits', 'Key management: pension / post-employment benefits'),
+    ('kmp_share_based_payments', 'Key management: share-based payments'),
+    ('kmp_termination_benefits', 'Key management: termination benefits'),
+    ('kmp_total_compensation', 'Key management: total compensation'),
+    ('total_directors_fees', "Total non-executive directors' fees"),
+    ('total_executive_directors_emoluments', "Total executive directors' emoluments"),
+    ('cfo_annual_total_pay', 'CFO / finance director total pay for the year'),
+    ('loans_to_directors', 'Loans to directors (balance at year end)'),
+]
+BOARD_EFFECTIVENESS_METRICS = [
+    ('board_attendance_pct', 'Average board meeting attendance (%)'),
+    ('independent_neds_over_9_years', 'Independent NEDs serving more than 9 years'),
+]
+BOARD_EFFECTIVENESS_TEXT = [
+    ('chair_ceo_separate', 'Chair and CEO roles held by different people (Yes / No)'),
+    ('chair_independent', 'Chairperson is independent (Yes / No)'),
+    ('lead_independent_director', 'Lead / senior independent director appointed (Yes / No)'),
+    ('governance_audit_done', 'Governance audit carried out (Yes / No)'),
+    ('governance_audit_by', 'Governance auditor (firm)'),
+]
+AUDIT_METRICS = [
+    ('audit_fee', 'Audit fee'), ('non_audit_fees', 'Non-audit fees paid to the auditor'),
+    ('auditor_tenure_years', 'Years the auditor has been in office'), ('key_audit_matters_count', 'Key audit matters (number)'),
+]
+AUDIT_TEXT = [
+    ('auditor_name', 'External auditor (firm)'),
+    ('audit_opinion', 'Audit opinion (Unmodified / Qualified / Adverse / Disclaimer)'),
+    ('going_concern_uncertainty', 'Material uncertainty on going concern (Yes / No)'),
+]
+WORKFORCE_METRICS = [
+    ('employees_count', 'Employees (number)'), ('staff_costs', 'Staff costs'),
+    ('women_in_workforce_pct', 'Women in the workforce (%)'), ('women_in_senior_management_pct', 'Women in senior management (%)'),
+    ('staff_turnover_pct', 'Staff turnover (%)'),
+]
+SHAREHOLDER_METRICS = [
+    ('earnings_per_share', 'Earnings per share'), ('dividend_per_share', 'Dividend per share'),
+    ('shareholders_count', 'Shareholders (number)'), ('top10_shareholding_pct', 'Top 10 shareholders - combined holding (%)'),
+    ('free_float_pct', 'Free float (%)'), ('directors_shareholding_pct', 'Directors - combined holding (%)'),
+]
+EXTENDED_GROUPS = [
+    {'id': 'executive-pay', 'label': 'Executive pay (key management)', 'metrics': EXEC_PAY_METRICS, 'lists': [], 'extended': True},
+    {'id': 'board-effectiveness', 'label': 'Board effectiveness', 'metrics': BOARD_EFFECTIVENESS_METRICS,
+     'text_metrics': BOARD_EFFECTIVENESS_TEXT, 'lists': [], 'extended': True},
+    {'id': 'audit', 'label': 'Audit', 'metrics': AUDIT_METRICS, 'text_metrics': AUDIT_TEXT, 'lists': [], 'extended': True},
+    {'id': 'workforce', 'label': 'Workforce', 'metrics': WORKFORCE_METRICS, 'lists': [], 'extended': True},
+    {'id': 'shareholders', 'label': 'Shareholders & returns', 'metrics': SHAREHOLDER_METRICS, 'lists': [], 'extended': True},
+]
+TAB_MODULES.extend(EXTENDED_GROUPS)
+
+# How each extended field is measured, so forms show the right unit and the company report converts it correctly:
+#   pay      - same unit as the director pay figures (director_figures_unit)
+#   headline - same unit as turnover / net profit (unit)
+#   pershare - whole currency units per share
+#   pct / count / years - as named;  text / yesno - free text (Yes / No answers are normalised on upload)
+FIELD_KIND = {k: 'pay' for k, _ in EXEC_PAY_METRICS}
+FIELD_KIND.update({'kmp_count': 'count', 'board_attendance_pct': 'pct', 'independent_neds_over_9_years': 'count',
+                   'audit_fee': 'headline', 'non_audit_fees': 'headline', 'auditor_tenure_years': 'years',
+                   'key_audit_matters_count': 'count', 'employees_count': 'count', 'staff_costs': 'headline',
+                   'women_in_workforce_pct': 'pct', 'women_in_senior_management_pct': 'pct', 'staff_turnover_pct': 'pct',
+                   'earnings_per_share': 'pershare', 'dividend_per_share': 'pershare', 'shareholders_count': 'count',
+                   'top10_shareholding_pct': 'pct', 'free_float_pct': 'pct', 'directors_shareholding_pct': 'pct'})
+YESNO_FIELDS = {'chair_ceo_separate', 'chair_independent', 'lead_independent_director', 'governance_audit_done',
+                'going_concern_uncertainty'}
+FIELD_KIND.update({k: 'yesno' for k in YESNO_FIELDS})
+FIELD_KIND.update({k: 'text' for k in ('governance_audit_by', 'auditor_name', 'audit_opinion')})
+INT_FIELDS = {'independent_neds_over_9_years', 'auditor_tenure_years'}     # whole numbers not ending in _count
+# Per-director extended fields on SurveyDirector: (attribute, label)
+DIRECTOR_EXTRA = [('board_meetings_attended', 'Board meetings attended'), ('board_meetings_eligible', 'Board meetings held while in office'),
+                  ('other_directorships', 'Other directorships'), ('shares_held', 'Shares held')]
+
+
+def field_kind(col):
+    return FIELD_KIND.get(col)
+
+
+def normalise_yes_no(raw):
+    """'y', 'yes', 'true', '1' -> 'Yes'; 'n', 'no', 'false', '0' -> 'No'; anything else is kept as typed."""
+    t = str(raw or '').strip()
+    low = t.lower().rstrip('.')
+    if low in ('y', 'yes', 'true', '1'):
+        return 'Yes'
+    if low in ('n', 'no', 'false', '0', 'none'):
+        return 'No'
+    return t
+
+
+def core_metric_labels():
+    """The original survey fields only (what the data-quality score is measured on)."""
+    return {k: lbl for m in TAB_MODULES if not m.get('extended')
+            for k, lbl in list(m['metrics']) + list(m.get('text_metrics', []))}
+
 
 def survey_metric_columns():
     """Every NUMERIC survey column a person may enter by hand."""

@@ -108,6 +108,8 @@ def _num(value, scale=1):
 
 
 def _money(cur, value, scale=1):
+    if value is not None and abs(float(value) * scale) >= 1000:
+        value, scale = round(float(value) * scale), 1      # whole currency units in text: no cents on big sums
     n = _num(value, scale)
     return None if n is None else f"{cur} {n}"
 
@@ -324,6 +326,8 @@ def _fn(v, dp=None):
         return '—'
     if dp is not None:
         return f"{v:,.{dp}f}"
+    if abs(v) >= 1000:
+        v = round(v)           # whole currency units in tables: no cents on large sums
     return _num(v)
 
 
@@ -475,6 +479,144 @@ def _implausible_margin(m):
     return m is not None and abs(m) > 100
 
 
+
+# ----------------------------------------------------------------------------- extended fields
+def _yn_line(yn, what):
+    if not yn or not yn.get('answered'):
+        return None
+    if yn['answered'] == 1:
+        return f"Only one company states this, and it {'does' if yn['yes'] else 'does not'} {what}."
+    return f"{yn['yes']} of the {yn['answered']} companies that state it ({yn['pct_yes']:.0f}%) {what}."
+
+
+def _extended_sections(st, overview, rows, cur):
+    """Part One sections for the extended survey fields (survey_extended.build): audit & governance, then pay,
+    workforce and shareholder returns. Every figure is a company's own filed number; averages need 2+ companies."""
+    e = overview.get('extended') or {}
+    a, b = e.get('audit') or {}, e.get('board_effectiveness') or {}
+    p, w, h = e.get('executive_pay') or {}, e.get('workforce') or {}, e.get('shareholders') or {}
+    if not e.get('companies_with_any'):
+        return []
+    S = []
+    # ---- audit & governance
+    S += _section(st, 'Part One · Audit & Governance', 'Who audits, what they found, how boards work',
+                  'External auditors, audit fees and opinions, board attendance and governance practice.')
+    t = []
+    share = a.get('auditor_share') or []
+    if share:
+        tot = sum(x['companies'] for x in share)
+        lead = share[0]
+        s_ = (f"{len(share)} audit {_plural(len(share), 'firm signs', 'firms sign')} the {tot} {_plural(tot, 'report')} that name an auditor. "
+              f"{_e(lead['label'])} audits the most ({lead['companies']}, {lead['pct']:.0f}%)")
+        if len(share) > 1:
+            s_ += ', followed by ' + _and([f"{_e(x['label'])} ({x['companies']})" for x in share[1:4]])
+        t.append(s_ + '.')
+    af = a.get('audit_fee') or {}
+    if _avg(af) is not None:
+        s_ = f"The median audit fee is {_e(_money(cur, af['p50']))} and the average {_e(_money(cur, af['average']))} across {_cnt(af)} companies"
+        top = (af.get('top') or [None])[0]
+        if top:
+            s_ += f"; {_e(top['name'])} pays the most ({_e(_money(cur, top['value']))})"
+        pt = a.get('audit_fee_pct_of_turnover') or {}
+        if _avg(pt) is not None:
+            s_ += f". Audit costs a median {pt['p50']:.2f}% of turnover"
+        t.append(s_ + '.')
+    ops = a.get('opinions') or {}
+    if a.get('opinions_answered'):
+        clean = (ops.get('Unmodified') or {}).get('companies', 0)
+        mod = [(k, v) for k, v in ops.items() if k != 'Unmodified']
+        s_ = f"{clean} of {a['opinions_answered']} audit opinions are clean (unmodified)"
+        if mod:
+            s_ += '; ' + _and([f"{v['companies']} {k.lower()} ({_and([_e(n) for n in v['company_names']])})" for k, v in mod])
+        t.append(s_ + '.')
+    gc = a.get('going_concern') or {}
+    if gc.get('yes'):
+        t.append(f"Auditors flagged a material uncertainty about going concern at {gc['yes']} {_plural(gc['yes'], 'company', 'companies')}: {_and([_e(n) for n in gc['yes_companies']])}.")
+    S += _paras(st, t)
+    if share:
+        d = _hbar([(x['label'], x['companies']) for x in share[:8]], fmt=lambda v: f"{v:.0f} {_plural(int(v), 'company', 'companies')}", value_w=26 * mm)
+        if d:
+            S += [d, Paragraph('Companies audited by each firm.', st['caption'])]
+    S += _market_table(st, cur, [('Audit fee', af, 1), ('Non-audit fees', a.get('non_audit_fees'), 1)],
+                       caption=f'Amounts in {cur}, written in full.')
+    t = []
+    att = b.get('board_attendance_pct') or {}
+    if _avg(att) is not None:
+        t.append(f"Directors attended an average {att['average']:.1f}% of board meetings across the {_cnt(att)} companies that publish attendance.")
+    da = b.get('director_attendance') or {}
+    if da.get('directors'):
+        t.append(f"Of {da['directors']} directors with attendance on file, {da['full_attendance']} attended every meeting and {da['below_75']} attended fewer than three in four.")
+    for key, what in (('chair_ceo_separate', 'keep the chair and chief executive roles in different hands'),
+                      ('chair_independent', 'have an independent chairperson'),
+                      ('lead_independent_director', 'have a lead or senior independent director'),
+                      ('governance_audit_done', 'report a governance audit for the year')):
+        line = _yn_line(b.get(key), what)
+        if line:
+            t.append(line)
+    ga = b.get('governance_auditors') or []
+    if ga:
+        t.append('Governance audits were carried out by ' + _and([f"{_e(x['label'])} ({x['companies']})" for x in ga[:4]]) + '.')
+    S += [Paragraph('Board effectiveness', st['h2'])] + _paras(st, t) if t else []
+    arow = [[_e(_trunc(r['name'], 30)), _e(_trunc(r.get('auditor_name') or '—', 26)), _e(r.get('audit_opinion') or '—'),
+             _fn(r.get('audit_fee')), _fp(r.get('board_attendance_pct'), 1)]
+            for r in sorted(rows, key=lambda r: r['name']) if any(r.get(k) not in (None, '') for k in ('auditor_name', 'audit_fee', 'board_attendance_pct'))]
+    if arow:
+        S += [Paragraph('Audit and attendance by company', st['h2'])]
+        S += _grid(st, ['Company', 'Auditor', 'Opinion', f'Audit fee ({cur})', 'Board attendance'], arow,
+                   [44 * mm, 44 * mm, 24 * mm, 34 * mm, CONTENT_W - 146 * mm], right_cols=(3, 4),
+                   caption='As stated in each annual report. A dash means the report does not state it.')
+
+    # ---- pay, workforce, returns
+    S += _section(st, 'Part One · Pay, Workforce & Returns', 'Executives, people and shareholders',
+                  'Key-management pay, the workforce behind the numbers, and what shareholders received.')
+    t = []
+    kt = p.get('kmp_total') or {}
+    if _avg(kt) is not None:
+        t.append(f"Key management personnel cost a median {_e(_money(cur, kt['p50']))} a year per company (average {_e(_money(cur, kt['average']))}, {_cnt(kt)} companies).")
+    tf = p.get('total_directors_fees') or {}
+    if _avg(tf) is not None:
+        top = (tf.get('top') or [None])[0]
+        t.append(f"Total non-executive directors' fees average {_e(_money(cur, tf['average']))} per board" + (f"; {_e(top['name'])} pays the most ({_e(_money(cur, top['value']))})" if top else '') + '.')
+    em, sc, cpe = w.get('employees_count') or {}, w.get('staff_costs') or {}, w.get('staff_cost_per_employee') or {}
+    if _avg(em) is not None:
+        top = (em.get('top') or [None])[0]
+        t.append(f"Across the {_cnt(em)} companies that state their headcount, the median company employs {_num(round(em['p50']))} people"
+                 + (f"; {_e(top['name'])} is the largest employer ({_num(top['value'])})" if top else '') + '.')
+    if _avg(cpe) is not None:
+        t.append(f"Staff cost a median {_e(_money(cur, round(cpe['p50'])))} per employee per year.")
+    ww, ws = w.get('women_in_workforce_pct') or {}, w.get('women_in_senior_management_pct') or {}
+    if _avg(ww) is not None:
+        s_ = f"Women make up an average {ww['average']:.0f}% of the workforce"
+        if _avg(ws) is not None:
+            s_ += f" and {ws['average']:.0f}% of senior management"
+        t.append(s_ + '.')
+    eps, dps, po = h.get('earnings_per_share') or {}, h.get('dividend_per_share') or {}, h.get('payout_ratio_pct') or {}
+    if _avg(eps) is not None:
+        s_ = f"Among the companies that disclose them, median earnings per share are {cur} {eps['p50']:,.2f} ({_cnt(eps)} companies)"
+        if _avg(dps) is not None:
+            s_ += f" and the median dividend is {cur} {dps['p50']:,.2f} a share ({_cnt(dps)} companies)"
+        if _avg(po) is not None:
+            s_ += f"; companies paying a dividend distribute a median {po['p50']:.0f}% of earnings"
+        t.append(s_ + '.')
+    t10 = h.get('top10_shareholding_pct') or {}
+    if _avg(t10) is not None:
+        t.append(f"Ownership is concentrated: the ten largest shareholders hold a median {t10['p50']:.0f}% of a company.")
+    S += _paras(st, t)
+    S += _market_table(st, cur, [('Key management: total', kt, 1), ('Key management: salaries', p.get('kmp_short_term_benefits'), 1),
+                                 ("Non-executive directors' fees", tf, 1), ('Staff costs', sc, 1), ('Staff cost per employee', cpe, 1)],
+                       caption=f'Amounts in {cur} a year, written in full.')
+    prow = [[_e(_trunc(r['name'], 30)), _fn(r.get('employees_count'), 0), _fn(round(r['staff_cost_per_employee']) if r.get('staff_cost_per_employee') is not None else None),
+             _fp(r.get('women_in_workforce_pct'), 0), _fn(r.get('earnings_per_share'), 2), _fn(r.get('dividend_per_share'), 2), _fp(r.get('top10_shareholding_pct'), 0)]
+            for r in sorted(rows, key=lambda r: r['name'])
+            if any(r.get(k) is not None for k in ('employees_count', 'earnings_per_share', 'dividend_per_share', 'top10_shareholding_pct', 'women_in_workforce_pct'))]
+    if prow:
+        S += [Paragraph('Workforce and returns by company', st['h2'])]
+        S += _grid(st, ['Company', 'Employees', f'Staff cost / employee ({cur})', 'Women staff', f'EPS ({cur})', f'DPS ({cur})', 'Top 10 holders'], prow,
+                   [44 * mm, 18 * mm, 32 * mm, 18 * mm, 20 * mm, 20 * mm, CONTENT_W - 152 * mm], right_cols=(1, 2, 3, 4, 5, 6),
+                   caption='As stated in each annual report. A dash means the report does not state it.')
+    return S
+
+
 def _doc(buf, title):
     return SimpleDocTemplate(buf, pagesize=A4, leftMargin=LM, rightMargin=RM, topMargin=28 * mm, bottomMargin=22 * mm,
                              title=title, author=APP_NAME, subject=APP_TAGLINE)
@@ -521,7 +663,22 @@ def _key_findings_combined(st, overview, rows, cur, fy, n, pscale):
     ben = overview.get('ned_benefits_summary', {})
     top = sorted([(k, v['percent_provided']) for k, v in ben.items() if v.get('percent_provided') is not None], key=lambda x: -x[1])
     if top and top[0][1] > 0:
-        out.append(f"{_e(_NED_BENEFIT_LABELS.get(top[0][0], top[0][0]))} is among the most common non-executive benefits ({top[0][1]:.0f}% of responding companies).")
+        lbl = _NED_BENEFIT_LABELS.get(top[0][0], top[0][0])
+        out.append(f"{_e(lbl[:1].upper() + lbl[1:])} is among the most common non-executive benefits ({top[0][1]:.0f}% of responding companies).")
+    ext = overview.get('extended') or {}
+    share = (ext.get('audit') or {}).get('auditor_share') or []
+    if share:
+        out.append(f"{_e(share[0]['label'])} audits the most companies ({share[0]['companies']} of {sum(x['companies'] for x in share)})"
+                   + (f"; {_e(share[1]['label'])} is next ({share[1]['companies']})" if len(share) > 1 else '') + '.')
+    gc = (ext.get('audit') or {}).get('going_concern') or {}
+    if gc.get('yes'):
+        out.append(f"Auditors flagged going-concern uncertainty at {gc['yes']} {_plural(gc['yes'], 'company', 'companies')}: {_and([_e(n_) for n_ in gc['yes_companies']])}.")
+    att = (ext.get('board_effectiveness') or {}).get('board_attendance_pct') or {}
+    if _avg(att) is not None:
+        out.append(f"Directors attend an average {att['average']:.0f}% of board meetings ({_cnt(att)} companies publish attendance).")
+    ww = (ext.get('workforce') or {}).get('women_in_workforce_pct') or {}
+    if _avg(ww) is not None:
+        out.append(f"Women make up an average {ww['average']:.0f}% of the workforce at the {_cnt(ww)} companies that report it.")
     if not out:
         return []
     return _section(st, 'Summary', 'Key findings') + _bullets(st, out)
@@ -559,7 +716,7 @@ def build_combined_report(overview, rows, trends):
     S += [PageBreak()]
     S += _section(st, 'Contents', 'In this report')
     for line in ['Key findings', 'The year at a glance',
-                 'Part One — Survey Analytics: board overview, directors\' remuneration, committee pay, CEO/MD pay, benefits, sectors',
+                 'Part One — Survey Analytics: board overview, directors\' remuneration, committee pay, CEO/MD pay, benefits, sectors, audit & governance, pay, workforce & returns',
                  'Part Two — Intelligence Layer: company rankings, governance and compliance, historical trends',
                  'Data quality and method', 'Appendix — company-by-company data tables']:
         S.append(Paragraph('•&nbsp;&nbsp;' + _e(line), st['toc']))
@@ -910,6 +1067,8 @@ def build_combined_report(overview, rows, trends):
         S += _grid(st, ['Sector', 'Companies', 'Avg. board size', 'Avg. women', 'Avg. governance score', f'Avg. NED retainer ({cur})'], srows,
                    [50 * mm] + [(CONTENT_W - 50 * mm) / 5] * 5, right_cols=(1, 2, 3, 4, 5),
                    caption='Board size, women and score are simple averages of the companies in the sector; the retainer average needs at least two companies in the sector to have disclosed it.')
+
+    S += _extended_sections(st, overview, rows, cur)
 
     # ---------------- PART TWO
     S += [PageBreak(), Spacer(1, 40 * mm), Paragraph('PART TWO', st['kicker']),
@@ -1429,6 +1588,58 @@ def build_company_report(payload, overview, rows):
         if cats:
             S += [_table(st, ['Benefit', 'For', 'Amount'], [[_e(c_['category']), _e(c_.get('director_name') or 'Board / company'), _e(_money(cur, c_['amount'], fig_scale))] for c_ in cats],
                          [CONTENT_W * .4, CONTENT_W * .33, CONTENT_W * .27], right_cols=(2,))]
+
+    # ---------------- 6b. audit, workforce and returns (extended fields)
+    if row_me and any(row_me.get(k) not in (None, '') for k in ('auditor_name', 'audit_fee', 'employees_count', 'earnings_per_share',
+                                                                'board_attendance_pct', 'kmp_total', 'top10_shareholding_pct')):
+        S += _section(st, 'Audit, people & returns', 'Audit, workforce and shareholders',
+                      'What the annual report says about the audit, the board at work, the workforce and shareholder returns.')
+        cur_s = row_me.get('currency') or cur
+        t = []
+        if row_me.get('auditor_name'):
+            s_ = f"The financial statements were audited by {_e(row_me['auditor_name'])}"
+            if row_me.get('audit_opinion'):
+                s_ += f", with {'a clean (unmodified)' if str(row_me['audit_opinion']).lower().startswith('unmod') else 'a ' + _e(str(row_me['audit_opinion']).lower())} opinion"
+            t.append(s_ + '.')
+        if str(row_me.get('going_concern_uncertainty') or '').lower().startswith('y'):
+            t.append('The auditor drew attention to a material uncertainty about the company\'s ability to continue as a going concern.')
+        if row_me.get('audit_fee') is not None:
+            t.append(f"The audit fee was {_e(_money(cur_s, row_me['audit_fee']))}.")
+        if row_me.get('board_attendance_pct') is not None:
+            t.append(f"Directors attended {row_me['board_attendance_pct']:.1f}% of board meetings.")
+        yn = [(lbl) for k, lbl in (('chair_ceo_separate', 'the chair and chief executive roles are held by different people'),
+                                   ('chair_independent', 'the chairperson is independent'),
+                                   ('lead_independent_director', 'a lead independent director has been appointed'),
+                                   ('governance_audit_done', 'a governance audit was carried out')) if str(row_me.get(k) or '').lower().startswith('y')]
+        if yn:
+            t.append('The report states that ' + _and(yn) + '.')
+        if row_me.get('employees_count') is not None:
+            s_ = f"It employs {_num(row_me['employees_count'])} people"
+            if row_me.get('staff_cost_per_employee') is not None:
+                s_ += f" at an average staff cost of {_e(_money(cur_s, row_me['staff_cost_per_employee']))} each"
+            t.append(s_ + '.')
+        if row_me.get('earnings_per_share') is not None:
+            s_ = f"Earnings per share were {_e(cur_s)} {row_me['earnings_per_share']:,.2f}"
+            if row_me.get('dividend_per_share') is not None:
+                s_ += f" and the dividend {_e(cur_s)} {row_me['dividend_per_share']:,.2f} a share"
+            t.append(s_ + '.')
+        S += _paras(st, t)
+        ext_items = [('Audit fee', 'audit_fee', None), ('Board meeting attendance (%)', 'board_attendance_pct', 1),
+                     ('Key management pay (total)', 'kmp_total', None), ("Non-executive directors' fees", 'total_directors_fees', None),
+                     ('Employees', 'employees_count', 0), ('Staff cost per employee', 'staff_cost_per_employee', 0),
+                     ('Women in the workforce (%)', 'women_in_workforce_pct', 0), ('Earnings per share', 'earnings_per_share', 2),
+                     ('Dividend per share', 'dividend_per_share', 2), ('Top 10 shareholders (%)', 'top10_shareholding_pct', 0)]
+        tbl = []
+        for lab, key_, dp in ext_items:
+            mine = row_me.get(key_)
+            if mine is None:
+                continue
+            pool = sorted([r.get(key_) for r in rows if r.get(key_) is not None], reverse=True)
+            fmt_ = (lambda v: _fn(round(v) if dp == 0 else v, dp)) if dp is not None else (lambda v: _fn(round(v)))
+            tbl.append([lab, fmt_(mine), fmt_(_median(pool)) if len(pool) >= 2 else '—', f"{pool.index(mine) + 1} of {len(pool)}" if len(pool) >= 2 else '—'])
+        if tbl:
+            S += _grid(st, ['Measure', _e(name), 'Survey median', 'Rank'], tbl, [70 * mm] + [(CONTENT_W - 70 * mm) / 3] * 3,
+                       right_cols=(1, 2, 3), caption=f'Amounts in {_e(cur_s)}, written in full. Ranked highest first among the companies that state each figure.')
 
     # ---------------- 7. peers
     if row_me and n_peers > 1:

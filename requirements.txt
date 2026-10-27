@@ -15,3 +15,5 @@ pytesseract
 pillow
 Flask-Limiter
 psycopg[binary]
+gunicorn
+redis

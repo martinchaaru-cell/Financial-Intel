@@ -42,8 +42,8 @@ def test_robots_and_sitemap_use_the_configured_site_url(client, monkeypatch):
 def test_home_page_has_seo_tags(client, monkeypatch):
     monkeypatch.setenv('SITE_URL', 'https://financeintel.example.com')
     html = client.get('/').get_data(as_text=True)
-    for needle in ('<title>Finance Intel |', 'name="description"', 'rel="canonical" href="https://financeintel.example.com/"',
-                   'og:image', 'application/ld+json', '<h1>Finance Intel</h1>'):
+    for needle in ('<title>Financial Intel |', 'name="description"', 'rel="canonical" href="https://financeintel.example.com/"',
+                   'og:image', 'application/ld+json', '<h1>Know what boards'):
         assert needle in html
     assert client.get('/static/og-image.png').status_code == 200
 
@@ -52,11 +52,17 @@ def test_home_page_has_seo_tags(client, monkeypatch):
 
 def test_login_cookie_is_secure_only_over_https(client):
     body = {'name': 'T', 'email': 't@example.com', 'password': 'secret1', 'organization': 'O', 'job_title': 'J'}
-    https = client.post('/api/register', json=body, headers={'X-Forwarded-Proto': 'https'})
-    assert https.status_code == 201
+    assert client.post('/api/register', json=body).status_code == 400          # 8 characters at least
+    body['password'] = 'secret12'
+    assert client.post('/api/register', json=body).status_code == 201
+    from app import db, User
+    User.query.filter_by(email='t@example.com').first().email_verified = True    # as if the emailed link was clicked
+    db.session.commit()
+    https = client.post('/api/login', json={'email': 't@example.com', 'password': 'secret12'}, headers={'X-Forwarded-Proto': 'https'})
+    assert https.status_code == 200
     cookie = https.headers['Set-Cookie']
     assert 'Secure' in cookie and 'HttpOnly' in cookie and 'SameSite=Lax' in cookie
-    plain = client.post('/api/login', json={'email': 't@example.com', 'password': 'secret1'}, base_url='http://localhost')
+    plain = client.post('/api/login', json={'email': 't@example.com', 'password': 'secret12'}, base_url='http://localhost')
     assert 'Secure' not in plain.headers['Set-Cookie']
 
 
@@ -108,7 +114,7 @@ def test_only_super_admin_can_manage_accounts(client, app):
 def test_public_registration_makes_members_and_can_be_closed(client, monkeypatch):
     monkeypatch.delenv('ALLOW_SELF_REGISTRATION', raising=False)
     assert client.get('/api/me').get_json()['self_registration'] is True
-    body = {'name': 'T', 'email': 'z@example.com', 'password': 'secret1', 'organization': 'O', 'job_title': 'J', 'role': 'admin'}
+    body = {'name': 'T', 'email': 'z@example.com', 'password': 'secret12', 'organization': 'O', 'job_title': 'J', 'role': 'admin'}
     r = client.post('/api/register', json=body)
     assert r.status_code == 201 and r.get_json()['role'] == 'user'   # never an admin
     client.post('/api/logout')

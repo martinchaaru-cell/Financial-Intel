@@ -13,6 +13,7 @@ up as a market average.
 """
 
 import fx_rates
+import survey_extended
 from models import db, Company
 from models_survey import SurveyCompanyData, is_full_year
 
@@ -77,7 +78,10 @@ def _unit_scale(unit):
     """Multiplier to convert a company's stated Unit into raw currency
     units, or None if unrecognized - callers must treat None as 'cannot
     safely normalize', never guess a scale."""
-    return UNIT_SCALE.get((unit or '').strip().lower())
+    u = (unit or '').strip().lower()
+    if len(u) == 3 and u.isalpha() and u not in UNIT_SCALE:     # unit saved as the currency code (e.g. "KES") = whole units
+        return 1
+    return UNIT_SCALE.get(u)
 
 
 # 2026-09-26 fix: remuneration/CEO/committee-fee figures are NOT always stored in raw
@@ -490,6 +494,7 @@ def build_survey_overview(fiscal_year=None):
         'sector_comparison': sector_comparison,
         'ned_benefits_summary': ned_benefits_summary,
         'companies': company_list,
+        'extended': survey_extended.build(rows, lambda cid: company_by_id[cid].name, primary_currency),
     }
 
 
@@ -656,6 +661,7 @@ def build_company_rows(fiscal_year=None):
             'ceo_monthly_cost_of_employment': _pay('ceo_monthly_cost_of_employment'),
             'total_director_remuneration': _sum_or_none([chair, other_ned, exec_dir]),
             'governance': gov,
+            **survey_extended.company_fields(r, survey_cur),
         })
     return {
         'has_data': True, 'fiscal_year': fiscal_year,

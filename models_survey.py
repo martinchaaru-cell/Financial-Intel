@@ -177,6 +177,48 @@ class SurveyCompanyData(db.Model):
     # Keys are the same field names as NED_BENEFITS in SURVEY_FORMAT_SPEC.md.
     # A key absent from the dict means the filing didn't address that
     # benefit at all - never inferred or defaulted to False.
+    # ---- extended survey fields (tab_modules.EXTENDED_GROUPS; migrate_v14_survey_fields.py) ----
+    # Executive pay - key management personnel note (IAS 24) and directors' pay totals. Pay unit (director_figures_unit).
+    kmp_count = db.Column(db.Integer)
+    kmp_short_term_benefits = db.Column(db.Float)
+    kmp_post_employment_benefits = db.Column(db.Float)
+    kmp_share_based_payments = db.Column(db.Float)
+    kmp_termination_benefits = db.Column(db.Float)
+    kmp_total_compensation = db.Column(db.Float)
+    total_directors_fees = db.Column(db.Float)
+    total_executive_directors_emoluments = db.Column(db.Float)
+    cfo_annual_total_pay = db.Column(db.Float)
+    loans_to_directors = db.Column(db.Float)
+    # Board effectiveness (Yes / No answers are stored as text)
+    board_attendance_pct = db.Column(db.Float)
+    independent_neds_over_9_years = db.Column(db.Integer)
+    chair_ceo_separate = db.Column(db.String(120))
+    chair_independent = db.Column(db.String(120))
+    lead_independent_director = db.Column(db.String(120))
+    governance_audit_done = db.Column(db.String(120))
+    governance_audit_by = db.Column(db.String(120))
+    # Audit - fees in the headline unit (unit), like turnover
+    auditor_name = db.Column(db.String(120))
+    audit_fee = db.Column(db.Float)
+    non_audit_fees = db.Column(db.Float)
+    auditor_tenure_years = db.Column(db.Integer)
+    audit_opinion = db.Column(db.String(120))
+    key_audit_matters_count = db.Column(db.Integer)
+    going_concern_uncertainty = db.Column(db.String(120))
+    # Workforce - staff costs in the headline unit
+    employees_count = db.Column(db.Integer)
+    staff_costs = db.Column(db.Float)
+    women_in_workforce_pct = db.Column(db.Float)
+    women_in_senior_management_pct = db.Column(db.Float)
+    staff_turnover_pct = db.Column(db.Float)
+    # Shareholders and returns - per-share figures in whole currency units
+    earnings_per_share = db.Column(db.Float)
+    dividend_per_share = db.Column(db.Float)
+    shareholders_count = db.Column(db.Integer)
+    top10_shareholding_pct = db.Column(db.Float)
+    free_float_pct = db.Column(db.Float)
+    directors_shareholding_pct = db.Column(db.Float)
+
     ned_benefits = db.Column(db.JSON)
 
     source_notes = db.Column(db.Text)   # free text — methodology-level notes that don't map to one field (see SOURCE section style 2)
@@ -518,6 +560,13 @@ class SurveyDirector(db.Model):
 
     order_index = db.Column(db.Integer, default=0)  # position in the filing's own register/table, so the UI can preserve filing order rather than re-sorting
 
+    # Board effectiveness per director (migrate_v14_survey_fields.py): meetings attended out of those the director
+    # was eligible for, other listed / significant directorships, and shares held (direct + indirect, as disclosed).
+    board_meetings_attended = db.Column(db.Integer)
+    board_meetings_eligible = db.Column(db.Integer)
+    other_directorships = db.Column(db.Integer)
+    shares_held = db.Column(db.Float)
+
     source_document_id = db.Column(db.Integer, db.ForeignKey('source_documents.id'))
     page = db.Column(db.Integer)
     confidence = db.Column(db.Float)                 # 0-1, set by the PDF extractor; NULL for a hand-entered row (same convention as SurveyCompanyData.field_confidence - no fabricated score for typed data)
@@ -527,6 +576,8 @@ class SurveyDirector(db.Model):
     def to_dict(self):
         return {
             'id': self.id, 'company_id': self.company_id, 'fiscal_year': self.fiscal_year,
+            'board_meetings_attended': self.board_meetings_attended, 'board_meetings_eligible': self.board_meetings_eligible,
+            'other_directorships': self.other_directorships, 'shares_held': self.shares_held,
             'director_name': self.director_name, 'position': self.position, 'role': self.role,
             'gender': self.gender, 'nationality': self.nationality, 'independent': self.independent,
             'appointed_date': self.appointed_date, 'end_of_term': self.end_of_term,

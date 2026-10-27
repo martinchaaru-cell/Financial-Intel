@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Financial Intel | Board & Executive Pay Intelligence{% endblock %}</title>
+<meta name="description" content="{% block description %}Board composition, director fees and CEO pay benchmarks for Kenya's NSE-listed companies, verified from published annual reports.{% endblock %}">
+<link rel="canonical" href="{% block canonical %}{{ site_url }}{{ request.path }}{% endblock %}">
+<meta name="robots" content="{% block robots %}index, follow{% endblock %}">
+<meta name="theme-color" content="#0b1f44">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230b1f44'/%3E%3Cpath d='M20 72V52h14v20zm23 0V34h14v38zm23 0V22h14v50z' fill='%235b9bff'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Financial Intel">
+<meta property="og:title" content="{{ self.title() }}">
+<meta property="og:description" content="{{ self.description() }}">
+<meta property="og:image" content="{{ site_url }}/static/og-image.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Merriweather:wght@700;900&display=swap" rel="stylesheet">
+{% block jsonld %}{% endblock %}
+<style>
+:root{
+  --navy:#0b1f44; --navy-2:#12357a; --ink:#14213d; --text:#2b3550; --dim:#5b6782; --faint:#8a94ab;
+  --line:#e4e8f0; --bg:#ffffff; --soft:#f5f7fb; --blue:#2563eb; --blue-soft:#e8f0ff; --gold:#f5b301; --gold-2:#ffc935;
+  --green:#15803d; --radius:14px; --shadow:0 10px 30px rgba(11,31,68,.08);
+  --serif:'Merriweather',Georgia,'Times New Roman',serif; --sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+img,svg{max-width:100%}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+h1,h2,h3{font-family:var(--serif);color:var(--navy);line-height:1.2;margin:0}
+h2{font-size:clamp(26px,3.2vw,36px)} h3{font-size:19px}
+p{margin:0 0 14px}
+.eyebrow{display:inline-block;font-size:12.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);margin-bottom:12px}
+.lead{font-size:18px;color:var(--dim);max-width:640px}
+.center{text-align:center} .center .lead{margin-left:auto;margin-right:auto}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:8px;font:600 15px/1 var(--sans);padding:14px 22px;border-radius:10px;border:1.5px solid transparent;cursor:pointer;transition:transform .15s,box-shadow .15s,background .15s;white-space:nowrap}
+.btn:hover{text-decoration:none;transform:translateY(-1px)}
+.btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.btn-gold{background:var(--gold);color:var(--navy);box-shadow:0 6px 18px rgba(245,179,1,.35)} .btn-gold:hover{background:var(--gold-2)}
+.btn-navy{background:var(--navy);color:#fff} .btn-navy:hover{background:var(--navy-2)}
+.btn-line{border-color:rgba(255,255,255,.55);color:#fff} .btn-line:hover{background:rgba(255,255,255,.1)}
+.btn-ghost{border-color:var(--line);color:var(--navy);background:#fff} .btn-ghost:hover{border-color:var(--navy)}
+.btn-sm{padding:10px 16px;font-size:14px}
+
+/* header */
+.top{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.96);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.top .wrap{display:flex;align-items:center;gap:28px;height:74px}
+.brand{display:flex;align-items:center;gap:12px;color:var(--navy)} .brand:hover{text-decoration:none}
+.logo{width:42px;height:42px;border-radius:11px;background:var(--navy);display:flex;align-items:flex-end;justify-content:center;gap:4px;padding:9px 9px 10px;flex-shrink:0;box-shadow:0 4px 12px rgba(11,31,68,.25)}
+.logo i{display:block;width:6px;background:#5b9bff;border-radius:2px}
+.brand-name{font-family:var(--serif);font-weight:900;font-size:19px;line-height:1.1}
+.brand-tag{font-size:12px;font-style:italic;color:var(--dim);font-weight:500}
+.nav{display:flex;gap:4px;margin-left:auto}
+.nav a{color:var(--ink);font-weight:500;font-size:15px;padding:8px 12px;border-radius:8px;position:relative}
+.nav a:hover{text-decoration:none;color:var(--blue)}
+.nav a.on{color:var(--navy);font-weight:600}
+.nav a.on::after{content:'';position:absolute;left:12px;right:12px;bottom:0;height:2.5px;border-radius:2px;background:var(--gold)}
+.top-act{display:flex;gap:10px;align-items:center}
+.burger{display:none;margin-left:auto;background:none;border:1px solid var(--line);border-radius:9px;padding:9px 10px;cursor:pointer}
+.burger span{display:block;width:20px;height:2px;background:var(--navy);margin:4px 0;border-radius:2px}
+
+/* page band (inner pages) */
+.band{background:linear-gradient(120deg,var(--navy) 0%,var(--navy-2) 100%);color:#fff;padding:64px 0 56px;position:relative;overflow:hidden}
+.band::after{content:'';position:absolute;right:-120px;top:-120px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(91,155,255,.28),transparent 65%)}
+.band h1{color:#fff;font-size:clamp(30px,4vw,44px);margin-bottom:12px}
+.band .lead{color:#c9d6f2}
+.crumbs{font-size:13.5px;color:#a9bbe0;margin-bottom:14px} .crumbs a{color:#dbe6ff}
+
+section{padding:84px 0}
+section.soft{background:var(--soft)}
+.sec-head{margin-bottom:44px}
+.sec-head h2{margin-bottom:12px}
+
+/* cards */
+.grid{display:grid;gap:22px}
+.g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)} .g2{grid-template-columns:repeat(2,1fr)}
+.card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:28px;box-shadow:0 1px 2px rgba(11,31,68,.04);transition:box-shadow .2s,transform .2s}
+.card:hover{box-shadow:var(--shadow);transform:translateY(-2px)}
+.ic{width:48px;height:48px;border-radius:12px;background:var(--blue-soft);color:var(--blue);display:flex;align-items:center;justify-content:center;margin-bottom:18px}
+.ic svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.card h3{margin-bottom:8px}
+.card p{color:var(--dim);font-size:15px;margin:0}
+
+/* footer */
+footer{background:#081733;color:#b7c3dc;padding:64px 0 28px;font-size:14.5px}
+footer h4{color:#fff;font-family:var(--sans);font-size:14px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 16px}
+footer a{color:#b7c3dc} footer a:hover{color:#fff}
+.foot-grid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1.2fr;gap:36px}
+.foot-grid ul{list-style:none;margin:0;padding:0} .foot-grid li{margin-bottom:10px}
+.foot-brand .brand-name{color:#fff} .foot-brand .brand-tag{color:#8ea0c4}
+.foot-bottom{border-top:1px solid rgba(255,255,255,.08);margin-top:44px;padding-top:22px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;color:#8191b3;font-size:13px}
+
+/* shared bits used by the public company pages */
+.panel{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:18px 0}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
+.kpi b{display:block;font-size:26px;font-family:var(--serif);color:var(--navy)} .kpi span{font-size:13px;color:var(--dim)}
+.scroll{overflow-x:auto} table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap} th{color:var(--dim);font-weight:600;font-size:13px;background:var(--soft)}
+.cta-box{margin-top:28px;border:1px solid #c9d8ff;background:var(--blue-soft);border-radius:var(--radius);padding:22px}
+ul.list{list-style:none;padding:0;margin:0} ul.list li{padding:14px 0;border-bottom:1px solid var(--line)}
+.muted{color:var(--faint);font-size:13.5px}
+.sub{color:var(--dim)}
+
+@media (max-width:1020px){
+  .nav,.top-act{display:none}
+  .burger{display:block}
+  .top.open .nav,.top.open .top-act{display:flex}
+  .top.open .wrap{flex-wrap:wrap;height:auto;padding-top:14px;padding-bottom:16px}
+  .top.open .nav{flex-direction:column;width:100%;order:3;margin:8px 0 0;gap:0}
+  .top.open .nav a{padding:12px 4px;border-bottom:1px solid var(--line)}
+  .top.open .nav a.on::after{display:none}
+  .top.open .top-act{order:4;width:100%;padding-top:12px}
+  .top.open .top-act .btn{flex:1;justify-content:center}
+  .g4{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(2,1fr)}
+  .foot-grid{grid-template-columns:1fr 1fr}
+}
+@media (max-width:640px){
+  .wrap{padding:0 16px}
+  section{padding:60px 0}
+  .g4,.g3,.g2{grid-template-columns:1fr}
+  .foot-grid{grid-template-columns:1fr}
+  .brand-tag{display:none}
+  .card{padding:22px}
+}
+{% block style %}{% endblock %}
+</style>
+</head>
+<body>
+<header class="top" id="top">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="Financial Intel home">
+      <span class="logo"><i style="height:9px"></i><i style="height:15px"></i><i style="height:21px"></i></span>
+      <span><span class="brand-name">Financial Intel</span><br><span class="brand-tag">Board &amp; executive pay intelligence</span></span>
+    </a>
+    <button class="burger" aria-label="Menu" onclick="document.getElementById('top').classList.toggle('open')"><span></span><span></span><span></span></button>
+    <nav class="nav" aria-label="Main">
+      <a href="/" class="{{ 'on' if active == 'home' }}">Home</a>
+      <a href="/about" class="{{ 'on' if active == 'about' }}">About</a>
+      <a href="/features" class="{{ 'on' if active == 'features' }}">What you get</a>
+      <a href="/companies" class="{{ 'on' if active == 'coverage' }}">Coverage</a>
+      <a href="/pricing" class="{{ 'on' if active == 'pricing' }}">Pricing</a>
+      <a href="/contact" class="{{ 'on' if active == 'contact' }}">Contact</a>
+    </nav>
+    <div class="top-act">
+      {% if user %}
+        <a class="btn btn-navy btn-sm" href="/app">Open dashboard</a>
+      {% else %}
+        <a class="btn btn-ghost btn-sm" href="/login">Sign in</a>
+        {% if self_registration %}<a class="btn btn-gold btn-sm" href="/register">Get started</a>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+</header>
+
+<main>{% block content %}{% endblock %}</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="/"><span class="logo"><i style="height:9px"></i><i style="height:15px"></i><i style="height:21px"></i></span>
+          <span><span class="brand-name">Financial Intel</span><br><span class="brand-tag">Board &amp; executive pay intelligence</span></span></a>
+        <p style="margin-top:18px;max-width:340px;">Board composition, director fees and CEO pay benchmarks for Kenya's listed companies, taken from their published annual reports and checked line by line.</p>
+      </div>
+      <div><h4>Explore</h4><ul>
+        <li><a href="/features">What you get</a></li><li><a href="/companies">Companies covered</a></li>
+        <li><a href="/pricing">Pricing</a></li><li><a href="/about">About</a></li></ul></div>
+      <div><h4>Account</h4><ul>
+        <li><a href="/login">Sign in</a></li>{% if self_registration %}<li><a href="/register">Create an account</a></li>{% endif %}
+        <li><a href="/app">Open dashboard</a></li></ul></div>
+      <div><h4>Contact</h4><ul>
+        <li>{{ contact.address }}</li>
+        {% if contact.email %}<li><a href="mailto:{{ contact.email }}">{{ contact.email }}</a></li>{% endif %}
+        {% if contact.phone %}<li><a href="tel:{{ contact.phone|replace(' ', '') }}">{{ contact.phone }}</a></li>{% endif %}
+        <li><a href="/contact">Send us a message</a></li></ul></div>
+    </div>
+    <div class="foot-bottom"><span>&copy; {{ contact.name }}. Figures are taken from companies' published annual reports.</span><span>Prices in KES, excluding VAT</span></div>
+  </div>
+</footer>
+{% block script %}{% endblock %}
+</body>
+</html>

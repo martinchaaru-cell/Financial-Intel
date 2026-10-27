@@ -1,0 +1,231 @@
+{% extends "site/base.html" %}
+{% block title %}{{ {'login': 'Sign in', 'register': 'Create your account', 'forgot': 'Forgot password', 'reset': 'Choose a new password',
+   'invite': 'Choose your password', 'reset_failed': 'Link not valid', 'verify_failed': 'Link not valid'}.get(mode, 'Account') }} | {{ contact.name }}{% endblock %}
+{% block robots %}noindex, follow{% endblock %}
+{% block style %}
+.auth{min-height:calc(100vh - 74px);display:grid;grid-template-columns:1fr 1fr}
+.auth-side{background:linear-gradient(130deg,#081a3a,#16408f);color:#fff;padding:72px 64px;display:flex;flex-direction:column;justify-content:center;position:relative;overflow:hidden}
+.auth-side::after{content:'';position:absolute;right:-140px;bottom:-140px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(245,179,1,.18),transparent 65%)}
+.auth-side h2{color:#fff;font-size:34px;margin-bottom:14px}
+.auth-side p{color:#c9d6f2;font-size:17px}
+.auth-side ul{list-style:none;padding:0;margin:26px 0 0}
+.auth-side li{display:flex;gap:12px;margin-bottom:14px;color:#dbe6ff}
+.auth-side li svg{width:20px;height:20px;flex-shrink:0;fill:none;stroke:var(--gold);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;margin-top:3px}
+.auth-main{display:flex;align-items:center;justify-content:center;padding:56px 24px;background:var(--soft)}
+.auth-card{width:100%;max-width:440px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:36px;box-shadow:var(--shadow)}
+.auth-card h1{font-size:26px;margin-bottom:6px}
+.form label{display:block;font-weight:600;font-size:14px;color:var(--navy);margin:14px 0 6px}
+.form input{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:10px;font:15px var(--sans);color:var(--ink)}
+.form input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.err{color:#c62828;font-size:14px;margin-top:12px;min-height:20px}
+.alt{margin-top:22px;text-align:center;color:var(--dim);font-size:15px}
+.form .btn{width:100%;justify-content:center;margin-top:20px}
+.note{font-size:13px;color:var(--faint);margin-top:14px}
+.row-between{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.row-between a{font-size:13px;font-weight:600}
+.ok-box{background:#ecfdf3;border:1px solid #b7ebc9;color:#14532d;border-radius:12px;padding:14px 16px;font-size:14.5px;line-height:1.55;margin-top:16px}
+.warn-box{background:#fff7e6;border:1px solid #f5d79e;color:#7a4b00;border-radius:12px;padding:14px 16px;font-size:14.5px;line-height:1.55;margin-top:16px}
+.big-ic{width:56px;height:56px;border-radius:16px;background:var(--blue-soft);display:flex;align-items:center;justify-content:center;margin-bottom:16px}
+.big-ic svg{width:28px;height:28px;fill:none;stroke:var(--blue);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.linkish{background:none;border:none;color:var(--blue);font:600 14px var(--sans);cursor:pointer;padding:0}
+@media (max-width:1020px){.auth{grid-template-columns:1fr}.auth-side{padding:44px 24px}.auth-side h2{font-size:26px}}
+@media (max-width:640px){.two{grid-template-columns:1fr}.auth-card{padding:26px 20px}}
+{% endblock %}
+{% block content %}
+<div class="auth">
+  <div class="auth-side">
+    {% if mode == 'login' %}
+      <h2>Welcome back</h2><p>Sign in to your benchmarks, company reports and downloads.</p>
+    {% elif mode in ('forgot', 'reset', 'reset_failed') %}
+      <h2>Reset your password</h2><p>We email you a secure link that works once and for 1 hour. Your account stays locked to you.</p>
+    {% elif mode == 'invite' %}
+      <h2>Welcome to {{ contact.name }}</h2><p>Your account is ready. Choose a password to start.</p>
+    {% elif mode == 'verify_failed' %}
+      <h2>Confirm your email</h2><p>We confirm every new account's email so reports and invoices reach the right person.</p>
+    {% else %}
+      <h2>Create your free account</h2><p>See the member dashboard straight away, then choose a plan when you're ready.</p>
+    {% endif %}
+    <ul>
+      <li><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Director fee and CEO pay benchmarks for {{ stats.companies or 'listed' }} companies</li>
+      <li><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>{{ stats.years }} financial years, every figure sourced</li>
+      <li><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Board-ready PDF and Word reports</li>
+    </ul>
+  </div>
+  <div class="auth-main">
+    {% if mode == 'login' %}
+    <form class="auth-card form" onsubmit="return doLogin(event)">
+      <h1>Sign in</h1><p class="sub" style="margin:0;">Use the email and password for your account.</p>
+      {% set ended = request.args.get('ended') %}
+      {% if ended %}<div class="warn-box" style="margin-top:14px;">{{ {
+        'away': 'You were signed out because you left the app. Sign in again to continue.',
+        'expired': 'For your security, a sign-in lasts up to 12 hours. Please sign in again.',
+        'replaced': 'You were signed out because this account was signed in on another device. Each account can be used on one device at a time.'
+      }.get(ended, 'Please sign in again.') }}</div>{% endif %}
+      <label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" required>
+      <div class="row-between"><label for="a-pass">Password</label><a href="/forgot-password">Forgot password?</a></div><input id="a-pass" type="password" autocomplete="current-password" required>
+      <div id="a-code-wrap" style="display:none;"><label for="a-code">6-digit code from your authenticator app</label><input id="a-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+      <div class="err" id="a-err"></div>
+      <div id="a-verify" class="warn-box" style="display:none;"></div>
+      <button class="btn btn-navy" id="a-btn" type="submit">Sign in</button>
+      {% if self_registration %}<div class="alt">New here? <a href="/register{{ '?next=' ~ next_url if next_url != '/app' }}">Create a free account</a></div>{% endif %}
+    </form>
+    {% elif mode == 'register' and not self_registration %}
+    <div class="auth-card"><h1>Accounts by invitation</h1><p class="sub">New accounts are created by our team. <a href="/contact">Contact us</a> to get access, or <a href="/login">sign in</a> if you already have an account.</p></div>
+    {% elif mode == 'register' %}
+    <div class="auth-card" id="r-sent" style="display:none;">
+      <div class="big-ic"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg></div>
+      <h1>Check your email</h1>
+      <p class="sub">We sent a link to <b id="r-sent-email"></b>. Click it to confirm your address and open your account. The link works for 24 hours.</p>
+      <div class="warn-box">Nothing there after a few minutes? Check your spam or promotions folder, or <button class="linkish" onclick="resendVerify(document.getElementById('r-sent-email').textContent, this)">send the link again</button>.</div>
+      <div class="ok-box" id="r-resent" style="display:none;"></div>
+      <div class="alt">Wrong email? <a href="/register">Start again</a> · <a href="/login">Sign in</a></div>
+    </div>
+    <form class="auth-card form" id="r-form" onsubmit="return doRegister(event)">
+      <h1>Create your account</h1><p class="sub" style="margin:0;">Free to start. No payment details needed.</p>
+      <div class="two"><div><label for="r-name">Full name</label><input id="r-name" autocomplete="name" required></div>
+        <div><label for="r-phone">Phone (optional)</label><input id="r-phone" autocomplete="tel"></div></div>
+      <label for="r-email">Work email</label><input id="r-email" type="email" autocomplete="email" required>
+      <div class="two"><div><label for="r-org">Organisation</label><input id="r-org" autocomplete="organization" required></div>
+        <div><label for="r-job">Job title</label><input id="r-job" autocomplete="organization-title" required></div></div>
+      <label for="r-pass">Password</label><input id="r-pass" type="password" autocomplete="new-password" minlength="8" required>
+      <div class="err" id="r-err"></div>
+      <button class="btn btn-gold" id="r-btn" type="submit">Create account</button>
+      <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
+    </form>
+    {% endif %}
+    {% if mode == 'forgot' %}
+    <form class="auth-card form" id="f-form" onsubmit="return doForgot(event)">
+      <h1>Forgot your password?</h1><p class="sub" style="margin:0;">Enter the email you sign in with and we'll send you a link to choose a new one.</p>
+      <label for="f-email">Email</label><input id="f-email" type="email" autocomplete="email" required>
+      <div class="err" id="f-err"></div>
+      <div class="ok-box" id="f-ok" style="display:none;"></div>
+      <button class="btn btn-navy" id="f-btn" type="submit">Email me a reset link</button>
+      <div class="alt"><a href="/login">Back to sign in</a></div>
+    </form>
+    {% elif mode in ('reset', 'invite') %}
+    <form class="auth-card form" onsubmit="return doReset(event)">
+      <h1>{{ 'Choose a new password' if mode == 'reset' else 'Choose your password' }}</h1>
+      <p class="sub" style="margin:0;">For <b>{{ account_email }}</b>. Use at least 8 characters; a short phrase is easiest to remember.</p>
+      <label for="p-new">New password</label><input id="p-new" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="p-again">Type it again</label><input id="p-again" type="password" autocomplete="new-password" minlength="8" required>
+      <div class="err" id="p-err"></div>
+      <button class="btn btn-navy" id="p-btn" type="submit">{{ 'Save and sign in' }}</button>
+      {% if mode == 'reset' %}<p class="note">Saving signs you out on every other device.</p>{% endif %}
+    </form>
+    {% elif mode in ('reset_failed', 'verify_failed') %}
+    {% set why = {'expired': 'This link has expired.', 'used': 'This link has already been used.'}.get(reason, 'This link is not valid.') %}
+    <div class="auth-card">
+      <div class="big-ic" style="background:#fff7e6;"><svg viewBox="0 0 24 24" style="stroke:#b45309;"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+      <h1>{{ why }}</h1>
+      {% if mode == 'verify_failed' %}
+        {% if reason == 'used' %}<p class="sub">Your email is already confirmed. You can sign in.</p><a class="btn btn-navy" href="/login" style="width:100%;justify-content:center;margin-top:16px;">Sign in</a>
+        {% else %}<p class="sub">Enter your email and we'll send a new confirmation link.</p>
+        <div class="form"><label for="v-email">Email</label><input id="v-email" type="email" autocomplete="email">
+          <button class="btn btn-navy" style="width:100%;justify-content:center;margin-top:16px;" onclick="resendVerify(document.getElementById('v-email').value, this)">Send a new link</button></div>
+        <div class="ok-box" id="r-resent" style="display:none;"></div>{% endif %}
+      {% else %}
+        <p class="sub">{% if invite %}Invitation links work for 72 hours. Use "Forgot password" below to get a fresh link to your inbox, or ask whoever invited you to send a new one.{% else %}Reset links work once and for 1 hour. Ask for a new one.{% endif %}</p>
+        <a class="btn btn-navy" href="/forgot-password" style="width:100%;justify-content:center;margin-top:16px;">Send me a new link</a>
+      {% endif %}
+      <div class="alt"><a href="/login">Back to sign in</a></div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const NEXT = {{ next_url|tojson }};
+const PLAN = {{ (plan or '')|tojson }};
+async function post(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  let d = {}; try { d = await r.json(); } catch (e) {}
+  return [r, d];
+}
+async function doLogin(e){
+  e.preventDefault();
+  const btn = document.getElementById('a-btn'), err = document.getElementById('a-err');
+  err.textContent = ''; btn.disabled = true; btn.textContent = 'Signing in…';
+  const body = {email: document.getElementById('a-email').value.trim(), password: document.getElementById('a-pass').value};
+  const code = document.getElementById('a-code').value.trim(); if (code) body.code = code;
+  try {
+    const [r, d] = await post('/api/login', body);
+    if (r.ok) { location.href = NEXT; return false; }
+    if (d.needs_verification) {
+      const box = document.getElementById('a-verify');
+      box.style.display = '';
+      box.innerHTML = `Your email isn't confirmed yet. Open the link we sent to <b>${esc(d.email)}</b>, or <button type="button" class="linkish" onclick="resendVerify('${esc(d.email)}', this)">send it again</button>.<div id="r-resent" style="margin-top:8px;display:none;"></div>`;
+      btn.disabled = false; btn.textContent = 'Sign in';
+      return false;
+    }
+    if (d.mfa_required) { document.getElementById('a-code-wrap').style.display = ''; document.getElementById('a-code').focus(); }
+    err.textContent = d.error || 'Could not sign in. Please try again.';
+  } catch (x) { err.textContent = 'Could not reach the server. Please try again.'; }
+  btn.disabled = false; btn.textContent = 'Sign in';
+  return false;
+}
+const TOKEN = {{ (token or '')|tojson }};
+function esc(s){ return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function resendVerify(email, btn){
+  email = (email || '').trim();
+  if (!email) return;
+  if (btn) btn.disabled = true;
+  const [r, d] = await post('/api/verify/resend', {email});
+  const box = document.getElementById('r-resent');
+  if (box) { box.style.display = ''; box.textContent = d.message || d.error || 'Done.'; }
+  setTimeout(() => { if (btn) btn.disabled = false; }, 30000);
+}
+async function doForgot(e){
+  e.preventDefault();
+  const btn = document.getElementById('f-btn'), err = document.getElementById('f-err'), ok = document.getElementById('f-ok');
+  err.textContent = ''; ok.style.display = 'none'; btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const [r, d] = await post('/api/password/forgot', {email: document.getElementById('f-email').value.trim()});
+    if (r.ok) { ok.style.display = ''; ok.textContent = d.message; btn.textContent = 'Send again'; setTimeout(() => { btn.disabled = false; }, 30000); return false; }
+    err.textContent = d.error || 'Could not send the link. Please try again.';
+  } catch (x) { err.textContent = 'Could not reach the server. Please try again.'; }
+  btn.disabled = false; btn.textContent = 'Email me a reset link';
+  return false;
+}
+async function doReset(e){
+  e.preventDefault();
+  const btn = document.getElementById('p-btn'), err = document.getElementById('p-err');
+  const a = document.getElementById('p-new').value, b = document.getElementById('p-again').value;
+  err.textContent = '';
+  if (a.length < 8) { err.textContent = 'Use a password of at least 8 characters.'; return false; }
+  if (a !== b) { err.textContent = 'The two passwords are not the same.'; return false; }
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const [r, d] = await post('/api/password/reset', {token: TOKEN, password: a});
+    if (r.ok) { location.href = d.next || '/app'; return false; }
+    err.innerHTML = esc(d.error || 'Could not save the password.') + (d.reason ? ' <a href="/forgot-password">Get a new link</a>' : '');
+  } catch (x) { err.textContent = 'Could not reach the server. Please try again.'; }
+  btn.disabled = false; btn.textContent = 'Save and sign in';
+  return false;
+}
+async function doRegister(e){
+  e.preventDefault();
+  const btn = document.getElementById('r-btn'), err = document.getElementById('r-err');
+  const v = id => document.getElementById(id).value.trim();
+  err.textContent = '';
+  if (document.getElementById('r-pass').value.length < 8) { err.textContent = 'Use a password of at least 8 characters.'; return false; }
+  btn.disabled = true; btn.textContent = 'Creating your account…';
+  try {
+    const [r, d] = await post('/api/register', {name: v('r-name'), email: v('r-email'), organization: v('r-org'), job_title: v('r-job'),
+      phone: v('r-phone'), password: document.getElementById('r-pass').value});
+    if (r.ok && d.verification_sent) {
+      document.getElementById('r-form').style.display = 'none';
+      document.getElementById('r-sent-email').textContent = d.email;
+      document.getElementById('r-sent').style.display = '';
+      window.scrollTo(0, 0);
+      return false;
+    }
+    if (r.ok) { location.href = PLAN ? '/app?choose=' + encodeURIComponent(PLAN) + '#billing' : NEXT; return false; }
+    err.textContent = d.error || 'Could not create the account. Please try again.';
+  } catch (x) { err.textContent = 'Could not reach the server. Please try again.'; }
+  btn.disabled = false; btn.textContent = 'Create account';
+  return false;
+}
+</script>
+{% endblock %}

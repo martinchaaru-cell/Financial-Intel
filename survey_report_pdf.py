@@ -72,6 +72,8 @@ def _fmt_amount(value, scale=1):
     if value is None:
         return None
     v = round(value * scale, 2)
+    if abs(v) >= 1000:
+        v = round(v)             # whole currency units: no cents on large sums
     sign = '-' if v < 0 else ''
     return f"{sign}{abs(v):,.2f}".rstrip('0').rstrip('.')
 
@@ -218,7 +220,8 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     toc_items = [
         '1. Executive Summary', '2. Board Overview', '3. Directors&rsquo; Remuneration',
         '4. Committee Remuneration', '5. CEO/MD Remuneration', '6. NED Benefits',
-        '7. Comparative Analysis', '8. Appendix — Companies Surveyed',
+        '7. Audit &amp; Governance', '8. Pay, Workforce &amp; Returns',
+        '9. Comparative Analysis', '10. Appendix — Companies Surveyed',
     ]
     for item in toc_items:
         story.append(Paragraph(item, styles['Body']))
@@ -362,9 +365,74 @@ def build_survey_pdf(overview: dict) -> BytesIO:
             benefit_rows.append((label, f'{pct:.1f}% of {count} compan{"y" if count == 1 else "ies"} that addressed this'))
     story.append(_kv_panel('% of Companies Providing Each Benefit', benefit_rows, styles))
 
+    # ================= AUDIT & GOVERNANCE / PAY, WORKFORCE & RETURNS (extended fields) =================
+    ext = overview.get('extended') or {}
+    a, bd = ext.get('audit') or {}, ext.get('board_effectiveness') or {}
+    pe, wf, sh = ext.get('executive_pay') or {}, ext.get('workforce') or {}, ext.get('shareholders') or {}
+
+    def _yn(yn):
+        if not yn or not yn.get('answered'):
+            return f'{NOT_ENOUGH_DATA} (0 companies state this)'
+        return f"{yn['pct_yes']:.0f}% ({yn['yes']} of {yn['answered']} companies)"
+
+    story.append(PageBreak())
+    story.append(Paragraph('7. Audit &amp; Governance', styles['H2']))
+    share = a.get('auditor_share') or []
+    story.append(_kv_panel('External Auditors (companies audited)',
+                           [(x['label'], f"{x['companies']} ({x['pct']:.0f}%)") for x in share[:8]] or [('Auditors', f'{NOT_ENOUGH_DATA}')], styles))
+    story.append(Spacer(1, 10))
+    ops = a.get('opinions') or {}
+    story.append(_kv_panel('Audit Fees and Opinions', [
+        ('Audit Fee', _fmt_metric(a.get('audit_fee'), currency, is_amount=True, with_percentiles=True)),
+        ('Audit Fee as % of Turnover', _fmt_metric(a.get('audit_fee_pct_of_turnover'), suffix='%', decimals=2)),
+        ('Non-Audit Fees Paid to the Auditor', _fmt_metric(a.get('non_audit_fees'), currency, is_amount=True)),
+        ('Key Audit Matters per Report', _fmt_metric(a.get('key_audit_matters_count'), decimals=1)),
+    ] + [(f'{k} opinions', f"{v['companies']}" + ('' if k == 'Unmodified' else ' — ' + ', '.join(v['company_names']))) for k, v in ops.items()]
+      + [('Going-concern uncertainty flagged', _yn(a.get('going_concern')) + (' — ' + ', '.join((a.get('going_concern') or {}).get('yes_companies', [])) if (a.get('going_concern') or {}).get('yes') else ''))],
+        styles))
+    story.append(Spacer(1, 10))
+    da = bd.get('director_attendance') or {}
+    story.append(_kv_panel('Board Effectiveness', [
+        ('Average Board Meeting Attendance', _fmt_metric(bd.get('board_attendance_pct'), suffix='%', decimals=1, with_percentiles=True)),
+        ('Directors with Attendance on File', f"{da['directors']} (average {da['average_pct']:.1f}%, {da['below_75']} below 75%)" if da.get('directors') else '—'),
+        ('Chair and CEO Roles Separate', _yn(bd.get('chair_ceo_separate'))),
+        ('Independent Chairperson', _yn(bd.get('chair_independent'))),
+        ('Lead / Senior Independent Director', _yn(bd.get('lead_independent_director'))),
+        ('Governance Audit Carried Out', _yn(bd.get('governance_audit_done'))),
+        ('Independent NEDs Serving More Than 9 Years', _fmt_metric(bd.get('independent_neds_over_9_years'), decimals=1)),
+    ], styles, note='Yes/No items are counted only among companies whose report states them.'))
+
+    story.append(PageBreak())
+    story.append(Paragraph('8. Pay, Workforce &amp; Returns', styles['H2']))
+    story.append(_kv_panel('Key Management and Board Pay (per company, per year)', [
+        ('Key Management: Total', _fmt_metric(pe.get('kmp_total'), currency, is_amount=True, with_percentiles=True)),
+        ('Key Management: Salaries and Short-Term Benefits', _fmt_metric(pe.get('kmp_short_term_benefits'), currency, is_amount=True)),
+        ('Key Management: Post-Employment Benefits', _fmt_metric(pe.get('kmp_post_employment_benefits'), currency, is_amount=True)),
+        ('Key Management: Share-Based Payments', _fmt_metric(pe.get('kmp_share_based_payments'), currency, is_amount=True)),
+        ("Total Non-Executive Directors' Fees", _fmt_metric(pe.get('total_directors_fees'), currency, is_amount=True, with_percentiles=True)),
+        ("Total Executive Directors' Emoluments", _fmt_metric(pe.get('total_executive_directors_emoluments'), currency, is_amount=True)),
+    ], styles))
+    story.append(Spacer(1, 10))
+    story.append(_kv_panel('Workforce', [
+        ('Employees', _fmt_metric(wf.get('employees_count'), decimals=0, with_percentiles=True)),
+        ('Staff Costs', _fmt_metric(wf.get('staff_costs'), currency, is_amount=True)),
+        ('Staff Cost per Employee', _fmt_metric({k: (round(v) if isinstance(v, float) else v) for k, v in (wf.get('staff_cost_per_employee') or {}).items()}, currency, is_amount=True, with_percentiles=True)),
+        ('Staff Costs as % of Turnover', _fmt_metric(wf.get('staff_costs_pct_of_turnover'), suffix='%', decimals=1)),
+        ('Women in the Workforce', _fmt_metric(wf.get('women_in_workforce_pct'), suffix='%', decimals=1)),
+        ('Women in Senior Management', _fmt_metric(wf.get('women_in_senior_management_pct'), suffix='%', decimals=1)),
+    ], styles))
+    story.append(Spacer(1, 10))
+    story.append(_kv_panel('Shareholders and Returns', [
+        ('Earnings per Share', _fmt_metric(sh.get('earnings_per_share'), currency, decimals=2, with_percentiles=True)),
+        ('Dividend per Share', _fmt_metric(sh.get('dividend_per_share'), currency, decimals=2, with_percentiles=True)),
+        ('Dividend Payout (dividend / earnings)', _fmt_metric(sh.get('payout_ratio_pct'), suffix='%', decimals=0)),
+        ('Shareholders', _fmt_metric(sh.get('shareholders_count'), decimals=0)),
+        ('Top 10 Shareholders — Combined Holding', _fmt_metric(sh.get('top10_shareholding_pct'), suffix='%', decimals=1)),
+    ], styles, note=f'Amounts in {currency}, written in full. Averages need at least {min_n} companies.'))
+
     # ================= COMPARATIVE ANALYSIS =================
     story.append(PageBreak())
-    story.append(Paragraph('7. Comparative Analysis — by Sector', styles['H2']))
+    story.append(Paragraph('9. Comparative Analysis — by Sector', styles['H2']))
 
     sector_table_data = [[
         Paragraph('Sector', styles['TableHeader']),
@@ -399,7 +467,7 @@ def build_survey_pdf(overview: dict) -> BytesIO:
 
     # ================= APPENDIX =================
     story.append(PageBreak())
-    story.append(Paragraph('8. Appendix — Companies Surveyed', styles['H2']))
+    story.append(Paragraph('10. Appendix — Companies Surveyed', styles['H2']))
     story.append(Paragraph(
         f'This survey draws on {n} compan{"y" if n == 1 else "ies"}&rsquo;{"s" if n == 1 else ""} own filings, '
         f'uploaded individually to FinSight. Unlike a single aggregate survey document, this list — and every '

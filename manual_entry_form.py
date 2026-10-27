@@ -155,7 +155,10 @@ def collect(company_id, fiscal_year):
     for mod in tab_modules.TAB_MODULES:
         st = status.get(mod['id'], {})
         keys = set(k for k, _ in mod['metrics']) | set(k for k, _ in mod.get('text_metrics', []))
-        ms = [(k, all_labels[k]) for k in st.get('missing', []) if k in keys]
+        def with_unit(k):
+            u = _unit_of(row, k) if row is not None and tab_modules.field_kind(k) not in (None, 'text', 'count') else ''
+            return f'{all_labels[k]} - {u}' if u and u not in all_labels[k] else all_labels[k]
+        ms = [(k, with_unit(k)) for k in st.get('missing', []) if k in keys]
         if ms:
             missing_metrics.append((mod['label'], ms))
         for k in st.get('missing', []):
@@ -262,6 +265,19 @@ def _unit_of(row, col):
         return f"{row.currency or 'KES'} {row.unit or 'millions'}"
     if col in AGE_COLS:
         return 'years'
+    kind = tab_modules.field_kind(col)
+    cur = row.currency or 'KES'
+    if kind == 'pay':
+        return f"{cur} {row.director_figures_unit or 'as printed'}"
+    if kind == 'headline':
+        u = row.unit or 'millions'
+        return cur if u.strip().upper() == cur.upper() else f"{cur} {u}"
+    if kind == 'pershare':
+        return f"{row.currency or 'KES'} per share"
+    if kind in ('pct', 'years'):
+        return {'pct': '%', 'years': 'years'}[kind]
+    if kind == 'yesno':
+        return 'Yes / No'
     if col.endswith(('_retainer', '_allowance')) or (col.startswith('ceo_') and col not in ('ceo_monthly_conversion_basis',)):
         return f"{row.currency or 'KES'} {row.director_figures_unit or 'as printed'}"
     return ''
@@ -386,7 +402,8 @@ def file_checks(company, fiscal_year, row, texts):
 
 
 MONEY_COLS = HEADLINE_COLS + tuple(k for m in tab_modules.TAB_MODULES for k, _ in m['metrics']
-                                   if k.endswith(('_retainer', '_allowance')) or (k.startswith('ceo_') and k != 'ceo_monthly_conversion_basis'))
+                                   if k.endswith(('_retainer', '_allowance')) or (k.startswith('ceo_') and k != 'ceo_monthly_conversion_basis')
+                                   or tab_modules.field_kind(k) in ('pay', 'headline'))
 
 
 def _fy_num(fy):
@@ -745,6 +762,16 @@ def _story(company, fy, st, d, generated):
             # enough blank rows to bring the register up to a 15-person board (at least 3)
             rows += [[T(f'newdir|{n}|name')] + reg_cells(f'newdir|{n}', allm) for n in range(max(3, 15 - len(d['directors'])))]
             S.append(_table(rows, REG_W, st))
+            # Attendance and holdings: one row per director on file (new directors typed above get theirs on the next form)
+            S.append(_p('Attendance and holdings - per director', st['h3']))
+            S.append(_p('From the board attendance table and the directors\' interests note. "Held" = board meetings held '
+                        'while the director was in office. Leave a box empty if the report does not say.', st['note']))
+            xrows = [['Name', 'Attended', 'Held', 'Other boards', 'Shares held']]
+            for dr in d['directors']:
+                xrows.append([dr.director_name] +
+                             [T(f'dirx|{dr.id}|{a}', value=_prefill(getattr(dr, a, None)))
+                              for a in ('board_meetings_attended', 'board_meetings_eligible', 'other_directorships', 'shares_held')])
+            S.append(_table(xrows, [62 * mm, 24 * mm, 24 * mm, 28 * mm, 38 * mm], st))
         elif 'register' in empty:
             S.append(_p("Directors' Register - add every director", st['h3']))
             allm = {'role', 'independent', 'gender', 'nationality', 'appointed'}
@@ -876,7 +903,7 @@ def _render_summary(summary, fiscal_year=None, no_year=()):
     st, buf, generated = _styles(), BytesIO(), datetime.now().strftime('%d %b %Y')
     avg = _average(summary)
     scored = sum(1 for x in summary if x['q']['has_data'])
-    nfields = len(tab_modules.all_metric_labels())
+    nfields = len(tab_modules.core_metric_labels())
     S = [_p('Data Quality Summary', st['title']),
          _p(f"{len(summary)} companies  |  {fiscal_year or 'each company at its latest year'}  |  generated {generated}  |  "
             'ranked by most problems first', st['sub']), Spacer(1, 6),

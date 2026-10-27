@@ -3,7 +3,7 @@
   "short_name": "Finance Intel",
   "description": "NSE board and director remuneration benchmarking",
   "id": "/",
-  "start_url": "/?source=pwa",
+  "start_url": "/app?source=pwa",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
