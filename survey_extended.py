@@ -191,22 +191,170 @@ def _director_attendance(rows, name_of):
             'below_75': sum(1 for p in pcts if p < 75)}
 
 
+TEXT_FIELDS = ['auditor_name', 'audit_opinion', 'governance_audit_by']
+
+
 def company_fields(r, survey_cur='KES'):
-    """Per-company extended figures for the Intelligence Report (same conversions as build())."""
+    """Every extended figure for one company-year, converted like build() (money in whole survey-currency units),
+    plus the worked-out measures. Used by the Intelligence Report, the company PDF report and the Excel downloads."""
     v = lambda f: value(r, f, survey_cur)
-    staff, emp, tov = v('staff_costs'), v('employees_count'), turnover_full(r, survey_cur)
-    eps, dps = v('earnings_per_share'), v('dividend_per_share')
-    out = {f: v(f) for f in ('audit_fee', 'staff_costs', 'employees_count', 'earnings_per_share', 'dividend_per_share',
-                             'board_attendance_pct', 'women_in_workforce_pct', 'women_in_senior_management_pct',
-                             'total_directors_fees', 'top10_shareholding_pct', 'shareholders_count')}
+    out = {f: v(f) for f in AUDIT_FIELDS + BOARD_FIELDS + PAY_FIELDS + WORKFORCE_FIELDS + SHAREHOLDER_FIELDS}
+    out.update({f: (getattr(r, f, None) or None) for f in YESNO + TEXT_FIELDS})
+    staff, emp, tov = out['staff_costs'], out['employees_count'], turnover_full(r, survey_cur)
+    eps, dps = out['earnings_per_share'], out['dividend_per_share']
     out.update({
         'kmp_total': kmp_total(r, survey_cur),
         'staff_cost_per_employee': staff / emp if (staff is not None and emp) else None,
+        'staff_costs_pct_of_turnover': (staff / tov * 100) if (staff is not None and tov) else None,
         'audit_fee_pct_of_turnover': (out['audit_fee'] / tov * 100) if (out['audit_fee'] is not None and tov) else None,
         'payout_ratio_pct': (dps / eps * 100) if (dps is not None and eps and eps > 0) else None,
-        'auditor_name': r.auditor_name, 'audit_opinion': r.audit_opinion,
-        'going_concern_uncertainty': r.going_concern_uncertainty, 'governance_audit_done': r.governance_audit_done,
-        'chair_ceo_separate': r.chair_ceo_separate, 'chair_independent': r.chair_independent,
-        'lead_independent_director': r.lead_independent_director,
     })
+    return out
+
+
+# ---------------------------------------------------------------- one catalogue for every export
+# (key, label, kind). Kinds: money / pershare / pct / pct2 / count / num1 / yesno / text, and for the market view
+# share (which firms, how many companies), opinions and attendance. Exports show a row only when it has data.
+CATALOGUE = [
+    ('audit', 'Audit', [
+        ('auditor_name', 'External auditor', 'text', 'auditor_share', 'share'),
+        ('audit_fee', 'Audit fee', 'money', None, None),
+        ('audit_fee_pct_of_turnover', 'Audit fee as % of turnover', 'pct2', None, None),
+        ('non_audit_fees', 'Non-audit fees paid to the auditor', 'money', None, None),
+        ('auditor_tenure_years', 'Years the auditor has been in office', 'num1', None, None),
+        ('key_audit_matters_count', 'Key audit matters in the report', 'num1', None, None),
+        ('audit_opinion', 'Audit opinion', 'text', 'opinions', 'opinions'),
+        ('going_concern_uncertainty', 'Material uncertainty on going concern', 'yesno', 'going_concern', 'yesno'),
+    ]),
+    ('board_effectiveness', 'Board effectiveness', [
+        ('board_attendance_pct', 'Average board meeting attendance', 'pct', None, None),
+        (None, 'Directors with attendance on file', None, 'director_attendance', 'attendance'),
+        ('independent_neds_over_9_years', 'Independent NEDs serving more than 9 years', 'num1', None, None),
+        ('chair_ceo_separate', 'Chair and CEO roles held by different people', 'yesno', None, None),
+        ('chair_independent', 'Chairperson is independent', 'yesno', None, None),
+        ('lead_independent_director', 'Lead / senior independent director appointed', 'yesno', None, None),
+        ('governance_audit_done', 'Governance audit carried out', 'yesno', None, None),
+        ('governance_audit_by', 'Governance auditor', 'text', 'governance_auditors', 'share'),
+    ]),
+    ('executive_pay', 'Executive pay (key management)', [
+        ('kmp_count', 'Key management personnel (people)', 'count', None, None),
+        ('kmp_total', 'Key management: total pay', 'money', None, None),
+        ('kmp_short_term_benefits', 'Key management: salaries and short-term benefits', 'money', None, None),
+        ('kmp_post_employment_benefits', 'Key management: pension / post-employment benefits', 'money', None, None),
+        ('kmp_share_based_payments', 'Key management: share-based payments', 'money', None, None),
+        ('kmp_termination_benefits', 'Key management: termination benefits', 'money', None, None),
+        ('total_directors_fees', "Total non-executive directors' fees", 'money', None, None),
+        ('total_executive_directors_emoluments', "Total executive directors' emoluments", 'money', None, None),
+        ('cfo_annual_total_pay', 'CFO / finance director total pay for the year', 'money', None, None),
+        ('loans_to_directors', 'Loans to directors (balance at year end)', 'money', None, None),
+    ]),
+    ('workforce', 'Workforce', [
+        ('employees_count', 'Employees', 'count', None, None),
+        ('staff_costs', 'Staff costs', 'money', None, None),
+        ('staff_cost_per_employee', 'Staff cost per employee', 'money', None, None),
+        ('staff_costs_pct_of_turnover', 'Staff costs as % of turnover', 'pct', None, None),
+        ('women_in_workforce_pct', 'Women in the workforce', 'pct', None, None),
+        ('women_in_senior_management_pct', 'Women in senior management', 'pct', None, None),
+        ('staff_turnover_pct', 'Staff turnover', 'pct', None, None),
+    ]),
+    ('shareholders', 'Shareholders and returns', [
+        ('earnings_per_share', 'Earnings per share', 'pershare', None, None),
+        ('dividend_per_share', 'Dividend per share', 'pershare', None, None),
+        ('payout_ratio_pct', 'Dividend payout (dividend / earnings)', 'pct', None, None),
+        ('shareholders_count', 'Shareholders', 'count', None, None),
+        ('top10_shareholding_pct', 'Top 10 shareholders, combined holding', 'pct', None, None),
+        ('free_float_pct', 'Free float', 'pct', None, None),
+        ('directors_shareholding_pct', 'Directors, combined holding', 'pct', None, None),
+    ]),
+]
+
+
+def fmt(kind, v, cur='KES'):
+    """A single company figure as text ('' when missing)."""
+    if v is None or v == '':
+        return ''
+    if kind == 'money':
+        return f'{cur} {round(v):,}'
+    if kind == 'pershare':
+        return f'{cur} {v:,.2f}'
+    if kind == 'pct':
+        return f'{v:,.1f}%'
+    if kind == 'pct2':
+        return f'{v:,.2f}%'
+    if kind == 'count':
+        return f'{round(v):,}'
+    if kind == 'num1':
+        return f'{int(v):,}' if float(v).is_integer() else f'{v:,.1f}'
+    return str(v)
+
+
+def market_rows(ext, cur='KES'):
+    """[(group label, [(label, headline, detail, companies)])] for the market reports - only rows with data, only
+    groups with at least one row. headline = median (or the one company's figure); detail = the middle half, or
+    who / how many."""
+    out = []
+    for gkey, glabel, items in CATALOGUE:
+        g = ext.get(gkey) or {}
+        rows = []
+        for key, label, kind, mkey, mkind in items:
+            obj = g.get(mkey or key)
+            if mkind == 'share' or (mkind is None and kind == 'text'):
+                obj = g.get(mkey) if mkey else None
+                if obj:
+                    total = sum(x['companies'] for x in obj)
+                    rows.append((label, f"{obj[0]['label']} ({obj[0]['companies']})",
+                                 ' · '.join(f"{x['label']} {x['companies']}" for x in obj[1:4]), total))
+            elif mkind == 'opinions':
+                if obj:
+                    answered = sum(x['companies'] for x in obj.values())
+                    clean = (obj.get('Unmodified') or {}).get('companies', 0)
+                    other = '; '.join(f"{k}: {', '.join(x['company_names'])}" for k, x in obj.items() if k != 'Unmodified')
+                    rows.append((label, f'Unmodified at {clean} of {answered}', other, answered))
+            elif mkind == 'attendance':
+                if obj and obj.get('directors'):
+                    rows.append((label, f"{obj['average_pct']:.1f}% average",
+                                 f"{obj['directors']} directors at {obj['companies']} compan{'y' if obj['companies'] == 1 else 'ies'} · {obj['full_attendance']} at every meeting · {obj['below_75']} below 75%",
+                                 obj['companies']))
+            elif kind == 'yesno' or mkind == 'yesno':
+                if obj and obj.get('answered'):
+                    rows.append((label, f"Yes at {obj['yes']} of {obj['answered']}", f"{obj['pct_yes']:.0f}% of the companies that state it", obj['answered']))
+            elif obj and obj.get('company_count'):
+                n = obj['company_count']
+                if n >= MIN_COMPANIES and obj.get('p50') is not None:
+                    rows.append((label, fmt(kind, obj['p50'], cur), f"{fmt(kind, obj['p25'], cur)} – {fmt(kind, obj['p75'], cur)}", n))
+                elif obj.get('top'):
+                    t = obj['top'][0]
+                    rows.append((label, fmt(kind, t['value'], cur), f"only {t['name']} states it", n))
+        if rows:
+            out.append((glabel, rows))
+    return out
+
+
+def company_rows(me, rows, cur='KES'):
+    """[(group label, [(label, this company's figure, market median / share, rank)])] for one company - only the
+    figures this company states. rows = every company's company_fields() for the same year."""
+    out = []
+    for _gkey, glabel, items in CATALOGUE:
+        lines = []
+        for key, label, kind, _mkey, _mkind in items:
+            if key is None:
+                continue
+            mine = me.get(key)
+            if mine is None or mine == '':
+                continue
+            if kind in ('yesno', 'text'):
+                pool = [str(r.get(key)).strip() for r in rows if r.get(key)]
+                same = sum(1 for x in pool if x.lower() == str(mine).strip().lower())
+                lines.append((label, str(mine), f'same at {same} of {len(pool)} companies' if len(pool) >= 2 else '', ''))
+                continue
+            pool = sorted([r.get(key) for r in rows if r.get(key) is not None], reverse=True)
+            med = None
+            if len(pool) >= MIN_COMPANIES:
+                srt = sorted(pool)
+                m = len(srt)
+                med = srt[m // 2] if m % 2 else (srt[m // 2 - 1] + srt[m // 2]) / 2
+            lines.append((label, fmt(kind, mine, cur), fmt(kind, med, cur) if med is not None else '',
+                          f'{pool.index(mine) + 1} of {len(pool)}' if len(pool) >= MIN_COMPANIES else ''))
+        if lines:
+            out.append((glabel, lines))
     return out

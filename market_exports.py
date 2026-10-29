@@ -84,9 +84,50 @@ def _notes(wb, cur):
         'Return on equity and debt/equity come from the parsed financial statements, shown only where the statement has '
         'a profit figure and positive equity.',
         'A blank cell means the report does not state the figure (or it was not credible for a listed company). It is never zero.',
+        'The Audit, Board effectiveness, Executive pay, Workforce and Shareholders sheets hold every extended survey measure a '
+        'company states (the portfolio file: each company\'s latest year; the comparison file: every year). Measures no company '
+        'states are left out.',
     ]:
         ws.append([line])
     ws.column_dimensions['A'].width = 140
+
+
+_KIND_FMT = {'money': '#,##0', 'pershare': '#,##0.00', 'pct': '0.0', 'pct2': '0.00', 'count': '#,##0', 'num1': '#,##0.#'}
+
+
+def _group_sheets(wb, data, cur, latest_only):
+    """One sheet per extended group (audit, board effectiveness, executive pay, workforce, shareholders): a row per
+    company (and year), a column per measure. Columns no company fills are left out; a sheet with none is skipped."""
+    import survey_extended
+    for gkey, glabel, items in survey_extended.CATALOGUE:
+        cols = [(key, label, kind) for key, label, kind, _m, _mk in items if key]
+        records = []
+        for cid, e in sorted(data.items(), key=lambda kv: kv[1]['company'].name.lower()):
+            c = e['company']
+            yrs = sorted(e['years'], key=survey_aggregate._fy_sort_key, reverse=True)
+            for fy in (yrs[:1] if latest_only else yrs):
+                r = e['years'][fy]
+                records.append((c, fy, r))
+        used = [col for col in cols if any(r.get(col[0]) not in (None, '') for _c, _fy, r in records)]
+        if not used:
+            continue
+        rows = []
+        for c, fy, r in records:
+            vals = [r.get(k) for k, _l, _kd in used]
+            if all(v in (None, '') for v in vals):
+                continue
+            rows.append([c.name, c.ticker, r.get('sector') or c.sector, fy, r.get('reported_currency')]
+                        + [(round(v, 2) if isinstance(v, float) else v) for v in vals])
+        def head(label, kind):
+            if kind in ('money', 'pershare'):
+                return f'{label} ({cur})'
+            if kind in ('pct', 'pct2') and not label.endswith('%'):
+                return f'{label} (%)'
+            return label
+        ws = wb.create_sheet(glabel[:31].replace('/', '-'))
+        _sheet(ws, ['Company', 'Ticker', 'Sector', 'Year', 'Reporting currency'] + [head(l, kd) for _k, l, kd in used], rows,
+               [None, None, None, None, None] + [_KIND_FMT.get(kd) for _k, _l, kd in used],
+               [34, 9, 22, 10, 11] + [22 if kd in ('money', 'text') else 16 for _k, _l, kd in used])
 
 
 def build_portfolio(Company, Financials):
@@ -110,6 +151,7 @@ def build_portfolio(Company, Financials):
                 f'EPS ({cur})', f'Dividend per share ({cur})', 'Employees'], rows,
            [None, None, None, None, None, None, None, MONEY, MONEY, RATIO, MONEY, RATIO, RATIO, RATIO, RATIO, WHOLE],
            [34, 9, 9, 24, 10, 11, 11, 20, 20, 12, 22, 9, 11, 10, 14, 11])
+    _group_sheets(wb, data, cur, latest_only=True)
     _notes(wb, cur)
     buf = BytesIO()
     wb.save(buf)
@@ -155,6 +197,7 @@ def build_comparison(Company, Financials):
                     'ROE %', 'Debt / equity', f'EPS ({cur})', f'Dividend per share ({cur})', f'Staff costs ({cur})', 'Employees'], rows,
                [None, None, MONEY, MONEY, RATIO, MONEY, RATIO, RATIO, RATIO, RATIO, MONEY, WHOLE],
                [10, 11, 20, 20, 12, 22, 9, 11, 10, 14, 20, 11])
+    _group_sheets(wb, data, cur, latest_only=False)
     _notes(wb, cur)
     buf = BytesIO()
     wb.save(buf)

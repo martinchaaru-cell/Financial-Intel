@@ -321,6 +321,9 @@ h1,h2,h3,h4,h5,h6,
 .sa-info-label{color:var(--text-faint);font-size:10px;}
 .sa-info-value{font-weight:700;font-size:12.5px;}
 .sa-stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;}
+/* When a card is left out (no figure), the remaining cards share the row instead of leaving a gap. */
+.sa-stat-grid:has(> :nth-child(3):last-child){grid-template-columns:repeat(3,1fr);}
+.sa-stat-grid:has(> :nth-child(2):last-child){grid-template-columns:repeat(2,1fr);}
 @media (max-width:1100px){.sa-stat-grid{grid-template-columns:repeat(2,1fr);}}
 .sa-stat-card{padding:14px;}
 .sa-stat-top{display:flex;align-items:center;gap:9px;margin-bottom:8px;}
@@ -3973,9 +3976,7 @@ function srExtTable(data, groupId, only, calcRows){
   (calcRows || []).filter(r => r && r[1] !== null && r[1] !== undefined).forEach(([label, value]) => {
     rows.push(`<tr><td>${escapeHtml(label)}</td><td style="font-weight:600;">${value}</td><td>${SR_CALC_BADGE}</td></tr>`);
   });
-  const filled = srExtFields(data, groupId, only).filter(([k]) => srExtFmt(data, k) !== null).length;
-  return `<table><tbody>${rows.join('')}</tbody></table>
-    ${!filled ? `<div style="font-size:11px;color:var(--text-faint);margin-top:8px;">Not entered yet for this year. Add these from the annual report on the Manual Entry form.</div>` : ''}`;
+  return `<table><tbody>${rows.join('')}</tbody></table>`;
 }
 function srNum(v){ return v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v); }
 function srWhole(v){ return v === null ? null : Math.round(v).toLocaleString('en-US'); }
@@ -4272,10 +4273,10 @@ function srCompanyOverviewTab(data){
           <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">8. Disclosure Evidence</h2><span class="ov-panel-link" onclick="switchSRTab('evidence')">View all sources &rarr;</span></div>
           ${srDisclosureEvidenceTable(s)}
         </div>
-        <div class="panel">
+        ${window.currentUser.role === 'admin' ? `<div class="panel">
           <div class="ov-panel-head"><h2 class="sa-panel-title" style="margin:0;">9. Missing Disclosures</h2><span class="ov-panel-link" onclick="switchSRTab('data-quality')">View all &rarr;</span></div>
           ${srMissingDisclosuresList(s)}
-        </div>
+        </div>` : ''}
       </div>
     </div>`;
 }
@@ -9828,7 +9829,7 @@ function naSpan(label){
   // wherever the backend sends null for a field it has no honest basis
   // to estimate (market cap, dividend yield, forward-looking risk
   // categories, scenario forecasts, etc).
-  return `<span style="color:var(--text-faint);font-style:italic;" title="${escapeHtml(label || 'Not available from filed data')}">Not available</span>`;
+  return `<span class="na" style="color:var(--text-faint);font-style:italic;" title="${escapeHtml(label || 'Not available from filed data')}">Not available</span>`;
 }
 // ---------- Amounts are ALWAYS written out in full ----------
 // No "K"/"M"/"B"/"T" suffixes, no "millions"/"billions" wording, no rounding to a
@@ -10787,6 +10788,70 @@ async function blTogglePlan(id, on){
   try { await blSend('PATCH', `/api/admin/billing/plans/${id}`, {active: on}); blState.plans = null; await blRenderAdmin(); }
   catch (e) { showToast(e.message); }
 }
+
+// ---- Leave out what is not available ----------------------------------------------------------------------
+// On the reading pages (company reports, analytics, Intelligence Report, dashboard) a figure the annual report
+// does not disclose is left out instead of showing "Not available": empty rows, empty cards and panels with
+// nothing left in them are removed after each render. Admin pages that exist to show gaps (Survey Mapping,
+// Data Quality, Evidence, Manual Entry, Report Reviews) keep every row so missing fields stay visible there.
+const FI_PRUNE_PAGES = new Set(['survey-report', 'survey-analytics', 'intelligence-layer', 'home']);
+const FI_KEEP_SR_TABS = new Set(['survey-mapping', 'data-quality', 'evidence']);
+function fiPruneActive(){
+  if (!FI_PRUNE_PAGES.has(currentPage)) return false;
+  if (currentPage === 'survey-report' && typeof srTab !== 'undefined' && FI_KEEP_SR_TABS.has(srTab)) return false;
+  return true;
+}
+function fiOnlyNa(el, skipSel){
+  // True when el shows nothing but "Not available" markers (plus labels / dashes).
+  if (!el || !el.querySelector('.na')) return false;
+  const c = el.cloneNode(true);
+  c.querySelectorAll('.na' + (skipSel ? ',' + skipSel : '')).forEach(n => n.remove());
+  return !c.textContent.replace(/[\s—–\-·:]/g, '');
+}
+function fiPanelEmpty(p){
+  if (p.querySelector('canvas, img, select, input, textarea, button:not(.ov-panel-link):not(.panel-link), .chart, .ir-kv-row, tbody tr, .sa-bar-row, .mini-bar-col, svg.bl-chart')) return false;
+  const c = p.cloneNode(true);
+  c.querySelectorAll('.na, h1, h2, h3, h4, .sa-panel-title, .ir-panel-title, .ov-panel-head, .panel-head, .bl-card-head, .ov-panel-link, .panel-link, .empty').forEach(n => n.remove());
+  return !c.textContent.replace(/[\s—–\-·:]/g, '');
+}
+function fiPruneEmpty(root){
+  if (!root || !fiPruneActive()) return;
+  root.querySelectorAll('.ir-kv-row').forEach(r => { if (fiOnlyNa(r, '.k')) r.remove(); });
+  // A row whose figure is missing goes, even when it carries a status pill or confidence badge.
+  const FI_BADGES = '.ov-status-pill, .sr-conf-badge, .doc-badge, .bl-pill, .bl-tag';
+  root.querySelectorAll('tbody tr').forEach(tr => {
+    const cells = [...tr.children].slice(1);
+    if (!cells.length || !tr.querySelector('.na')) return;
+    const blank = td => { const c = td.cloneNode(true); c.querySelectorAll('.na, ' + FI_BADGES).forEach(n => n.remove());
+                          return !c.textContent.replace(/[\s—–\-·:]/g, ''); };
+    if (cells.every(blank)) tr.remove();
+  });
+  // A column nobody has a figure for (e.g. attendance in a register where no director's attendance was filed).
+  root.querySelectorAll('table').forEach(t => {
+    const head = t.querySelector('thead tr'), body = [...t.querySelectorAll('tbody tr')];
+    if (!head || !body.length || t.querySelector('[colspan]')) return;
+    for (let i = head.children.length - 1; i > 0; i--) {
+      const col = body.map(r => r.children[i]).filter(Boolean);
+      if (col.length === body.length && col.every(td => fiOnlyNa(td))) {
+        head.children[i].remove(); col.forEach(td => td.remove());
+      }
+    }
+  });
+  root.querySelectorAll('table').forEach(t => { const b = t.querySelector('tbody'); if (b && !b.querySelector('tr')) t.remove(); });
+  root.querySelectorAll('.sa-stat-card, .sr-kpi, .stat-card, .ov-stat-card, .sr-stat-card, .sa-mini-stat, .summary-metric').forEach(card => {
+    const v = card.querySelector('.sa-stat-value, .sr-kpi-value, .stat-value, .ov-stat-value, .sr-stat-value, .n, .sm-val');
+    if (v && fiOnlyNa(v)) card.remove();
+  });
+  root.querySelectorAll('.empty').forEach(e => { if (fiOnlyNa(e)) e.remove(); });
+  root.querySelectorAll('.panel').forEach(p => { if (fiPanelEmpty(p)) p.remove(); });
+}
+(function(){
+  let queued = false;
+  const run = () => { queued = false; try { fiPruneEmpty(document.getElementById('app')); } catch (e) { console.warn('prune', e); } };
+  const obs = new MutationObserver(() => { if (!queued) { queued = true; requestAnimationFrame(run); } });
+  const start = () => { const app = document.getElementById('app'); if (app) obs.observe(app, {childList: true, subtree: true}); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
 
 // ---- sign-in ended (left the app / too long / another device) and plan needed: watch every API response ----
 // The server ends a sign-in when the app has been closed or in the background for a few minutes, after the

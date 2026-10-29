@@ -614,6 +614,17 @@ def _extended_sections(st, overview, rows, cur):
         S += _grid(st, ['Company', 'Employees', f'Staff cost / employee ({cur})', 'Women staff', f'EPS ({cur})', f'DPS ({cur})', 'Top 10 holders'], prow,
                    [44 * mm, 18 * mm, 32 * mm, 18 * mm, 20 * mm, 20 * mm, CONTENT_W - 152 * mm], right_cols=(1, 2, 3, 4, 5, 6),
                    caption='As stated in each annual report. A dash means the report does not state it.')
+    # Reference tables: every extended measure that at least one company states (survey_extended.CATALOGUE).
+    import survey_extended
+    groups = survey_extended.market_rows(e, cur)
+    if groups:
+        S += [Paragraph('Every audit, governance, pay and people measure', st['h2']),
+              Paragraph('Each measure that at least one company states for the year. Measures no company states are left out.', st['body'])]
+        for glabel, items in groups:
+            S += [Paragraph(_e(glabel), st['h3'] if 'h3' in st else st['h2'])]
+            S += _grid(st, ['Measure', 'Median / answer', 'Middle half / detail', 'Companies'],
+                       [[_e(l), _e(h), _e(d) if d else '', str(n)] for l, h, d, n in items],
+                       [62 * mm, 40 * mm, CONTENT_W - 62 * mm - 40 * mm - 20 * mm, 20 * mm], right_cols=(3,))
     return S
 
 
@@ -1590,8 +1601,8 @@ def build_company_report(payload, overview, rows):
                          [CONTENT_W * .4, CONTENT_W * .33, CONTENT_W * .27], right_cols=(2,))]
 
     # ---------------- 6b. audit, workforce and returns (extended fields)
-    if row_me and any(row_me.get(k) not in (None, '') for k in ('auditor_name', 'audit_fee', 'employees_count', 'earnings_per_share',
-                                                                'board_attendance_pct', 'kmp_total', 'top10_shareholding_pct')):
+    import survey_extended as _sx
+    if row_me and _sx.company_rows(row_me, rows, cur):
         S += _section(st, 'Audit, people & returns', 'Audit, workforce and shareholders',
                       'What the annual report says about the audit, the board at work, the workforce and shareholder returns.')
         cur_s = row_me.get('currency') or cur
@@ -1624,22 +1635,13 @@ def build_company_report(payload, overview, rows):
                 s_ += f" and the dividend {_e(cur_s)} {row_me['dividend_per_share']:,.2f} a share"
             t.append(s_ + '.')
         S += _paras(st, t)
-        ext_items = [('Audit fee', 'audit_fee', None), ('Board meeting attendance (%)', 'board_attendance_pct', 1),
-                     ('Key management pay (total)', 'kmp_total', None), ("Non-executive directors' fees", 'total_directors_fees', None),
-                     ('Employees', 'employees_count', 0), ('Staff cost per employee', 'staff_cost_per_employee', 0),
-                     ('Women in the workforce (%)', 'women_in_workforce_pct', 0), ('Earnings per share', 'earnings_per_share', 2),
-                     ('Dividend per share', 'dividend_per_share', 2), ('Top 10 shareholders (%)', 'top10_shareholding_pct', 0)]
-        tbl = []
-        for lab, key_, dp in ext_items:
-            mine = row_me.get(key_)
-            if mine is None:
-                continue
-            pool = sorted([r.get(key_) for r in rows if r.get(key_) is not None], reverse=True)
-            fmt_ = (lambda v: _fn(round(v) if dp == 0 else v, dp)) if dp is not None else (lambda v: _fn(round(v)))
-            tbl.append([lab, fmt_(mine), fmt_(_median(pool)) if len(pool) >= 2 else '—', f"{pool.index(mine) + 1} of {len(pool)}" if len(pool) >= 2 else '—'])
-        if tbl:
-            S += _grid(st, ['Measure', _e(name), 'Survey median', 'Rank'], tbl, [70 * mm] + [(CONTENT_W - 70 * mm) / 3] * 3,
-                       right_cols=(1, 2, 3), caption=f'Amounts in {_e(cur_s)}, written in full. Ranked highest first among the companies that state each figure.')
+        import survey_extended
+        for glabel, lines in survey_extended.company_rows(row_me, rows, cur_s):
+            S += [Paragraph(_e(glabel), st['h3'] if 'h3' in st else st['h2'])]
+            S += _grid(st, ['Measure', _e(name), 'Survey median / peers', 'Rank'], [[_e(a_), _e(b_), _e(c_), _e(d_)] for a_, b_, c_, d_ in lines],
+                       [66 * mm, 44 * mm, CONTENT_W - 66 * mm - 44 * mm - 24 * mm, 24 * mm], right_cols=(1, 2, 3))
+        S += [Paragraph(f'Amounts in {_e(cur_s)}, written in full. Ranked highest first among the companies that state each figure; '
+                        'measures this report does not state are left out.', st['caption'])]
 
     # ---------------- 7. peers
     if row_me and n_peers > 1:
