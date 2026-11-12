@@ -31,11 +31,7 @@ pdf_storage/
 
 # Test outputs
 coverage/
-<<<<<<< Updated upstream
 .pytest_cache/
 instance/backup.dump
-=======
-.pytest_cache/backup.dump
->>>>>>> Stashed changes
 part_*
 backup.dump
