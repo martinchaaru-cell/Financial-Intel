@@ -43,3 +43,4 @@ backup.dump
 *.dump
 *.bak
 instance/
+exports/
