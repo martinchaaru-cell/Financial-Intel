@@ -8,7 +8,8 @@ One form per company + fiscal year covering ALL 40 survey fields, so a person ca
                      and any unresolved evidence conflicts
   C. ON FILE       - every other filled field: value + unit, source page, and whether the value is found in the stored
                      report text; tick OK or type the correct value (same confirm|/confirmok| fields as B)
-  D. Register (every director, with what is on file) / committee / pay rows with blank cells
+  D. Register, committees and director pay - every row, with what is on file (v4)
+  E. NED benefits - every benefit, with what is on file (v4)
 
 build_company_form(company_id, fiscal_year=None) -> (BytesIO, filename)
 build_all_forms_zip(fiscal_year=None)            -> (BytesIO, filename)   one PDF per company inside
@@ -19,7 +20,7 @@ on the Manual Entry page (manual_entry_upload.py reads the fields back). A print
 cannot be read back; type into the PDF, or enter those values on the page by hand.
 
 Field names (parsed by manual_entry_upload.py - keep the two in sync):
-  meta                      hidden JSON {"v":1,"cid":..,"fy":..,"name":..}
+  meta                      hidden JSON {"v":4,"cid":..,"fy":..,"name":..,"ticker":..,"sector":..}
   metric|<column>           a missing metric        metricnote|<column>  its source page / note
   val|<column>              v2: box pre-filled with the stored value (sections B and C) - edited = correction
   confirm|<column>          v1 forms: corrected value for a stored metric    confirmok|<column>  "stored value is right"
@@ -29,6 +30,11 @@ Field names (parsed by manual_entry_upload.py - keep the two in sync):
   dirfix|<id>|<attr>        filled cell of a register row, pre-filled with the stored value - a changed value is a correction
   newdir|<n>|<attr>         new register row (attr also: name)
   com|<id>|<attr>           blank cell of an existing committee (attr: chair, meetings, members)
+  comname|<id>              v4: a committee's name, pre-filled - emptied = remove (replace mode)
+  comfix|<id>|<attr>        v4: filled committee cell, pre-filled - a changed value is a correction
+  payname|<id>              v4: a pay row's name, pre-filled - emptied = remove (replace mode)
+  payfix|<id>|<attr>        v4: filled pay cell (role, kind = Director / Subtotal / Grand total, total, components)
+  benv|<key> / benvdetail|<key>   v4: NED benefit status and detail, pre-filled with what is on file
   newcom|<n>|<attr>         new committee (attr also: name)
   pay|<id>|<attr>           existing pay row without a total (attr: total, components)
   newpay|<n>|<attr>         new pay row (attr also: name, role)
@@ -218,6 +224,22 @@ def collect(company_id, fiscal_year):
     ned = (row.ned_benefits or {}) if row else {}
     benefits_open = [k for k in tab_modules.BENEFIT_KEYS if k not in ned]
 
+    # v4: every committee, pay row and NED benefit is printed with what is on file, so a filled form is a complete copy of
+    # the company's year (it can also be restored into another installation - manual_entry_upload.resolve_company)
+    import manual_entry_upload as meu
+    committees_all, pay_all = [], []
+    if period:
+        for c in Committee.query.filter_by(period_id=period.id).order_by(Committee.order_index, Committee.id).all():
+            members = [m.director_name for m in
+                       CommitteeMember.query.filter_by(committee_id=c.id).order_by(CommitteeMember.order_index).all()]
+            committees_all.append({'id': c.id, 'name': c.name, 'chair': c.chairperson_name, 'meetings': c.meetings_held,
+                                   'members': members})
+        for r in DirectorRemunerationRow.query.filter_by(period_id=period.id).order_by(
+                DirectorRemunerationRow.order_index, DirectorRemunerationRow.id).all():
+            pay_all.append({'id': r.id, 'name': r.director_name, 'role': r.role, 'kind': meu.pay_kind(r), 'total': r.total,
+                            'components': meu.load_components(r.components)})
+    benefits_all = {k: ned.get(k) for k in tab_modules.BENEFIT_KEYS}
+
     texts = None
     if row is not None:
         try:
@@ -244,7 +266,8 @@ def collect(company_id, fiscal_year):
 
     return {'quality': data_quality.company_quality(row), 'status': status, 'missing_metrics': missing_metrics, 'missing_lists': missing_lists,
             'confirm': confirm, 'conflicts': conflicts, 'director_gaps': gaps, 'committee_gaps': comm_gaps,
-            'pay_gaps': pay_gaps, 'benefits_open': benefits_open, 'unit': row.director_figures_unit if row else None,
+            'pay_gaps': pay_gaps, 'benefits_open': benefits_open, 'committees_all': committees_all, 'pay_all': pay_all,
+            'benefits_all': benefits_all, 'unit': row.director_figures_unit if row else None,
             'currency': row.currency if row else None, 'headline_unit': row.unit if row else None,
             'filled': filled, 'checks': checks, 'directors': directors, 'text_stored': texts is not None,
             'source_filename': row.source_filename if row else None}
@@ -591,6 +614,7 @@ ROLE_OPTS = [BLANK, 'executive', 'non-executive']
 YESNO_OPTS = [BLANK, 'Yes', 'No']
 GENDER_OPTS = [BLANK, 'Male', 'Female']
 BEN_OPTS = [BLANK, 'Provided', 'Not provided']
+PAY_KIND_OPTS = ['Director', 'Subtotal', 'Grand total']
 REG_W = [46 * mm, 27 * mm, 24 * mm, 22 * mm, 30 * mm, 27 * mm]
 
 
@@ -626,6 +650,7 @@ def _quality_block(q, st):
 def _story(company, fy, st, d, generated):
     S = []
     T = lambda name, **kw: Field(name, **kw)
+    import manual_entry_upload as meu
     S.append(_p('Manual Entry Form', st['title']))
     src = f"  |  file: {d['source_filename']}" if d.get('source_filename') else ''
     S.append(_p(f'{company.name}  |  {fy}  |  generated {generated}{src}', st['sub']))
@@ -723,7 +748,7 @@ def _story(company, fy, st, d, generated):
             S.append(t)
 
     empty = set(d['missing_lists'])
-    if d['directors'] or d['committee_gaps'] or d['pay_gaps'] or empty & {'register', 'committees', 'pay_rows'}:
+    if d['directors'] or d['committees_all'] or d['pay_all'] or empty & {'register', 'committees', 'pay_rows'}:
         S.append(_p('D. Tables to check and complete', st['h2']))
         reg_head = ['Name', 'Role', 'Independent', 'Gender', 'Nationality', 'Appointed']
 
@@ -780,44 +805,73 @@ def _story(company, fy, st, d, generated):
 
         com_head = ['Committee', 'Chair', 'Meetings', 'Members (comma separated)']
         com_w = [46 * mm, 40 * mm, 22 * mm, 72 * mm]
-        if d['committee_gaps']:
-            S.append(_p('Committees - fill the empty boxes', st['h3']))
+        if d['committees_all']:
+            S.append(_p('Committees - every committee on file', st['h3']))
+            S.append(_p('Every box holds what is on file - change only what is wrong and fill the empty boxes. To remove a '
+                        'committee, empty its name and upload with "Replace the year with the form" ticked. Use the blank '
+                        'rows to add one.', st['note']))
             rows = [com_head]
-            for g in d['committee_gaps']:
-                m = set(g['missing'])
-                rows.append([g['name'],
-                             T(f"com|{g['id']}|chair") if 'Chair' in m else 'on file',
-                             T(f"com|{g['id']}|meetings") if 'Meetings' in m else 'on file',
-                             T(f"com|{g['id']}|members") if 'Members' in m else 'on file'])
+            for c in d['committees_all']:
+                cells = []
+                for attr, v in (('chair', c['chair']), ('meetings', c['meetings']),
+                                ('members', meu.members_text(c['members']) if c['members'] else None)):
+                    cells.append(T(f"comfix|{c['id']}|{attr}", value=_prefill(v)) if v not in (None, '')
+                                 else T(f"com|{c['id']}|{attr}"))
+                rows.append([T(f"comname|{c['id']}", value=_prefill(c['name']))] + cells)
+            rows += [[T(f'newcom|{n}|name'), T(f'newcom|{n}|chair'), T(f'newcom|{n}|meetings'), T(f'newcom|{n}|members')]
+                     for n in range(3)]
             S.append(_table(rows, com_w, st))
         elif 'committees' in empty:
             S.append(_p('Committees - add each committee', st['h3']))
             S.append(_table([com_head] + [[T(f'newcom|{n}|name'), T(f'newcom|{n}|chair'), T(f'newcom|{n}|meetings'),
                                             T(f'newcom|{n}|members')] for n in range(BLANK_ROWS)], com_w, st))
 
-        pay_head = ['Name', 'Total', 'Components (e.g. Fees=5000, Allowances=1200)']
-        if d['pay_gaps']:
-            S.append(_p('Director pay - these rows have no total', st['h3']))
-            S.append(_table([pay_head] + [[g['name'], T(f"pay|{g['id']}|total"), T(f"pay|{g['id']}|components")]
-                                          for g in d['pay_gaps']], [55 * mm, 35 * mm, 90 * mm], st))
+        if d['pay_all']:
+            S.append(_p('Director pay - every row on file', st['h3']))
+            unit_txt = d['unit'] or "the report's own unit"
+            S.append(_p(f'Figures as filed ({unit_txt}). Every box holds what is on file - change '
+                        'only what is wrong and fill the empty boxes. Components are written Name=amount; Name=amount. To '
+                        'remove a row, empty its name and upload with "Replace the year with the form" ticked.', st['note']))
+            rows = [['Name', 'Role', 'Row type', 'Total', 'Components (Fees=5,000; Allowances=1,200)']]
+            for r in d['pay_all']:
+                role = (r['role'] or '').replace('_', '-')
+                rows.append([T(f"payname|{r['id']}", value=_prefill(r['name'])),
+                             T(f"payfix|{r['id']}|role", kind='choice', options=ROLE_OPTS, value=role)
+                             if role in ROLE_OPTS[1:] else T(f"pay|{r['id']}|role", kind='choice', options=ROLE_OPTS),
+                             T(f"payfix|{r['id']}|kind", kind='choice', options=PAY_KIND_OPTS, value=r['kind']),
+                             T(f"payfix|{r['id']}|total", value=_prefill(r['total'])) if r['total'] is not None
+                             else T(f"pay|{r['id']}|total"),
+                             T(f"payfix|{r['id']}|components", value=meu.components_text(r['components'])) if r['components']
+                             else T(f"pay|{r['id']}|components")])
+            rows += [[T(f'newpay|{n}|name'), T(f'newpay|{n}|role', kind='choice', options=ROLE_OPTS),
+                      T(f'newpay|{n}|kind', kind='choice', options=PAY_KIND_OPTS, value='Director'),
+                      T(f'newpay|{n}|total'), T(f'newpay|{n}|components')] for n in range(3)]
+            S.append(_table(rows, [40 * mm, 25 * mm, 22 * mm, 25 * mm, 68 * mm], st))
         elif 'pay_rows' in empty:
             S.append(_p('Director pay rows - add each director', st['h3']))
             S.append(_table([['Name', 'Role', 'Total', 'Components (e.g. Fees=5000, Allowances=1200)']] +
                             [[T(f'newpay|{n}|name'), T(f'newpay|{n}|role', kind='choice', options=ROLE_OPTS),
                               T(f'newpay|{n}|total'), T(f'newpay|{n}|components')] for n in range(BLANK_ROWS + 2)],
                             [45 * mm, 28 * mm, 30 * mm, 77 * mm], st))
-    if 'ned_benefits' in empty and d['benefits_open']:
-        S.append(_p('E. NED benefits - choose one per line', st['h2']))
-        rows = [['Benefit', 'Status', 'Detail / page']]
-        rows += [[k, T(f'ben|{k}', kind='choice', options=BEN_OPTS), T(f'bendetail|{k}')] for k in d['benefits_open']]
-        S.append(_table(rows, [55 * mm, 40 * mm, 85 * mm], st))
+    rows = [['Benefit', 'Status', 'Detail / page']]
+    for k, cur in d['benefits_all'].items():
+        status = ('Provided' if cur.get('provided') else 'Not provided') if cur else BLANK
+        rows.append([k, T(f'benv|{k}', kind='choice', options=BEN_OPTS, value=status),
+                     T(f'benvdetail|{k}', value=_prefill((cur or {}).get('detail')))])
+    from reportlab.platypus import KeepTogether
+    S.append(KeepTogether([_p('E. NED benefits - one line per benefit', st['h2']),
+                           _p('Each line shows what is on file ("-" = not stated). Change only what is wrong.', st['note']),
+                           _table(rows, [55 * mm, 40 * mm, 85 * mm], st)]))
     return S
 
 
 def _render(company, fy, d=None):
     d = d if d is not None else collect(company.id, fy)
     buf = BytesIO()
-    meta = json.dumps({'v': 2, 'cid': company.id, 'fy': fy, 'name': company.name})
+    # v3 adds ticker + sector, so the form can also be restored into another installation (see
+    # manual_entry_upload.resolve_company: the company is matched by name / ticker, or added).
+    meta = json.dumps({'v': 4, 'cid': company.id, 'fy': fy, 'name': company.name, 'ticker': company.ticker or '',
+                       'sector': getattr(company, 'sector', None) or ''})
 
     def first_page(canvas, doc):
         # Hidden read-only field: tells the upload which company + year this form belongs to.

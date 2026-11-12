@@ -8345,13 +8345,15 @@ async function renderReviewManual(box){
       <button class="btn primary" onclick="manualLoad()">Open</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
-      <button class="btn" onclick="manualDownloadForm()" title="PDF form for the company and year selected above: all 40 fields - what is missing, what needs confirming, and every value on file to check against the annual report">⭳ Download form (this company)</button>
+      <button class="btn" onclick="manualDownloadForm()" title="PDF form for the company and year selected above: every survey field, the directors' register, every committee, every director pay row and the NED benefits - with what is on file, to check against the annual report">⭳ Download form (this company)</button>
       <button class="btn" onclick="manualDownloadAllForms()" title="One PDF per company for the selected year, zipped, with a summary of the problems found for each company and how to fix them">⭳ Download forms (all companies, .zip)</button>
       <button class="btn primary" onclick="document.getElementById('manFormFiles').click()" title="Upload filled forms: one PDF, several PDFs, or a .zip of PDFs">⭱ Upload filled form(s) (.pdf / .zip)</button>
       <input type="file" id="manFormFiles" accept=".pdf,.zip,application/pdf,application/zip,application/x-zip-compressed" multiple style="display:none" onchange="manualUploadForms(this)">
       <label title="Each uploaded form becomes the whole truth for its company and year: every survey field and the directors' register are set to exactly what the form says (a box left empty is cleared). Financial statements and the stored report text are kept." style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="manReplace"> Replace the year with the form</label>
+      <label title="For forms whose company is not in the app - for example when restoring a forms zip into a new installation. The company is added (name, ticker and sector from the form) when you approve. Without this, such forms are skipped." style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="manAddMissing"> Add companies that are not in the app</label>
     </div>
     <p class="muted" style="margin-top:6px">Fill the downloaded PDF on screen (it has typing boxes), save it, and upload it here. You see what would change and approve it before anything is stored.</p>
+    <p class="muted" style="margin-top:4px"><b>Restoring into a new installation:</b> upload the forms zip with both boxes ticked. Each form carries every field and every table row (register, committees, director pay, NED benefits), is matched to its company by name and ticker (never by number alone), and companies that are missing are added. Download a fresh zip per year to keep as a backup.</p>
     </div><div id="manualUploadPanel"></div><div id="manualBody"></div>`;
   await manualLoadYears();
 }
@@ -8401,6 +8403,8 @@ async function manualUploadForms(input){
   const fd = new FormData(); files.forEach(f => fd.append('files', f));
   const rep = document.getElementById('manReplace');
   if (rep && rep.checked) fd.append('mode', 'replace');
+  const addm = document.getElementById('manAddMissing');
+  if (addm && addm.checked) fd.append('add_missing', '1');
   let d;
   try {
     const r = await fetch('/api/manual/upload-forms', {method:'POST', body: fd});
@@ -8409,6 +8413,7 @@ async function manualUploadForms(input){
   } catch (e) { box.innerHTML = `<div class="panel"><b>Upload failed.</b> Check the connection and try again.</div>`; return; }
   manualUpload.changes = (d.changes || []).map(c => ({...c, checked: !!c.checked && !c.broken}));
   manualUpload.files = d.files || []; manualUpload.notes = d.notes || []; manualUpload.problems = d.problems || [];
+  manualUpload.newCompanies = d.new_companies || [];
   manualUploadRender();
 }
 function manualUploadRender(result){
@@ -8416,11 +8421,11 @@ function manualUploadRender(result){
   const U = manualUpload, ch = U.changes;
   const list = (arr, cls) => arr && arr.length ? `<ul class="${cls || ''}" style="margin:6px 0 6px 18px">${arr.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : '';
   const groups = {};
-  ch.forEach((c, i) => { const k = c.company_id + '|' + c.fiscal_year; (groups[k] = groups[k] || {name: c.company, fy: c.fiscal_year, items: []}).items.push([c, i]); });
+  ch.forEach((c, i) => { const k = c.company_id + '|' + c.fiscal_year; (groups[k] = groups[k] || {name: c.company, fy: c.fiscal_year, isNew: !!c.new_company, items: []}).items.push([c, i]); });
   const nSel = ch.filter(c => c.checked).length;
   const resMap = {}; (result && result.results || []).forEach(r => { resMap[r.id] = r; });
   const body = Object.entries(groups).map(([k, g]) => `
-    <details open style="margin-top:10px"><summary><b>${escapeHtml(g.name)}</b> <span class="muted">${escapeHtml(g.fy)} · ${g.items.length} change${g.items.length === 1 ? '' : 's'}</span>
+    <details open style="margin-top:10px"><summary><b>${escapeHtml(g.name)}</b>${g.isNew && !result ? ' <span class="bl-pill" style="background:#e0e7ff;color:#1e3a8a;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600">new company - added on approval</span>' : ''} <span class="muted">${escapeHtml(g.fy)} · ${g.items.length} change${g.items.length === 1 ? '' : 's'}</span>
       ${result ? '' : `<label style="margin-left:10px;font-weight:normal"><input type="checkbox" ${g.items.every(([c]) => c.checked) ? 'checked' : ''} onchange="manualUploadToggleGroup('${k}', this.checked)"> select all</label>`}</summary>
       <table class="tbl"><thead><tr>${result ? '' : '<th></th>'}<th>Field</th><th>Stored now</th><th>From the form</th><th>${result ? 'Result' : 'Note'}</th></tr></thead><tbody>
       ${g.items.map(([c, i]) => { const r = resMap[c.id];
@@ -8434,6 +8439,8 @@ function manualUploadRender(result){
   box.innerHTML = `<div class="panel">
     <h3>${result ? 'Upload applied' : 'Review the uploaded forms'}</h3>
     ${filesLine ? `<p class="muted">Forms read: ${escapeHtml(filesLine)}</p>` : ''}
+    ${!result && (U.newCompanies || []).length ? `<p><b>${U.newCompanies.length} compan${U.newCompanies.length === 1 ? 'y is' : 'ies are'} not in the app and will be added</b> when you approve: ${escapeHtml(U.newCompanies.map(n => n.name + (n.ticker ? ' (' + n.ticker + ')' : '')).join(', '))}.</p>` : ''}
+    ${result && (result.companies_added || []).length ? `<p><b>Companies added:</b> ${escapeHtml(result.companies_added.map(n => n.name).join(', '))}.</p>` : ''}
     ${list(U.notes, 'muted')}${list(U.problems, 'muted')}
     ${!ch.length && !result ? '<p><b>Nothing to change.</b> The forms had no filled-in boxes that differ from what is stored.</p>' : ''}
     ${body}
@@ -8459,6 +8466,7 @@ async function manualUploadApply(){
     manualUpload.busy = false;
     manualUpload.changes = sel;              // the result table lists what was approved
     manualUploadRender(d);
+    if ((d.companies_added || []).length) { manualCtx.companies = await fetch('/api/companies').then(r => r.json()).catch(() => manualCtx.companies); await manualLoadYears(); }
     if (manualCtx.companyId && manualCtx.fy && sel.some(c => c.company_id === manualCtx.companyId)) { await manualLoadYears(); await manualLoad(); }
     srDataCache = null;                      // Survey Report re-reads on next visit
   } catch (e) { alert('Could not save - check the connection and try again.'); manualUpload.busy = false; manualUploadRender(); }

@@ -130,6 +130,36 @@ def _checked(v):
     return str(v or '').strip().lower() not in ('', 'off', '0', 'false', 'no')
 
 
+PAY_KINDS = {'Director': (False, False), 'Subtotal': (True, False), 'Grand total': (False, True)}
+
+
+def pay_kind(r):
+    """'Director' | 'Subtotal' | 'Grand total' for a pay row (how the form's "Row type" box shows it)."""
+    return 'Grand total' if r.is_grand_total else ('Subtotal' if r.is_total_row else 'Director')
+
+
+def members_text(names):
+    return ', '.join(box_safe(str(n).replace(',', ' ').strip()) for n in names or [] if str(n).strip())
+
+
+def components_text(comps):
+    """{'Fees': 5000.0} -> 'Fees=5,000; Allowances=1,200' (how a pay row's components are printed in a form box)."""
+    out = []
+    for k, v in (comps or {}).items():
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out.append(f"{box_safe(str(k)).replace('=', ' ').replace(';', ' ').strip()}={prefill_text(v)}")
+    return '; '.join(out)
+
+
+def load_components(raw):
+    try:
+        d = json.loads(raw) if raw else {}
+        return {str(k): float(v) for k, v in d.items() if isinstance(v, (int, float)) and not isinstance(v, bool)} \
+            if isinstance(d, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
 def parse_components(raw):
     """'Fees=5000, Allowances=1,200' -> ({'Fees': 5000.0, 'Allowances': 1200.0}, [problems])"""
     out, bad = {}, []
@@ -168,7 +198,8 @@ def read_form(pdf_bytes):
             m = json.loads(raw)
             if isinstance(m, dict) and str(m.get('cid', '')).isdigit() and str(m.get('fy') or '').strip():
                 meta = {'cid': int(m['cid']), 'fy': str(m['fy']).strip(), 'name': str(m.get('name') or ''),
-                        'v': int(m.get('v') or 1) if str(m.get('v') or 1).isdigit() else 1}
+                        'v': int(m.get('v') or 1) if str(m.get('v') or 1).isdigit() else 1,
+                        'ticker': str(m.get('ticker') or '').strip()[:20], 'sector': str(m.get('sector') or '').strip()[:60]}
         except ValueError:
             meta = None
     return meta, values
@@ -227,6 +258,19 @@ def intents_from_values(values, label_of=None, metric_cols=None):
             r = rows.setdefault(('dir', parts[1]), {})
             r[parts[2]] = val
             r.setdefault('_fix', set()).add(parts[2])
+        elif kind in ('comname', 'payname') and len(parts) == 2:      # v4: every committee / pay row, name pre-filled
+            r = rows.setdefault((kind[:3], parts[1]), {})
+            r['name'] = val
+            r.setdefault('_fix', set()).add('name')
+        elif kind in ('comfix', 'payfix') and len(parts) == 3:        # v4: a filled cell, pre-filled with what is on file
+            r = rows.setdefault((kind[:3], parts[1]), {})
+            r[parts[2]] = val
+            r.setdefault('_fix', set()).add(parts[2])
+        elif kind == 'benv' and len(parts) == 2:                       # v4: every NED benefit, pre-filled
+            r = rows.setdefault(('ben', parts[1]), {})
+            r['status'], r['_fix'] = val, True
+        elif kind == 'benvdetail' and len(parts) == 2:
+            rows.setdefault(('ben', parts[1]), {})['detail'] = val
         elif kind == 'ben' and len(parts) == 2:
             rows.setdefault(('ben', parts[1]), {})['status'] = val
         elif kind == 'bendetail' and len(parts) == 2:
@@ -305,8 +349,16 @@ def intents_from_values(values, label_of=None, metric_cols=None):
                     data['meetings_held'] = int(n)
             if not _blank(f.get('members')):
                 data['members'] = [m.strip() for m in re.split(r'[,\n;]', f['members']) if m.strip()]
-            if kind == 'com' and data and ident.isdigit():
-                intents.append({'op': 'com_update', 'target_id': int(ident), 'data': data})
+            fix = set(f.get('_fix') or ())
+            com_attr = {'name': 'name', 'chair': 'chairperson_name', 'meetings': 'meetings_held', 'members': 'members'}
+            if kind == 'com' and 'name' in fix and not _blank(f.get('name')):
+                data['name'] = f['name'].strip()[:100]
+            clear = [com_attr[a] for a in fix if a != 'name' and a in com_attr and _blank(f.get(a))]
+            if kind == 'com' and ident.isdigit() and 'name' in fix and _blank(f.get('name')):
+                intents.append({'op': 'com_delete', 'target_id': int(ident), 'data': {}})
+            elif kind == 'com' and (data or clear) and ident.isdigit():
+                intents.append({'op': 'com_update', 'target_id': int(ident), 'data': data,
+                                'fix': sorted(com_attr[a] for a in fix if a in com_attr), 'clear': clear})
             elif kind == 'newcom':
                 name = (f.get('name') or '').strip()
                 if name:
@@ -328,30 +380,49 @@ def intents_from_values(values, label_of=None, metric_cols=None):
                     data['components'] = comps
                 for b in bad:
                     problems.append(f'Pay component "{b}" not understood (use Name=amount) - ignored')
-            if kind == 'pay' and data and ident.isdigit():
-                intents.append({'op': 'pay_update', 'target_id': int(ident), 'data': data})
+            fix = set(f.get('_fix') or ())
+            if not _blank(f.get('role')) and _norm_role(f['role']):
+                data['role'] = _norm_role(f['role'])
+            if not _blank(f.get('kind')) and str(f['kind']).strip() in PAY_KINDS:
+                data['kind'] = str(f['kind']).strip()
+            if 'components' in fix and 'components' in data:
+                data['components_replace'] = True
+            pay_attr = {'name': 'director_name', 'role': 'role', 'kind': 'kind', 'total': 'total', 'components': 'components'}
+            clear = [pay_attr[a] for a in fix if a in ('total', 'components', 'role') and _blank(f.get(a))]
+            if kind == 'pay' and 'name' in fix and not _blank(f.get('name')):
+                data['director_name'] = f['name'].strip()[:150]
+            if kind == 'pay' and ident.isdigit() and 'name' in fix and _blank(f.get('name')):
+                intents.append({'op': 'pay_delete', 'target_id': int(ident), 'data': {}})
+            elif kind == 'pay' and (data or clear) and ident.isdigit():
+                intents.append({'op': 'pay_update', 'target_id': int(ident), 'data': data,
+                                'fix': sorted(pay_attr[a] for a in fix if a in pay_attr), 'clear': clear})
             elif kind == 'newpay':
                 name = (f.get('name') or '').strip()
                 if name:
                     data['director_name'] = name[:150]
-                    data['role'] = _norm_role(f.get('role')) or 'unknown'
+                    data['role'] = data.get('role') or 'unknown'
                     intents.append({'op': 'pay_new', 'n': ident, 'data': data})
-                elif data:
+                elif {k: v for k, v in data.items() if not (k == 'kind' and v == 'Director')}:   # the type box defaults
                     problems.append(f'Pay row {int(ident) + 1}: details given but no name - skipped')
         elif kind == 'ben':
             st = str(f.get('status') or '').strip().lower()
             detail = (f.get('detail') or '').strip() or None
             if st in ('provided', 'not provided'):
-                intents.append({'op': 'ben', 'key': ident, 'data': {'provided': st == 'provided', 'detail': detail}})
+                intents.append({'op': 'ben', 'key': ident, 'data': {'provided': st == 'provided', 'detail': detail},
+                                'fix': ['status'] if f.get('_fix') else []})
+            elif f.get('_fix') and ident in tab_modules.BENEFIT_KEYS:
+                intents.append({'op': 'ben_clear', 'key': ident, 'data': {}})     # "-" chosen: not stated (Replace mode)
             elif detail:
                 problems.append(f'Benefit {ident}: detail given but no status chosen - skipped')
     return intents, problems
 
 
 # =============================================================== reading the uploaded files
-def collect_pdfs(files):
+def collect_pdfs(files, hints=None):
     """[(filename, bytes)] -> ([(display_name, pdf_bytes)], [notes]). Accepts .pdf and .zip (zips are read in memory,
-    never extracted to disk; nested zips are not opened)."""
+    never extracted to disk; nested zips are not opened). `hints` (a dict, optional) is filled with company name ->
+    ticker from the summary sheet inside a downloaded forms zip - older forms do not carry the ticker themselves."""
+    hints = {} if hints is None else hints
     pdfs, notes, total = [], [], 0
     for fname, data in files:
         low = (fname or '').lower()
@@ -377,6 +448,8 @@ def collect_pdfs(files):
             inner_total = 0
             for i in infos:
                 if i.filename.split('/')[-1].startswith(SUMMARY_PREFIX):      # the read-only summary in a downloaded zip
+                    if i.filename.lower().endswith('.csv') and i.file_size < 5 * 1024 * 1024:
+                        _read_summary_hints(z.read(i), hints)
                     continue
                 if not i.filename.lower().endswith('.pdf'):
                     if i.filename.lower().endswith('.zip'):
@@ -392,6 +465,126 @@ def collect_pdfs(files):
         else:
             notes.append(f'{fname}: only .pdf and .zip files are accepted - skipped.')
     return pdfs, notes
+
+
+def _read_summary_hints(blob, hints):
+    """The summary CSV of a forms zip -> hints[normalised company name] = {'ticker': ...}. Never fails the upload."""
+    try:
+        import csv as _csv
+        text = blob.decode('utf-8-sig', 'replace')
+        for r in _csv.DictReader(io.StringIO(text)):
+            name, ticker = (r.get('Company') or '').strip(), (r.get('Ticker') or '').strip()
+            if name and (r.get('Rank') or '').strip().isdigit():
+                h = hints.setdefault(norm_name(name), {})
+                if ticker:
+                    h['ticker'] = ticker[:20]
+                if (r.get('Sector') or '').strip():
+                    h['sector'] = r['Sector'].strip()[:60]
+    except Exception:
+        pass
+
+
+# =============================================================== which company a form belongs to
+# A form names its company by the app's internal number AND by name. The number only means something in the database
+# the form was downloaded from: in a new installation (or after companies were deleted and re-added) the same number
+# can belong to another company or to none. So the number is trusted only when the name agrees; otherwise the company
+# is found by ticker / name, and - when allowed - a company that is not in the app yet is added.
+_LOOSE_WORDS = re.compile(r'\b(plc|ltd|limited|holdings?|group|company|co|the|kenya)\b')
+
+
+def norm_name(s):
+    t = str(s or '').lower().replace('&amp;', '&').replace('&', ' and ')
+    return ' '.join(re.sub(r'[^a-z0-9 ]+', ' ', t).split())
+
+
+def loose_name(s):
+    return ' '.join(_LOOSE_WORDS.sub(' ', norm_name(s)).split())
+
+
+def _same_company(c, name, ticker=''):
+    if ticker and (c.ticker or '').strip().upper() == ticker.upper():
+        return True
+    return bool(name) and (norm_name(c.name) == norm_name(name) or (loose_name(name) and loose_name(c.name) == loose_name(name)))
+
+
+def _directory_entry(name):
+    """NSE roster entry for a company name (ticker + sector), or None."""
+    try:
+        import company_directory
+        m, _score = company_directory.match_company(name, min_score=0.9)
+        return m
+    except Exception:
+        return None
+
+
+def find_company(name, ticker='', companies=None):
+    """-> the one Company that this name / ticker means, or None (none, or more than one could be meant)."""
+    companies = companies if companies is not None else Company.query.all()
+    for test in (lambda c: ticker and (c.ticker or '').strip().upper() == ticker.upper(),
+                 lambda c: norm_name(c.name) == norm_name(name),
+                 lambda c: loose_name(name) and loose_name(c.name) == loose_name(name)):
+        hits = [c for c in companies if test(c)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            return None
+    d = _directory_entry(name) if name else None
+    if d and d.get('ticker'):
+        hits = [c for c in companies if (c.ticker or '').strip().upper() == d['ticker'].upper()
+                or loose_name(c.name) == loose_name(d['name'])]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def resolve_company(meta, companies, add_missing=False, pending=None, hints=None):
+    """Which company a form is for. -> dict:
+         {'cid': int, 'name': str, 'new': spec | None, 'note': str | None, 'problem': str | None}
+    cid is negative for a company that will be ADDED when the changes are approved (spec = name / ticker / sector);
+    problem is set (and cid None) when the form must be skipped."""
+    pending = {} if pending is None else pending
+    name = (meta.get('name') or '').strip()
+    hint = (hints or {}).get(norm_name(name)) or {}
+    ticker = meta.get('ticker') or hint.get('ticker') or ''
+    by_id = companies.get(meta['cid'])
+    if by_id is not None and (not name or _same_company(by_id, name, ticker)):
+        return {'cid': by_id.id, 'name': by_id.name, 'new': None, 'note': None, 'problem': None, 'foreign': False}
+    found = find_company(name, ticker, list(companies.values())) if name else None
+    if found is not None:
+        note = (f'made for "{name}" - in this app its internal number belongs to "{by_id.name}", so it was matched to '
+                f'"{found.name}" by name instead.' if by_id is not None else
+                (f'matched to "{found.name}" by name.' if norm_name(found.name) != norm_name(name) else None))
+        return {'cid': found.id, 'name': found.name, 'new': None, 'note': note, 'problem': None, 'foreign': True}
+    if not name:
+        return {'cid': None, 'name': '', 'new': None, 'note': None,
+                'problem': 'its company is not in this app and the form does not name it - skipped.'}
+    if not add_missing:
+        why = (f'made for "{name}", but in this app its internal number belongs to "{by_id.name}". Not applied, so '
+               f'"{name}" values cannot land on the wrong company.' if by_id is not None else
+               f'"{name}" is not in this app.')
+        return {'cid': None, 'name': name, 'new': None, 'note': None,
+                'problem': why + ' Tick "Add companies that are not in the app" to add it from the form.'}
+    key = loose_name(name) or norm_name(name)
+    if key not in pending:
+        d = _directory_entry(name) or {}
+        pending[key] = {'cid': -(len(pending) + 1), 'name': name[:120],
+                        'ticker': (ticker or d.get('ticker') or '')[:20] or None,
+                        'sector': (meta.get('sector') or hint.get('sector') or d.get('sector') or '')[:60] or None}
+    spec = pending[key]
+    return {'cid': spec['cid'], 'name': spec['name'], 'new': dict(spec), 'problem': None, 'foreign': True,
+            'note': f'"{name}" is not in this app yet - it will be added when you approve.'}
+
+
+def create_company(spec):
+    """Add a company from a form (approved restore). Re-uses one added meanwhile under the same name / ticker."""
+    existing = find_company(spec.get('name') or '', spec.get('ticker') or '')
+    if existing is not None:
+        return existing
+    c = Company(name=str(spec.get('name') or '').strip()[:120], ticker=(spec.get('ticker') or None),
+                sector=(spec.get('sector') or None), exchange='NSE', country='Kenya')
+    db.session.add(c)
+    db.session.flush()
+    return c
 
 
 # =============================================================== database side
@@ -421,6 +614,12 @@ def _same(a, b):
     return str(a or '').strip().lower() == str(b or '').strip().lower()
 
 
+def _same_comps(a, b):
+    a, b = a or {}, b or {}
+    ka, kb = {_norm_box(k).lower(): v for k, v in a.items()}, {_norm_box(k).lower(): v for k, v in b.items()}
+    return ka.keys() == kb.keys() and all(_same(ka[k], kb[k]) for k in ka)
+
+
 def _period(company_id, fy):
     return FinancialPeriod.query.filter_by(company_id=company_id, period_label=fy).first()
 
@@ -430,6 +629,7 @@ def _owned_period(period_id, cid, fy):
     return p if p is not None and p.company_id == cid and p.period_label == fy else None
 
 
+PAY_ATTR_LABEL = {'director_name': 'Name', 'role': 'Role', 'kind': 'Row type', 'total': 'Total', 'components': 'Components'}
 DIR_ATTR_LABEL = {'director_name': 'Name', 'role': 'Role', 'independent': 'Independent', 'gender': 'Gender', 'nationality': 'Nationality',
                   'appointed_date': 'Appointed', **dict(tab_modules.DIRECTOR_EXTRA)}
 
@@ -442,6 +642,18 @@ def _annotate(intent, cid, fy):
     ch = {'op': op, 'company_id': cid, 'fiscal_year': fy, 'data': data, 'warning': None, 'checked': True,
           'target_id': intent.get('target_id'), 'key': intent.get('key'), 'fix': intent.get('fix') or []}
     row = tab_modules.survey_row(cid, fy)
+    replacing = bool(intent.get('replace'))
+
+    def restoring(model, period_attr=None):
+        # A row number that is not this company's: from another installation (restore), the number belongs to another
+        # company here, or this year has no such rows yet -> the row is added by name. A number that no longer exists in
+        # a table that has rows is a row removed since the form was made - not brought back.
+        if intent.get('foreign') or db.session.get(model, ch['target_id']) is not None:
+            return True
+        if model is SurveyDirector:
+            return not SurveyDirector.query.filter_by(company_id=cid, fiscal_year=fy).count()
+        p = _period(cid, fy)
+        return p is None or not model.query.filter_by(period_id=p.id).count()
 
     if op == 'val':
         k = intent['key']
@@ -494,6 +706,10 @@ def _annotate(intent, cid, fy):
 
     if op in ('dir_update', 'dir_new'):
         d = db.session.get(SurveyDirector, ch['target_id']) if op == 'dir_update' else None
+        if op == 'dir_update' and (d is None or d.company_id != cid or d.fiscal_year != fy) and data.get('director_name') \
+                and restoring(SurveyDirector):
+            op = ch['op'] = 'dir_new'                   # a row from another installation (restore): added by name
+            ch['target_id'], d = None, None
         if op == 'dir_update' and (d is None or d.company_id != cid or d.fiscal_year != fy):
             ch['label'], ch['current'], ch['new'] = 'Register row', '\u2014', _fmt({DIR_ATTR_LABEL[k]: v for k, v in data.items()})
             ch['warning'], ch['checked'], ch['broken'] = 'That register row no longer exists.', False, True
@@ -528,11 +744,23 @@ def _annotate(intent, cid, fy):
         ch['new'] = ', '.join(f'{DIR_ATTR_LABEL[k]}: {_fmt(v)}' for k, v in ch['data'].items() if k in DIR_ATTR_LABEL) or 'add director'
         return ch
 
+    if op == 'com_delete':
+        c = db.session.get(Committee, ch['target_id'])
+        if not replacing or c is None or _owned_period(c.period_id, cid, fy) is None:
+            return None                                 # removing a committee needs Replace mode
+        ch.update(label=f'Committee: {c.name}', current='on file', new='(removed - name left blank on the form)',
+                  warning='The committee and its members will be removed.')
+        return ch
+
     if op in ('com_update', 'com_new'):
         period = _period(cid, fy)
         c = db.session.get(Committee, ch['target_id']) if op == 'com_update' else None
+        if op == 'com_update' and (c is None or _owned_period(c.period_id, cid, fy) is None) and data.get('name') \
+                and restoring(Committee):
+            op = ch['op'] = 'com_new'                   # a committee from another installation (restore): added by name
+            ch['target_id'], c = None, None
         if op == 'com_update' and (c is None or _owned_period(c.period_id, cid, fy) is None):
-            ch['label'], ch['current'], ch['new'] = 'Committee', '\u2014', _fmt(data)
+            ch['label'], ch['current'], ch['new'] = 'Committee', '—', _fmt(data)
             ch['warning'], ch['checked'], ch['broken'] = 'That committee no longer exists.', False, True
             return ch
         if op == 'com_new' and period is not None:
@@ -544,45 +772,89 @@ def _annotate(intent, cid, fy):
                 if not data:
                     return None
         if c is not None:
-            members = [m.director_name for m in CommitteeMember.query.filter_by(committee_id=c.id).all()]
-            cur = {'chairperson_name': c.chairperson_name, 'meetings_held': c.meetings_held, 'members': members}
+            members = [m.director_name for m in CommitteeMember.query.filter_by(committee_id=c.id).order_by(CommitteeMember.order_index).all()]
+            cur = {'name': c.name, 'chairperson_name': c.chairperson_name, 'meetings_held': c.meetings_held, 'members': members}
             changed = {k: v for k, v in data.items() if k in cur and not _same(cur[k], v)}
+            if replacing:
+                changed.update({k: None for k in intent.get('clear') or [] if cur.get(k) not in (None, '', [])})
             if not changed:
                 return None
             ch['data'] = changed
             ch['label'] = f'Committee: {c.name}'
             ch['current'] = _fmt({k: cur[k] for k in changed})
-            if any(cur[k] not in (None, '', []) for k in changed):
+            fix = set(intent.get('fix') or [])
+            if any(cur[k] not in (None, '', []) for k in changed if k not in fix):
                 ch['warning'], ch['checked'] = 'Some of these were filled since the form was made - they would be replaced.', False
+            elif changed.keys() & fix:
+                ch['warning'] = 'Correction - replaces the value on file.'
         else:
             ch['label'], ch['current'] = f'Committee: new {data["name"]}', '(not on file)'
-        rest = {k: v for k, v in ch['data'].items() if k != 'name'}
+        rest = {k: ('(cleared)' if v is None else v) for k, v in ch['data'].items() if k != 'name'}
+        if 'name' in ch['data'] and c is not None:
+            rest = {'name': ch['data']['name'], **rest}
         ch['new'] = _fmt(rest) if rest else 'add committee'
+        return ch
+
+    if op == 'pay_delete':
+        r = db.session.get(DirectorRemunerationRow, ch['target_id'])
+        if not replacing or r is None or _owned_period(r.period_id, cid, fy) is None:
+            return None                                 # removing a pay row needs Replace mode
+        ch.update(label=f'Pay: {r.director_name}', current=_fmt(r.total), new='(removed - name left blank on the form)')
         return ch
 
     if op in ('pay_update', 'pay_new'):
         r = db.session.get(DirectorRemunerationRow, ch['target_id']) if op == 'pay_update' else None
+        if op == 'pay_update' and (r is None or _owned_period(r.period_id, cid, fy) is None) and data.get('director_name') \
+                and restoring(DirectorRemunerationRow):
+            op = ch['op'] = 'pay_new'                   # a pay row from another installation (restore): added
+            ch['target_id'], r = None, None
+            data = ch['data'] = {k: v for k, v in data.items() if k != 'components_replace'}
+            data.setdefault('role', 'unknown')
         if op == 'pay_update':
             if r is None or _owned_period(r.period_id, cid, fy) is None:
-                ch['label'], ch['current'], ch['new'] = 'Director pay row', '\u2014', _fmt(data)
+                ch['label'], ch['current'], ch['new'] = 'Director pay row', '—', _fmt(data)
                 ch['warning'], ch['checked'], ch['broken'] = 'That pay row no longer exists.', False, True
                 return ch
+            cur = {'director_name': r.director_name, 'role': r.role, 'kind': pay_kind(r), 'total': r.total,
+                   'components': load_components(r.components)}
+            changed = {k: v for k, v in data.items() if k in cur and not (
+                _same_comps(cur[k], v) if k == 'components' else _same_box(cur[k], v))}
+            if 'role' in changed and cur['role'] not in ('executive', 'non_executive') and changed['role'] == 'unknown':
+                changed.pop('role')
+            if 'components' in changed and not data.get('components_replace') \
+                    and all(_same(cur['components'].get(k), v) for k, v in changed['components'].items()):
+                changed.pop('components')
+            if replacing:
+                changed.update({k: None for k in intent.get('clear') or [] if cur.get(k) not in (None, '', {}, 'unknown')})
+            if not changed:
+                return None
+            if data.get('components_replace') and 'components' in changed:
+                changed['components_replace'] = True
+            ch['data'] = changed
             ch['label'] = f'Pay: {r.director_name}'
-            ch['current'] = _fmt(r.total)
-            if r.total is not None:
-                ch['warning'], ch['checked'] = 'A total was stored since the form was made - it would be replaced.', False
+            ch['current'] = '; '.join(f'{PAY_ATTR_LABEL[k]}: {_fmt(cur[k])}' for k in changed if k in PAY_ATTR_LABEL)
+            fix = set(intent.get('fix') or [])
+            if any(cur[k] not in (None, '', {}, 'unknown') for k in changed if k in PAY_ATTR_LABEL and k not in fix):
+                ch['warning'], ch['checked'] = 'Filled since the form was made - it would be replaced.', False
+            elif changed.keys() & fix:
+                ch['warning'] = 'Correction - replaces the value on file.'
         else:
             ch['label'], ch['current'] = f'Pay: new row {data["director_name"]}', '(not on file)'
             period = _period(cid, fy)
-            if period is not None and any(_same(x.director_name, data['director_name']) and not x.is_grand_total
+            if period is not None and any(_same(x.director_name, data['director_name']) and pay_kind(x) == data.get('kind', 'Director')
                                           for x in DirectorRemunerationRow.query.filter_by(period_id=period.id).all()):
                 ch['warning'], ch['checked'] = 'A pay row for this name already exists - this would add a second one.', False
-        parts = []
-        if 'total' in data:
-            parts.append(f'Total: {_fmt(data["total"])}')
-        if data.get('components'):
-            parts.append(_fmt(data['components']))
-        ch['new'] = '; '.join(parts) or 'add row'
+        ch['new'] = '; '.join(f'{PAY_ATTR_LABEL[k]}: {"(cleared)" if v is None else _fmt(v)}'
+                              for k, v in ch['data'].items() if k in PAY_ATTR_LABEL and (k != 'director_name' or r is not None)) or 'add row'
+        return ch
+
+    if op == 'ben_clear':
+        k = intent['key']
+        cur = ((row.ned_benefits or {}) if row is not None else {}).get(k)
+        if not replacing or not cur:
+            return None
+        ch.update(label=f'NED benefit: {k}', current='Provided' if cur.get('provided') else 'Not provided',
+                  new='(cleared - not stated on the form)')
         return ch
 
     if op == 'ben':
@@ -593,17 +865,24 @@ def _annotate(intent, cid, fy):
         ch['new'] = ('Provided' if data['provided'] else 'Not provided') + (f' ({data["detail"]})' if data.get('detail') else '')
         if cur and cur.get('provided') == data['provided'] and (cur.get('detail') or None) == (data.get('detail') or None):
             return None
-        if cur:
+        if cur and intent.get('fix'):
+            ch['warning'] = 'Correction - replaces the value on file.'
+        elif cur:
             ch['warning'], ch['checked'] = 'A status was stored since the form was made - it would be replaced.', False
         return ch
     return None
 
 
-def preview_upload(files, replace=False):
+def preview_upload(files, replace=False, add_missing=False):
     """[(filename, bytes)] -> {'files': [...], 'changes': [...], 'notes': [...], 'problems': [...]}. Writes nothing.
     replace=True: each form REPLACES its company + year's survey fields and directors' register (one 'replace' change
-    per form); committees / pay rows / benefits / conflicts on the form are still applied as normal changes."""
-    pdfs, notes = collect_pdfs(files)
+    per form); committees / pay rows / benefits / conflicts on the form are still applied as normal changes.
+    add_missing=True: a form whose company is not in the app (e.g. restoring forms into a new installation) proposes
+    adding that company; its changes carry a negative company_id and a `new_company` spec until approved."""
+    hints = {}
+    pdfs, notes = collect_pdfs(files, hints)
+    companies = {c.id: c for c in Company.query.all()}
+    pending = {}
     labels = _labels()
     metric_cols = tab_modules.survey_metric_columns()
     out_files, changes, problems_all = [], [], []
@@ -618,11 +897,15 @@ def preview_upload(files, replace=False):
             notes.append(f'{fname}: not a FinSight Manual Entry form, or its fillable fields were lost (printed / scanned / '
                          '"flattened" copies cannot be read). Fill the downloaded PDF on screen and save it.')
             continue
-        company = db.session.get(Company, meta['cid'])
-        if company is None:
-            notes.append(f'{fname}: the company "{meta["name"]}" no longer exists - skipped.')
+        res = resolve_company(meta, companies, add_missing=add_missing, pending=pending, hints=hints)
+        if res['problem']:
+            notes.append(f'{fname}: {res["problem"]}')
             continue
-        key = (meta['cid'], meta['fy'])
+        if res['note']:
+            notes.append(f'{fname}: {res["note"]}')
+        cid = res['cid']
+        company = _Named(cid, res['name'])
+        key = (cid, meta['fy'])
         if key in seen:
             notes.append(f'{fname}: a second form for {company.name} {meta["fy"]} - the earlier one in this upload is used, this one skipped.')
             continue
@@ -634,21 +917,29 @@ def preview_upload(files, replace=False):
         intents, problems = intents_from_values(values, labels, metric_cols)
         n_before = len(changes)
         if replace:
-            rc, rprobs = replace_change(meta['cid'], meta['fy'], values, fname, company.name)
+            rc, rprobs = replace_change(cid, meta['fy'], values, fname, company.name, foreign=res['foreign'])
             problems += rprobs
             if rc is not None:
-                rc.update({'id': f'c{len(changes)}', 'file': fname, 'company': company.name})
+                rc.update({'id': f'c{len(changes)}', 'file': fname, 'company': company.name, 'new_company': res['new']})
                 changes.append(rc)
             intents = [i for i in intents if i['op'] not in ('val', 'metric', 'confirm', 'dir_update', 'dir_new')]
         for it in intents:
-            ch = _annotate(it, meta['cid'], meta['fy'])
+            it['replace'], it['foreign'] = replace, res['foreign']
+            ch = _annotate(it, cid, meta['fy'])
             if ch is not None:
-                ch.update({'id': f'c{len(changes)}', 'file': fname, 'company': company.name})
+                ch.update({'id': f'c{len(changes)}', 'file': fname, 'company': company.name, 'new_company': res['new']})
                 changes.append(ch)
-        out_files.append({'file': fname, 'company_id': company.id, 'company': company.name, 'fiscal_year': meta['fy'],
+        out_files.append({'file': fname, 'company_id': cid, 'company': company.name, 'fiscal_year': meta['fy'], 'new_company': bool(res['new']),
                           'proposed': len(changes) - n_before, 'filled_boxes': len(intents)})
         problems_all += [f'{company.name} {meta["fy"]}: {p}' for p in problems]
-    return {'files': out_files, 'changes': changes, 'notes': notes, 'problems': problems_all}
+    return {'files': out_files, 'changes': changes, 'notes': notes, 'problems': problems_all,
+            'new_companies': [p for p in pending.values() if any(f['company_id'] == p['cid'] for f in out_files)]}
+
+
+class _Named:
+    def __init__(self, cid, name):
+        self.id, self.name = cid, name
+
 
 
 # ------------------------------------------------------------------ replace mode
@@ -682,7 +973,7 @@ def _dir_value(attr, raw):
     return raw[:60]
 
 
-def replace_change(cid, fy, values, fname, company_name):
+def replace_change(cid, fy, values, fname, company_name, foreign=False):
     """One form -> ONE 'replace' change for that company + year: the 40 survey fields and the directors' register become
     exactly what the form says (blank box = not disclosed = cleared). Financial statements, committees, pay rows, the
     stored report text and import traces are not touched. -> (change | None, [problem])"""
@@ -727,8 +1018,15 @@ def replace_change(cid, fy, values, fname, company_name):
         elif parts[0] == 'dirx' and len(parts) == 3 and parts[1].isdigit() and parts[2] in DIR_EXTRA:
             on_form.setdefault(int(parts[1]), {}).setdefault('_extra', {})[parts[2]] = val
     d_upd, d_del, d_add = [], [], []
+    orphans = []                                       # rows printed on a form from another installation (restore)
     for did, f in sorted(on_form.items()):
         d = existing.get(did)
+        if d is None and 'name' in f and (foreign or not existing or db.session.get(SurveyDirector, did) is not None):
+            # The row number is not this company's here: the form comes from another installation (or this year's
+            # register is empty), so the row is added by name below. A number that no longer exists in a register
+            # that has rows is a director removed since the form was made - left out, as before.
+            orphans.append(f)
+            continue
         if d is None or 'name' not in f:
             continue                                   # old-style row without a name box, or a row deleted since
         name = _norm_box(f['name'])
@@ -771,7 +1069,7 @@ def replace_change(cid, fy, values, fname, company_name):
     # form re-add directors a newer upload had already added, creating duplicates.
     kept = {_key(x.get('director_name')) for x in d_upd} | {
         _key(d.director_name) for did, d in existing.items() if did not in d_del and did not in upd_ids}
-    for n, f in sorted(newrows.items()):
+    for n, f in [(None, o) for o in orphans] + sorted(newrows.items()):
         name = _norm_box(f.get('name'))
         if name in BLANKS:
             continue
@@ -781,6 +1079,12 @@ def replace_change(cid, fy, values, fname, company_name):
         add = {'director_name': name[:150]}
         for a in _DIR_ATTRS:
             add['appointed_date' if a == 'appointed' else a] = _dir_value(a, f.get(a))
+        for a, raw in (f.get('_extra') or {}).items():
+            v, prob = _dir_extra_value(a, raw)
+            if prob:
+                probs.append(prob)
+            elif v is not _KEEP:
+                add[a] = v
         d_add.append(add)
         details.append({'label': f'Register: {name}', 'current': '(not in register)', 'new': 'added'})
 
@@ -951,6 +1255,29 @@ def _apply_one(ch):
         d.confidence = 1.0
         return True, 'saved'
 
+    if op == 'com_delete':
+        c = db.session.get(Committee, ch.get('target_id'))
+        if c is None or _owned_period(c.period_id, cid, fy) is None:
+            return False, 'committee no longer exists'
+        CommitteeMember.query.filter_by(committee_id=c.id).delete()
+        db.session.delete(c)
+        return True, 'removed'
+
+    if op == 'pay_delete':
+        r = db.session.get(DirectorRemunerationRow, ch.get('target_id'))
+        if r is None or _owned_period(r.period_id, cid, fy) is None:
+            return False, 'pay row no longer exists'
+        db.session.delete(r)
+        return True, 'removed'
+
+    if op == 'ben_clear':
+        row = tab_modules.survey_row(cid, fy)
+        if row is not None and ch.get('key') in (row.ned_benefits or {}):
+            ned = dict(row.ned_benefits or {})
+            ned.pop(ch['key'], None)
+            row.ned_benefits = ned
+        return True, 'cleared'
+
     if op in ('com_update', 'com_new'):
         if op == 'com_update':
             c = db.session.get(Committee, ch.get('target_id'))
@@ -965,10 +1292,19 @@ def _apply_one(ch):
                           order_index=Committee.query.filter_by(period_id=period.id).count())
             db.session.add(c)
             db.session.flush()
+        if op == 'com_update' and str(data.get('name') or '').strip():
+            c.name = str(data['name']).strip()[:100]
         if data.get('chairperson_name'):
             c.chairperson_name = str(data['chairperson_name'])[:150]
+        elif 'chairperson_name' in data and data['chairperson_name'] is None:
+            c.chairperson_name = None
         if isinstance(data.get('meetings_held'), int) and data['meetings_held'] >= 0:
             c.meetings_held = data['meetings_held']
+        elif 'meetings_held' in data and data['meetings_held'] is None:
+            c.meetings_held = None
+        if 'members' in data and data['members'] is None:
+            CommitteeMember.query.filter_by(committee_id=c.id).delete()
+            c.member_count = None
         if isinstance(data.get('members'), list) and data['members']:
             CommitteeMember.query.filter_by(committee_id=c.id).delete()
             for j, m in enumerate(str(x)[:150] for x in data['members']):
@@ -993,11 +1329,21 @@ def _apply_one(ch):
                                         role=data.get('role') if data.get('role') in ('executive', 'non_executive') else 'unknown',
                                         order_index=DirectorRemunerationRow.query.filter_by(period_id=period.id).count())
             db.session.add(r)
-        if isinstance(data.get('total'), (int, float)) and math.isfinite(data['total']):
+        if op == 'pay_update' and str(data.get('director_name') or '').strip():
+            r.director_name = str(data['director_name']).strip()[:150]
+        if op == 'pay_update' and 'role' in data:
+            r.role = data['role'] if data.get('role') in ('executive', 'non_executive') else 'unknown'
+        if data.get('kind') in PAY_KINDS:
+            r.is_total_row, r.is_grand_total = PAY_KINDS[data['kind']]
+        if isinstance(data.get('total'), (int, float)) and not isinstance(data.get('total'), bool) and math.isfinite(data['total']):
             r.total = float(data['total'])
+        elif 'total' in data and data['total'] is None:
+            r.total = None
+        if 'components' in data and data['components'] is None:
+            r.components = None
         if isinstance(data.get('components'), dict) and data['components']:
             try:
-                have = json.loads(r.components) if r.components else {}
+                have = {} if data.get('components_replace') else (json.loads(r.components) if r.components else {})
             except ValueError:
                 have = {}
             have.update({str(k)[:60]: float(v) for k, v in data['components'].items() if isinstance(v, (int, float))})
@@ -1020,11 +1366,49 @@ def _apply_one(ch):
     return False, f'unknown change type {op}'
 
 
+def _create_new_companies(changes, results):
+    """Approved changes for a company that is not in the app yet (negative company_id + new_company spec): add each such
+    company once, then point its changes at it. A company that cannot be added fails its changes, nothing else."""
+    made, out = {}, []
+    for ch in changes:
+        try:
+            cid = int(ch.get('company_id'))
+        except (TypeError, ValueError):
+            cid = 0
+        if cid >= 0:
+            out.append(ch)
+            continue
+        spec = ch.get('new_company') if isinstance(ch.get('new_company'), dict) else None
+        if cid not in made:
+            made[cid] = None
+            name = str((spec or {}).get('name') or '').strip()
+            if name:
+                try:
+                    c = create_company({'name': name, 'ticker': str(spec.get('ticker') or '').strip()[:20] or None,
+                                        'sector': str(spec.get('sector') or '').strip()[:60] or None})
+                    db.session.commit()
+                    made[cid] = c.id
+                except Exception:
+                    db.session.rollback()
+        if made[cid] is None:
+            results.append({'id': ch.get('id'), 'ok': False, 'message': 'the company could not be added'})
+            continue
+        out.append({**ch, 'company_id': made[cid]})
+    if any(v for v in made.values()):
+        try:
+            import public_pages
+            public_pages.ensure_slugs()
+        except Exception:
+            db.session.rollback()
+    return out
+
+
 def apply_changes(changes):
     """Write the approved changes. Each change is its own transaction, so one bad row never blocks the others; then
     each affected company/year has its tabs rebuilt. -> {'results': [{'id', 'ok', 'message'}], 'reconciled': [...]}"""
     results, touched = [], set()
-    for ch in changes or []:
+    changes = _create_new_companies(changes or [], results)
+    for ch in changes:
         cid_, fy_ = ch.get('company_id'), ch.get('fiscal_year')
         try:
             ok, msg = _apply_one(ch)
@@ -1045,4 +1429,6 @@ def apply_changes(changes):
             reconciled.append({'company_id': cid, 'fiscal_year': fy})
         except Exception:
             db.session.rollback()
-    return {'results': results, 'reconciled': reconciled}
+    return {'results': results, 'reconciled': reconciled,
+            'companies_added': [{'company_id': ch['company_id'], 'name': ch.get('company')} for ch in
+                                {c['company_id']: c for c in changes if c.get('new_company')}.values()]}
