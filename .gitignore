@@ -44,3 +44,4 @@ backup.dump
 *.bak
 instance/
 exports/
+.agents/
