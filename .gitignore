@@ -35,3 +35,11 @@ coverage/
 instance/backup.dump
 part_*
 backup.dump
+
+# Databases and dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.bak
+instance/
