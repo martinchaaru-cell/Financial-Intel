@@ -56,7 +56,7 @@ def _site():
 
 
 def brand():
-    return (os.environ.get('BILLING_SELLER_NAME') or 'Financial Intel').strip()
+    return (os.environ.get('BILLING_SELLER_NAME') or 'Remuneration Practice').strip()
 
 
 def contact_details():

@@ -44,7 +44,7 @@ def test_company_page_has_unique_title_description_canonical(client, seeded):
     r = client.get('/company/kcb-group')
     html = r.get_data(as_text=True)
     assert r.status_code == 200
-    assert '<title>KCB Group Plc (KCB) Board Composition &amp; Governance FY2025 | Finance Intel</title>' in html
+    assert '<title>KCB Group Plc (KCB) Board Composition &amp; Governance FY2025 | Remuneration Practice</title>' in html
     assert '12 directors' in html and 'rel="canonical"' in html and '/company/kcb-group"' in html
     assert 'index, follow' in html and 'BreadcrumbList' in html
     assert 'H1 2025' not in html and '99' not in html          # interim rows never shown

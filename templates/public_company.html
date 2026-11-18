@@ -7,12 +7,12 @@
 <script type="application/ld+json">{{ {"@context":"https://schema.org","@graph":[
   {"@type":"Corporation","name": company.name,"tickerSymbol": company.ticker,"url": canonical},
   {"@type":"BreadcrumbList","itemListElement":[
-    {"@type":"ListItem","position":1,"name":"Financial Intel","item": site_url ~ "/"},
+    {"@type":"ListItem","position":1,"name":"Remuneration Practice","item": site_url ~ "/"},
     {"@type":"ListItem","position":2,"name":"Companies","item": site_url ~ "/companies"},
     {"@type":"ListItem","position":3,"name": company.name,"item": canonical}]}]} | tojson }}</script>
 {% endblock %}
 {% block page %}
-<div class="crumbs"><a href="/">Financial Intel</a> › <a href="/companies">Companies</a> › {{ company.name }}</div>
+<div class="crumbs"><a href="/">Remuneration Practice</a> › <a href="/companies">Companies</a> › {{ company.name }}</div>
 <h1>{{ company.name }}{% if company.ticker %} <span class="muted">({{ company.ticker }})</span>{% endif %}</h1>
 <p class="sub">{% if company.sector %}{{ company.sector }} · {% endif %}{{ company.exchange or 'NSE' }}{% if latest %} · Board data for {{ latest.year }}{% endif %}</p>
 

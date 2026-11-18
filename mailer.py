@@ -5,7 +5,7 @@ Secrets (Replit > Tools > Secrets):
   MAIL_PORT       465 (SSL) or 587 (STARTTLS). Default 587.
   MAIL_USERNAME   the SMTP login (usually the mailbox address)
   MAIL_PASSWORD   the SMTP password or app password
-  MAIL_FROM       the sender shown to people, e.g.  Financial Intel <info@yourdomain.co.ke>
+  MAIL_FROM       the sender shown to people, e.g.  Remuneration Practice <info@yourdomain.co.ke>
                   (defaults to MAIL_USERNAME)
 
 Every send is written to email_log with its outcome. Without MAIL_HOST nothing leaves the server: the message is
@@ -29,12 +29,12 @@ def configured():
 def sender():
     raw = (os.environ.get('MAIL_FROM') or os.environ.get('MAIL_USERNAME') or '').strip()
     name, addr = parseaddr(raw)
-    brand = (os.environ.get('BILLING_SELLER_NAME') or 'Financial Intel').strip()
+    brand = (os.environ.get('BILLING_SELLER_NAME') or 'Remuneration Practice').strip()
     return formataddr((name or brand, addr)) if addr else ''
 
 
 def _wrap_html(body_html, footer):
-    brand = html.escape((os.environ.get('BILLING_SELLER_NAME') or 'Financial Intel').strip())
+    brand = html.escape((os.environ.get('BILLING_SELLER_NAME') or 'Remuneration Practice').strip())
     return f"""<!doctype html><html><body style="margin:0;background:#f3f5fa;font-family:Segoe UI,Arial,sans-serif;color:#0f1b33;">
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f5fa;padding:28px 12px;"><tr><td align="center">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:14px;border:1px solid #e3e8f2;">
@@ -56,7 +56,7 @@ def send(to, subject, text, body_html=None, kind=None, reply_to=None, footer=Non
     """Send one email. Never raises; returns the email_log row's status ('sent' | 'failed' | 'not_configured')."""
     from models import db
     from models_auth import EmailLog
-    footer = footer or 'You received this because of an action on your Financial Intel account.'
+    footer = footer or 'You received this because of an action on your Remuneration Practice account.'
     status, error = 'not_configured', None
     if configured():
         try:

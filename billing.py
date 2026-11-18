@@ -1,4 +1,4 @@
-"""Billing for Finance Intel: plans, subscriptions, invoices, payments (Paystack + recorded bank/M-Pesa),
+"""Billing for Remuneration Practice: plans, subscriptions, invoices, payments (Paystack + recorded bank/M-Pesa),
 access checks, seat limits and one active sign-in per account.
 
 Wired in from app.py with:
@@ -651,7 +651,7 @@ def _money(v, cur):
 def invoice_html(inv):
     org = inv.organisation
     e = lambda s: html.escape(str(s or ''))
-    seller = os.environ.get('BILLING_SELLER_NAME', 'Financial Intel')
+    seller = os.environ.get('BILLING_SELLER_NAME', 'Remuneration Practice')
     seller_lines = [os.environ.get('BILLING_SELLER_ADDRESS', ''), os.environ.get('BILLING_SELLER_EMAIL', ''),
                     ('KRA PIN: ' + os.environ['BILLING_SELLER_PIN']) if os.environ.get('BILLING_SELLER_PIN') else '']
     pays = Payment.query.filter_by(invoice_id=inv.id).order_by(Payment.paid_at).all()

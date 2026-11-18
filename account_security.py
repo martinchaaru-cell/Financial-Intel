@@ -1,4 +1,4 @@
-"""Account security for Finance Intel: lockout, optional two-step verification (TOTP), CSRF origin check.
+"""Account security for Remuneration Practice: lockout, optional two-step verification (TOTP), CSRF origin check.
 
 Wired in with two lines in app.py:
     import account_security
@@ -34,7 +34,7 @@ from urllib.parse import quote, urlparse
 
 from flask import jsonify, request, session
 
-ISSUER = 'Finance Intel'
+ISSUER = 'Remuneration Practice'
 
 
 # ---------------------------------------------------------------- environment

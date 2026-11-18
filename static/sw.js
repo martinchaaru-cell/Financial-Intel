@@ -1,7 +1,7 @@
-// Finance Intel service worker.
+// Remuneration Practice service worker.
 // Deliberately light: caches static assets only. Pages and /api/ data always go to the
 // network so financial figures are never served stale. Offline shows a friendly message.
-const CACHE = 'finance-intel-static-v7';
+const CACHE = 'finance-intel-static-v8';
 const SHELL = '/__shell';   // the last good copy of the app page (header + navigation)
 const PRECACHE = [
   '/static/manifest.json',
@@ -19,7 +19,7 @@ const PAGE_TIMEOUT_MS = 8000;
 // so (rather than blaming the visitor's internet) and reloads itself as soon as the app answers again. Only when
 // the device itself reports no connection does it tell the visitor to check their internet.
 const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Back shortly | Finance Intel</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Back shortly | Remuneration Practice</title>
 <style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
 background:#0a0f1c;color:#f5f7fc;font-family:system-ui,sans-serif;text-align:center;padding:24px}
 .card{max-width:420px}.icon{font-size:40px;margin-bottom:12px}
@@ -29,7 +29,7 @@ button{background:#5b9bff;color:#0a0f1c;border:0;border-radius:8px;padding:10px 
 </head><body><div class="card">
 <div class="icon" id="icon">&#128295;</div>
 <h1 id="title">We'll be back shortly</h1>
-<p id="msg">Finance Intel is undergoing maintenance to improve your experience. Your data is safe.</p>
+<p id="msg">Remuneration Practice is undergoing maintenance to improve your experience. Your data is safe.</p>
 <p class="note" id="note">This page will reload automatically once we're back online.</p>
 <button onclick="location.reload()">Try again</button></div>
 <script>
@@ -37,12 +37,12 @@ function show(){
   if(!navigator.onLine){
     document.getElementById('icon').innerHTML='&#128246;';
     document.getElementById('title').textContent='No internet connection';
-    document.getElementById('msg').textContent='Please check your connection. Finance Intel needs internet access to load live data.';
+    document.getElementById('msg').textContent='Please check your connection. Remuneration Practice needs internet access to load live data.';
     document.getElementById('note').textContent='This page will reload automatically when your connection returns.';
   } else {
     document.getElementById('icon').innerHTML='&#128295;';
     document.getElementById('title').textContent="We'll be back shortly";
-    document.getElementById('msg').textContent='Finance Intel is undergoing maintenance to improve your experience. Your data is safe.';
+    document.getElementById('msg').textContent='Remuneration Practice is undergoing maintenance to improve your experience. Your data is safe.';
     document.getElementById('note').textContent="This page will reload automatically once we're back online.";
   }
 }

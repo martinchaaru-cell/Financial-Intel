@@ -6104,6 +6104,9 @@ dashboards.register(app, current_user, require_super_admin)
 # Email confirmation, forgotten password, invitations, sent-email log and contact enquiries.
 accounts_email.register(app, current_user, require_super_admin)
 
+import compression  # noqa: E402
+compression.register(app)
+
 
 if __name__ == '__main__':
     # threaded=True: the live upload-progress SSE stream (GET, held open)

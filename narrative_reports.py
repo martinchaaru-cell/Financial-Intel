@@ -1,5 +1,5 @@
 """
-Narrative PDF reports for Financial Intel.
+Narrative PDF reports for Remuneration Practice.
 
 Two reports, both written as readable analysis rather than as filled-in forms:
 
@@ -38,7 +38,7 @@ from reportlab.graphics.shapes import Drawing, Rect, String, Line, PolyLine, Cir
 
 from survey_aggregate import UNIT_SCALE, MIN_COMPANIES_FOR_AVERAGE, QUALITY_FIELDS
 
-APP_NAME = 'Financial Intel'
+APP_NAME = 'Remuneration Practice'
 APP_TAGLINE = 'Financial Intelligence'
 
 NAVY = colors.HexColor('#0B1F44')

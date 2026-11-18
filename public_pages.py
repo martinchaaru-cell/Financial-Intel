@@ -1,4 +1,4 @@
-"""Public, search-engine-visible company pages for Finance Intel.
+"""Public, search-engine-visible company pages for Remuneration Practice.
 
     import public_pages
     public_pages.init(app)           # once, after web_hardening.init(app)
@@ -129,7 +129,7 @@ def describe(company, row):
         bits[0] += ' (' + ', '.join(split) + ')'
     if row['women'] is not None:
         bits.append(f'{row["women"]} women on the board')
-    bits.append('Sign in to Finance Intel for director remuneration benchmarks and peer comparisons.')
+    bits.append('Sign in to Remuneration Practice for director remuneration benchmarks and peer comparisons.')
     return '. '.join(bits)[:300]
 
 
@@ -173,9 +173,9 @@ def init(app):
         ticker = f' ({c.ticker})' if c.ticker else ''
         ctx = {
             'site_url': base, 'company': c, 'rows': rows, 'latest': latest,
-            'page_title': f'{c.name}{ticker} Board Composition & Governance{title_year} | Finance Intel',
+            'page_title': f'{c.name}{ticker} Board Composition & Governance{title_year} | Remuneration Practice',
             'page_description': describe(c, latest) if latest else
-                                f'{c.name} is tracked by Finance Intel, which benchmarks NSE-listed companies on board composition and director remuneration.',
+                                f'{c.name} is tracked by Remuneration Practice, which benchmarks NSE-listed companies on board composition and director remuneration.',
             'canonical': f'{base}/company/{c.slug}',
             'noindex': latest is None,           # never ask Google to index a page with no real content
         }

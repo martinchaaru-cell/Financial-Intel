@@ -1,5 +1,5 @@
 """
-Anti-scraping access controls for Finance Intel.
+Anti-scraping access controls for Remuneration Practice.
 
 Hiding a menu item is UI polish; this module is the server-side enforcement. It adds three
 things, all wired in one call (access_control.register(...) in app.py):
