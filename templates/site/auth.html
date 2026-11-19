@@ -5,7 +5,7 @@
 {% block style %}
 .auth{min-height:calc(100vh - 74px);display:grid;grid-template-columns:1fr 1fr}
 .auth-side{background:linear-gradient(130deg,#073b2e,#087457);color:#fff;padding:72px 64px;display:flex;flex-direction:column;justify-content:center;position:relative;overflow:hidden}
-.auth-side::after{content:'';position:absolute;right:-140px;bottom:-140px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(245,179,1,.18),transparent 65%)}
+.auth-side::after{content:'';position:absolute;right:-140px;bottom:-140px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(197,164,109,.18),transparent 65%)}
 .auth-side h2{color:#fff;font-size:34px;margin-bottom:14px}
 .auth-side p{color:#c9f2de;font-size:17px}
 .auth-side ul{list-style:none;padding:0;margin:26px 0 0}
@@ -63,7 +63,7 @@
         'replaced': 'You were signed out because this account was signed in on another device. Each account can be used on one device at a time.'
       }.get(ended, 'Please sign in again.') }}</div>{% endif %}
       <label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" required>
-      <div class="row-between"><label for="a-pass">Password</label><a href="/forgot-password">Forgot password?</a></div><input id="a-pass" type="password" autocomplete="current-password" required>
+      <div class="row-between"><label for="a-pass">Password</label><a href="/forgot-password">Forgot password?</a></div><div class="pw-wrap"><input id="a-pass" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" aria-controls="a-pass" aria-pressed="false">Show</button></div>
       <div id="a-code-wrap" style="display:none;"><label for="a-code">6-digit code from your authenticator app</label><input id="a-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
       <div class="err" id="a-err"></div>
       <div id="a-verify" class="warn-box" style="display:none;"></div>
@@ -88,7 +88,7 @@
       <label for="r-email">Work email</label><input id="r-email" type="email" autocomplete="email" required>
       <div class="two"><div><label for="r-org">Organisation</label><input id="r-org" autocomplete="organization" required></div>
         <div><label for="r-job">Job title</label><input id="r-job" autocomplete="organization-title" required></div></div>
-      <label for="r-pass">Password</label><input id="r-pass" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="r-pass">Password</label><div class="pw-wrap"><input id="r-pass" type="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" aria-controls="r-pass" aria-pressed="false">Show</button></div>
       <div class="err" id="r-err"></div>
       <button class="btn btn-gold" id="r-btn" type="submit">Create account</button>
       <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
@@ -107,8 +107,8 @@
     <form class="auth-card form" onsubmit="return doReset(event)">
       <h1>{{ 'Choose a new password' if mode == 'reset' else 'Choose your password' }}</h1>
       <p class="sub" style="margin:0;">For <b>{{ account_email }}</b>. Use at least 8 characters; a short phrase is easiest to remember.</p>
-      <label for="p-new">New password</label><input id="p-new" type="password" autocomplete="new-password" minlength="8" required>
-      <label for="p-again">Type it again</label><input id="p-again" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="p-new">New password</label><div class="pw-wrap"><input id="p-new" type="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" aria-controls="p-new" aria-pressed="false">Show</button></div>
+      <label for="p-again">Type it again</label><div class="pw-wrap"><input id="p-again" type="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" aria-controls="p-again" aria-pressed="false">Show</button></div>
       <div class="err" id="p-err"></div>
       <button class="btn btn-navy" id="p-btn" type="submit">{{ 'Save and sign in' }}</button>
       {% if mode == 'reset' %}<p class="note">Saving signs you out on every other device.</p>{% endif %}
@@ -136,6 +136,11 @@
 {% endblock %}
 {% block script %}
 <script>
+document.querySelectorAll('.pw-toggle').forEach(button => button.addEventListener('click', () => {
+ const input = document.getElementById(button.getAttribute('aria-controls'));
+ const show = input.type === 'password'; input.type = show ? 'text' : 'password';
+ button.textContent = show ? 'Hide' : 'Show'; button.setAttribute('aria-pressed', String(show));
+}));
 const NEXT = {{ next_url|tojson }};
 const PLAN = {{ (plan or '')|tojson }};
 async function post(url, body){

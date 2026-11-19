@@ -337,6 +337,7 @@ def register(app, db, Model, Company, current_user, require_role):
         # attributed to the account that signed out.
         g._activity_logged = False
         g._activity_actor = None
+        if not request.path.startswith('/api/'): return
         try:
             u = current_user()
             if u is not None:

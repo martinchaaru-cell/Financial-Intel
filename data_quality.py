@@ -59,7 +59,7 @@ def portfolio_quality(fiscal_year=None):
     that has any). Companies with no survey row for that year are not counted - they are listed in `not_on_file`."""
     from models import Company
     from models_survey import SurveyCompanyData, is_full_year
-    years = sorted({r.fiscal_year for r in SurveyCompanyData.query.all() if is_full_year(r.fiscal_year)}, reverse=True)
+    years = sorted({fy for (fy,) in SurveyCompanyData.query.with_entities(SurveyCompanyData.fiscal_year).distinct().all() if is_full_year(fy)}, reverse=True)
     fy = fiscal_year if fiscal_year in years else (years[0] if years else None)
     out = {'has_data': False, 'fiscal_year': fy, 'available_fiscal_years': years, 'companies_counted': 0,
            'average_score': 0, 'pooled_score': 0, 'grade': grade(0), 'best': None, 'lowest': None,
@@ -105,7 +105,9 @@ def missing_ranking():
     from models import Company
     from models_survey import SurveyCompanyData
     latest = {}
-    for r in SurveyCompanyData.query.order_by(SurveyCompanyData.fiscal_year.desc()).all():
+    from sqlalchemy import func
+    newest = SurveyCompanyData.query.with_entities(SurveyCompanyData.company_id.label("cid"), func.max(SurveyCompanyData.fiscal_year).label("fy")).group_by(SurveyCompanyData.company_id).subquery()
+    for r in SurveyCompanyData.query.join(newest, (SurveyCompanyData.company_id == newest.c.cid) & (SurveyCompanyData.fiscal_year == newest.c.fy)).all():
         latest.setdefault(r.company_id, r)
     out = []
     for c in Company.query.all():

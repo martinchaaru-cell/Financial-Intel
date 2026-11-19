@@ -70,7 +70,10 @@ def init(app, current_user):
 
     @app.context_processor
     def _site_context():
-        # Header, footer and coverage numbers for every website page (including the public company pages).
+        # The SPA renders its own header and needs no public coverage/contact queries.
+        if request.endpoint == 'app_page':
+            return {}
+        # Header, footer and coverage numbers for public templates.
         return {'user': current_user(), 'stats': site_stats(), 'contact': _contact(),
                 'self_registration': _self_registration_open()}
 

@@ -20,7 +20,8 @@ import uuid
 from datetime import datetime
 
 from flask import jsonify, request, send_file
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, func, case
+from sqlalchemy.orm import defer
 
 import manual_entry_form
 from approvals import queue_unless_super
@@ -203,23 +204,32 @@ def register(app, require_role, run_upload_job, get_batch_result, match_company)
     # ---------------------------------------------------------------- summary
     @route('/api/review/summary')
     def review_summary():
+        uploads = dict(db.session.query(UploadDraft.status, func.count()).group_by(UploadDraft.status).all())
+        ai = dict(db.session.query(AIExtractionItem.status, func.count()).group_by(AIExtractionItem.status).all())
         return jsonify({
-            'uploads_ready': UploadDraft.query.filter_by(status='ready').count(),
-            'uploads_processing': UploadDraft.query.filter_by(status='processing').count(),
-            'ai_ready': AIExtractionItem.query.filter_by(status='done').count(),
-            'ai_waiting': AIExtractionItem.query.filter(AIExtractionItem.status.in_(('pending', 'failed'))).count(),
+            'uploads_ready': uploads.get('ready', 0),
+            'uploads_processing': uploads.get('processing', 0),
+            'ai_ready': ai.get('done', 0),
+            'ai_waiting': ai.get('pending', 0) + ai.get('failed', 0),
             'conflicts_open': EvidenceConflict.query.filter(EvidenceConflict.resolution.is_(None)).count(),
             'issues_open': ExtractionIssue.query.filter_by(resolved=False).count()})
 
     # ---------------------------------------------------------------- drafts
     @route('/api/review/drafts')
     def review_drafts():
-        q = UploadDraft.query
+        q = UploadDraft.query.options(defer(UploadDraft.pdf_bytes), defer(UploadDraft.result_json))
         if request.args.get('status'):
             q = q.filter_by(status=request.args['status'])
         else:
             q = q.filter(UploadDraft.status.in_(('processing', 'ready', 'failed')))
-        return jsonify([d.to_dict() for d in q.order_by(UploadDraft.id.desc()).all()])
+        if 'page' not in request.args:
+            return jsonify([d.to_dict() for d in q.order_by(UploadDraft.id.desc()).all()])
+        page = max(1, request.args.get('page', 1, type=int))
+        limit = max(1, min(100, request.args.get('limit', 25, type=int)))
+        counts = dict(db.session.query(UploadDraft.status, func.count()).filter(UploadDraft.status.in_(('ready','processing','failed'))).group_by(UploadDraft.status).all())
+        total = sum(counts.values()) if not request.args.get('status') else q.count()
+        rows = q.order_by(UploadDraft.id.desc()).offset((page-1)*limit).limit(limit).all()
+        return jsonify(items=[d.to_dict() for d in rows], total=total, ready=counts.get('ready',0), processing=counts.get('processing',0), has_more=page*limit<total)
 
     @route('/api/review/drafts/<int:draft_id>')
     def review_draft_detail(draft_id):

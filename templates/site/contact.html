@@ -37,7 +37,7 @@
   <h1>Contact us</h1><p class="lead">Questions about our data, an Enterprise quote or an invoice? We're here to help.</p></div></div>
 <section>
   <div class="wrap">
-    <p class="cx-intro">Call, email or send a message using the form below. Our office is open {{ contact.hours }}.</p>
+    <p class="cx-intro">{% if contact.phone or contact.email %}Call, email or send a message using the form below.{% else %}Send a message using the form below.{% endif %} Our office is open {{ contact.hours }}.</p>
     <div class="cx-grid">
       <div class="cx-touch">
         <h2>Get in touch</h2>
@@ -52,21 +52,20 @@
       </div>
       <form class="cx-card cx-form" id="c-form" onsubmit="return sendEnquiry(event)">
         <h3>Send us a message</h3>
-        <div class="cx-two"><input id="c-name" placeholder="Your name" autocomplete="name" required aria-label="Your name">
-          <input id="c-email" type="email" placeholder="Email" autocomplete="email" required aria-label="Email"></div>
-        <div class="cx-two"><input id="c-org" placeholder="Organisation" autocomplete="organization" aria-label="Organisation">
-          <input id="c-phone" type="tel" placeholder="Phone (optional)" autocomplete="tel" aria-label="Phone"></div>
-        <select id="c-topic" aria-label="Topic"><option>Plans and pricing</option><option>Enterprise quote</option><option>Coverage and data</option><option>Invoicing and payment</option><option>Something else</option></select>
-        <textarea id="c-msg" placeholder="Message" required aria-label="Message"></textarea>
+        <div class="cx-two"><div><label for="c-name">Your name</label><input id="c-name" placeholder="Your name" autocomplete="name" required aria-label="Your name"></div>
+          <div><label for="c-email">Email</label><input id="c-email" type="email" placeholder="Email" autocomplete="email" required aria-label="Email"></div></div>
+        <div class="cx-two"><div><label for="c-org">Organisation (optional)</label><input id="c-org" placeholder="Organisation" autocomplete="organization" aria-label="Organisation"></div>
+          <div><label for="c-phone">Phone (optional)</label><input id="c-phone" type="tel" placeholder="Phone (optional)" autocomplete="tel" aria-label="Phone"></div></div>
+        <label for="c-topic">Topic</label><select id="c-topic" aria-label="Topic"><option>Plans and pricing</option><option>Enterprise quote</option><option>Coverage and data</option><option>Invoicing and payment</option><option>Something else</option></select>
+        <label for="c-msg">Message</label><textarea id="c-msg" placeholder="Message" required aria-label="Message"></textarea>
         <div class="hp" aria-hidden="true"><label for="c-web">Website</label><input id="c-web" tabindex="-1" autocomplete="off"></div>
         <div class="cerr" id="c-err"></div>
         <button class="btn btn-navy" id="c-btn" type="submit">Send message</button>
         <p class="cx-note">We reply within one working day, and send you a copy of your message.</p>
       </form>
-      <div class="cx-map">
+      <div class="cx-map"><h3>Our location</h3><p>{{ contact.address }}</p><small>Open Google Maps for directions.</small>
         <a class="open" href="https://www.google.com/maps/search/?api=1&query={{ map_q|urlencode }}" target="_blank" rel="noopener">Open in Maps <svg viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></a>
-        <iframe title="Map: {{ contact.address }}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
-          src="https://maps.google.com/maps?q={{ map_q|urlencode }}&z=15&output=embed"></iframe>
+        
       </div>
     </div>
   </div>

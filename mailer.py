@@ -35,20 +35,20 @@ def sender():
 
 def _wrap_html(body_html, footer):
     brand = html.escape((os.environ.get('BILLING_SELLER_NAME') or 'Remuneration Practice').strip())
-    return f"""<!doctype html><html><body style="margin:0;background:#f3f5fa;font-family:Segoe UI,Arial,sans-serif;color:#0f1b33;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f5fa;padding:28px 12px;"><tr><td align="center">
-<table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:14px;border:1px solid #e3e8f2;">
-<tr><td style="background:#047857;border-radius:14px 14px 0 0;padding:18px 26px;color:#ffffff;font-size:17px;font-weight:700;">{brand}</td></tr>
+    return f"""<!doctype html><html><body style="margin:0;background:#f4f7f5;font-family:Segoe UI,Arial,sans-serif;color:#172d26;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7f5;padding:28px 12px;"><tr><td align="center">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:14px;border:1px solid #dce9e2;">
+<tr><td style="background:#064e3b;border-radius:14px 14px 0 0;padding:18px 26px;color:#ffffff;font-size:17px;font-weight:700;">{brand}</td></tr>
 <tr><td style="padding:26px;font-size:15px;line-height:1.6;">{body_html}</td></tr>
-<tr><td style="padding:0 26px 22px;font-size:12px;color:#768299;line-height:1.5;">{footer}</td></tr>
+<tr><td style="padding:0 26px 22px;font-size:12px;color:#47695b;line-height:1.5;">{footer}</td></tr>
 </table></td></tr></table></body></html>"""
 
 
 def button(url, label):
     u = html.escape(url, quote=True)
-    return (f'<p style="margin:22px 0;"><a href="{u}" style="background:#047857;color:#ffffff;text-decoration:none;'
+    return (f'<p style="margin:22px 0;"><a href="{u}" style="background:#064e3b;color:#ffffff;text-decoration:none;'
             f'padding:12px 22px;border-radius:9px;font-weight:600;display:inline-block;">{html.escape(label)}</a></p>'
-            f'<p style="font-size:12px;color:#768299;">If the button does not work, copy this link into your browser:<br>'
+            f'<p style="font-size:12px;color:#47695b;">If the button does not work, copy this link into your browser:<br>'
             f'<span style="word-break:break-all;">{u}</span></p>')
 
 

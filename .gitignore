@@ -52,3 +52,6 @@ exports/
 .env.*
 !.env.example
 !coolify.env.example
+
+# Corporate logo assets are source, not generated screenshots.
+!static/icons/*.png

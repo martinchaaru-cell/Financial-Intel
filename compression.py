@@ -1,10 +1,9 @@
 """Gzip for text responses.
 
-The app page (templates/index.html) is ~780 KB of HTML + inline JavaScript. Flask does not compress by default, so every
-visitor downloaded all of it uncompressed before the page could start (its boot script is at the very end). Gzip makes it
-about 4x smaller. Streamed responses (the live-update SSE streams) and static files are left alone.
+Compress text and the two fixed JavaScript assets, while leaving SSE and downloads untouched.
 """
 import gzip
+from pathlib import Path
 
 _TYPES = ('text/html', 'text/css', 'text/plain', 'text/xml', 'application/json', 'application/javascript',
           'text/javascript', 'application/xml', 'image/svg+xml')
@@ -15,22 +14,32 @@ def register(app):
     @app.after_request
     def _gzip(resp):
         try:
-            if resp.status_code != 200 or resp.direct_passthrough or resp.is_streamed:
-                return resp                                   # SSE / file streams / non-200: untouched
             from flask import request
-            if 'gzip' not in request.headers.get('Accept-Encoding', '').lower():
+            versioned = request.path == '/static/app-runtime.js' and request.args.get('v') == 'perf2'
+            if versioned and resp.status_code in (200, 304):
+                resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            fixed_js = request.path in ('/static/app-runtime.js', '/static/vendors/chart.umd.min.js')
+            if resp.status_code != 200 or request.method == 'HEAD' or ((resp.direct_passthrough or resp.is_streamed) and not fixed_js):
                 return resp
             if (resp.mimetype or '') not in _TYPES or resp.headers.get('Content-Encoding'):
                 return resp
+            resp.vary.add('Accept-Encoding')
+            if request.accept_encodings['gzip'] <= 0 or not request.headers.get('Accept-Encoding'):
+                return resp
+            if fixed_js: resp.direct_passthrough = False
             data = resp.get_data()
             if len(data) < _MIN_BYTES:
                 return resp
-            resp.set_data(gzip.compress(data, 6))
+            if versioned:
+                from flask import current_app
+                packed = Path(current_app.static_folder) / 'app-runtime.js.gz'
+                resp.set_data(packed.read_bytes() if packed.exists() else gzip.compress(data, 3))
+            else:
+                resp.set_data(gzip.compress(data, 3))
             resp.headers['Content-Encoding'] = 'gzip'
             resp.headers['Content-Length'] = str(len(resp.get_data()))
-            resp.headers.add('Vary', 'Accept-Encoding')
-            if resp.headers.get('ETag'):
-                resp.headers['ETag'] = resp.headers['ETag'].replace('"', '-gz"', 1) if resp.headers['ETag'].startswith('"') else resp.headers['ETag']
+            tag, weak = resp.get_etag()
+            if tag: resp.set_etag(tag, weak=True)
         except Exception:
             pass                                              # never break a page because compression failed
         return resp

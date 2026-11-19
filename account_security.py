@@ -145,7 +145,7 @@ def init(app):
 
     def _me():
         uid = session.get('user_id')
-        return User.query.get(uid) if uid else None
+        return db.session.get(User, uid) if uid else None
 
     # ---- CSRF: refuse cross-site state-changing API calls -------------------------------------
     @app.before_request

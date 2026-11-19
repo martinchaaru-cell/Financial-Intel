@@ -755,10 +755,11 @@ def register(app, current_user, require_super_admin, activity_log=None, Activity
     # ---- one active sign-in: runs before every other check -------------------------------------
     def _single_session_check():
         g.session_replaced = False
+        if request.endpoint == 'static': return None
         uid = session.get('user_id')
         if not uid:
             return None
-        u = db.session.get(User, uid)
+        u = current_user()
         if u is None or not single_session_applies(u) or not u.session_token:
             return None
         if session.get('sid') != u.session_token:
