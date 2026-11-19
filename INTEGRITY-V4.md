@@ -1,0 +1,6 @@
+# Financial Integrity V4 — conservative evidence and audit
+Cumulative over V3. No database migration or historical write is performed by this release. V3's missing-unit whole-currency display remains provisional. Historical audit flags require checking the original source; do not blindly multiply Bamburi or any other company.
+
+New header detector distinguishes explicit currency headers, rejects conflicts, and records page evidence when all pay pages agree and the existing pay fields are empty. A page is not a reliable boundary for every table: mixed or incomplete headers require human review. The PDF intelligence extractor also abstains when conflicting headers are detected. Existing period-wide unit model remains; disparate tables are not automatically normalized to one scale, and the existing manual review workflow is not a new approval queue. No full cross-export integration or production database test was possible.
+
+Run `python -m unittest test_monetary_integrity test_pay_evidence` then `python audit_remuneration.py > remuneration-audit-v4.csv`. Audit is read-only; includes source document ID, page, unit evidence, and possible total mismatches (same page/table kind only, not proof of completeness). Keep CSV private. Confirm source table scope and units before adjusting a period via existing review tools. Back up the database before any manual changes.

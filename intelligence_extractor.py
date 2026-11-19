@@ -173,6 +173,13 @@ def detect_document_unit(chunks, scope: str = 'document'):
     clear unit marker - the caller should then leave the field NULL
     (falling back to the company's headline `unit`) rather than guess.
     """
+    if scope == 'remuneration':
+        from pay_evidence import resolve_headers
+        relevant = [c for c in chunks if _REMUNERATION_SCOPE_RE.search(c.heading or '') or _REMUNERATION_SCOPE_RE.search((c.text or '')[:200])]
+        unit, hits = resolve_headers([c.text for c in relevant])
+        if not unit:
+            return None, 0.0, None
+        return unit, 0.85, 'Remuneration header: ' + ' | '.join(dict.fromkeys(line for _, line in hits))[:1000]
     marker_counts = {u: 0 for u in _UNIT_MARKERS}
     scanned_any = False
     for chunk in chunks:

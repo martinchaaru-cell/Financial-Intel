@@ -2327,14 +2327,8 @@ def _detect_pay_table_unit(pdf_bytes, page):
     """'units' | 'thousands' | 'millions' for the page a director-pay table sits on, from its column
     headers (Shs, Shs'000, KShs million); None when the page does not say."""
     text = dict(_pypdf_page_texts_cached(pdf_bytes) or []).get(page, '')
-    q = "['\u2018\u2019`]"
-    if re.search(r"(?:shs?|kshs?|kes|ksh)\.?\s*" + q + r"?\s*(?:000|thousand)|in\s+thousands", text, re.I):
-        return 'thousands'                                       # Shs'000, KShs. ‘000’ (KCB) ...
-    if re.search(r"(?:shs?|kshs?|kes|ksh)\.?\s*" + q + r"?\s*(?:million|mn\b|m\b)|in\s+millions", text, re.I):
-        return 'millions'
-    if re.search(r"\b(?:shs?|kshs?|kes|ksh)\b", text, re.I):
-        return 'units'
-    return None
+    from pay_evidence import resolve_headers
+    return resolve_headers([text])[0]
 
 
 # Prefixes of field_sources text this module writes itself. A survey field
@@ -2632,9 +2626,16 @@ def _sync_board_data_from_pdf(company_id, fiscal_year, source_document_id, pdf_b
         extract_committee_numbered_members, extract_ned_policy, extract_ceo_pay
     if period is not None and not row.director_figures_unit:
         pay_pages = [r.page for r in DirectorRemunerationRow.query.filter_by(period_id=period.id).all() if r.page]
-        unit = _detect_pay_table_unit(pdf_bytes, pay_pages[0]) if pay_pages else None
-        if unit:
+        from pay_evidence import resolve_headers
+        page_text = dict(_pypdf_page_texts_cached(pdf_bytes) or [])
+        texts = [page_text.get(p, '') for p in sorted(set(pay_pages))]
+        unit, hits = resolve_headers(texts)
+        # Do not reinterpret manual amounts or previously stored policy figures.
+        pay_rows = DirectorRemunerationRow.query.filter_by(period_id=period.id).all()
+        if unit and pay_rows and all(r.source_document_id == source_document_id and r.page and r.table_kind != 'manual' for r in pay_rows) and all(resolve_headers([t])[0] == unit for t in texts) and not any(getattr(row, c) is not None for c in _DYNAMIC_MONEY_FIELDS):
             row.director_figures_unit = unit
+            sources['director_figures_unit'] = 'from the director pay table: ' + ' | '.join(dict.fromkeys(f'page {p}: {line}' for p in sorted(set(pay_pages)) for _, line in resolve_headers([page_text.get(p, '')])[1]))[:1500]
+            confidence['director_figures_unit'] = 0.85
     to_pay_unit = {'units': 1.0, 'thousands': 1e-3, 'millions': 1e-6}.get(row.director_figures_unit or 'units', 1.0)
 
     # ---- NED fee policy and CEO pay from the text (rules first; the AI only sees what is still empty)
