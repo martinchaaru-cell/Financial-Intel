@@ -32,10 +32,10 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 )
 
-# FinSight palette, adapted for print (white background, same accent hues
+# The Remuneration Practice palette, adapted for print (white background, same accent hues
 # used on-screen in templates/index.html's :root custom properties)
-NAVY = colors.HexColor('#0F2B5B')
-BLUE = colors.HexColor('#1E6DFF')
+NAVY = colors.HexColor('#104C38')
+BLUE = colors.HexColor('#16865F')
 GREEN = colors.HexColor('#1FA971')
 AMBER = colors.HexColor('#B8790C')
 PURPLE = colors.HexColor('#7C5CD6')
@@ -174,12 +174,12 @@ def _footer(canvas, doc):
     canvas.saveState()
     canvas.setFont('Helvetica', 7.5)
     canvas.setFillColor(TEXT_FAINT)
-    canvas.drawString(20 * mm, 12 * mm, 'FinSight — Board Remuneration Survey')
+    canvas.drawString(20 * mm, 12 * mm, 'The Remuneration Practice — Board Remuneration Survey')
     canvas.drawRightString(190 * mm, 12 * mm, f'Page {doc.page}')
     canvas.restoreState()
 
 
-def build_survey_pdf(overview: dict) -> BytesIO:
+def build_survey_pdf(overview: dict, company_details=None) -> BytesIO:
     """overview is the dict returned by survey_aggregate.build_survey_overview()
     with has_data=True. Returns an in-memory PDF buffer."""
     styles = _styles()
@@ -208,7 +208,7 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(Paragraph(f'All amounts are written in full, in {currency}', styles['Body']))
     story.append(Spacer(1, 6))
     story.append(Paragraph(
-        f'Generated {datetime.utcnow().strftime("%d %B %Y")} — built from company filings uploaded to FinSight. '
+        f'Generated {datetime.utcnow().strftime("%d %B %Y")} — built from company filings uploaded to The Remuneration Practice. '
         f'A figure is shown as an average only once at least {min_n} companies have supplied it; otherwise it is '
         f'marked "{NOT_ENOUGH_DATA}" rather than estimated.',
         styles['Faint']
@@ -438,7 +438,7 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     story.append(Paragraph('10. Appendix — Companies Surveyed', styles['H2']))
     story.append(Paragraph(
         f'This survey draws on {n} compan{"y" if n == 1 else "ies"}&rsquo;{"s" if n == 1 else ""} own filings, '
-        f'uploaded individually to FinSight. Unlike a single aggregate survey document, this list — and every '
+        f'uploaded individually to The Remuneration Practice. Unlike a single aggregate survey document, this list — and every '
         f'figure above — grows as more companies are added, with no need to re-upload anything already on file.',
         styles['Body']
     ))
@@ -468,6 +468,10 @@ def build_survey_pdf(overview: dict) -> BytesIO:
     ]))
     story.append(company_table)
 
+    from comparison_reports import append_details
+    story.append(PageBreak())
+    append_details(story, {'Complete survey data appendix': overview})
+    if company_details: append_details(story, company_details)
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     buf.seek(0)
     return buf

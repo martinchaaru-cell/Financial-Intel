@@ -42,10 +42,10 @@ from monetary_units import pay_scale as remuneration_scale
 APP_NAME = 'Remuneration Practice'
 APP_TAGLINE = 'Financial Intelligence'
 
-NAVY = colors.HexColor('#0B1F44')
-NAVY_2 = colors.HexColor('#12326B')
-BLUE = colors.HexColor('#2F6BFF')
-SKY = colors.HexColor('#8FB4FF')
+NAVY = colors.HexColor('#104C38')
+NAVY_2 = colors.HexColor('#1B6850')
+BLUE = colors.HexColor('#16865F')
+SKY = colors.HexColor('#9DE0C3')
 GREEN = colors.HexColor('#1FA971')
 AMBER = colors.HexColor('#C98A0B')
 PURPLE = colors.HexColor('#7C5CD6')
@@ -53,8 +53,8 @@ RED = colors.HexColor('#D24B4B')
 INK = colors.HexColor('#1E2635')
 DIM = colors.HexColor('#566074')
 FAINT = colors.HexColor('#8B93A8')
-PANEL = colors.HexColor('#F3F6FC')
-RULE = colors.HexColor('#DCE3F0')
+PANEL = colors.HexColor('#EDF5F0')
+RULE = colors.HexColor('#D6E6DC')
 
 PAGE_W, PAGE_H = A4
 LM = RM = 20 * mm
@@ -173,15 +173,8 @@ def _relative(value, ref):
 def _draw_logo(c, x, y, size):
     """The app icon (same artwork as the favicon in templates/index.html): dark rounded tile with
     three rising blue bars. x,y = bottom-left."""
-    c.saveState()
-    c.setFillColor(colors.HexColor('#0A0F1C'))
-    c.roundRect(x, y, size, size, size * 0.22, stroke=0, fill=1)
-    c.setFillColor(colors.HexColor('#5B9BFF'))
-    # favicon is a 100x100 box; bars at x=20/43/66 (w14), bottoms at y=72, tops at 52/34/22
-    for bx, top in ((20, 52), (43, 34), (66, 22)):
-        c.rect(x + bx / 100 * size, y + (100 - 72) / 100 * size,
-               14 / 100 * size, (72 - top) / 100 * size, stroke=0, fill=1)
-    c.restoreState()
+    from pathlib import Path
+    c.drawImage(str(Path(__file__).parent / 'static/icons/icon-192.png'), x, y, size, size, mask='auto')
 
 
 def _make_page_callbacks(meta, styles):
@@ -696,7 +689,7 @@ def _key_findings_combined(st, overview, rows, cur, fy, n, pscale):
     return _section(st, 'Summary', 'Key findings') + _bullets(st, out)
 
 # ============================================================================ COMBINED REPORT
-def build_combined_report(overview, rows, trends):
+def build_combined_report(overview, rows, trends, company_details=None):
     """overview = survey_aggregate.build_survey_overview(fy) (has_data True);
     rows = build_company_rows(fy)['rows']; trends = build_historical_trends()."""
     st = _styles()
@@ -1240,6 +1233,10 @@ def build_combined_report(overview, rows, trends):
                  _fn(by_id.get(c['name'], {}).get('board_size')), _fn(((by_id.get(c['name'], {}).get('governance')) or {}).get('score'))] for c in cos],
                [58 * mm, 22 * mm, 50 * mm, 20 * mm, CONTENT_W - 150 * mm], right_cols=(3, 4))
 
+    from comparison_reports import append_details
+    S.append(PageBreak())
+    append_details(S, {'Complete survey data appendix': overview, 'Company-level benchmark records': rows})
+    if company_details: append_details(S, company_details)
     doc.build(S, onFirstPage=cover, onLaterPages=later)
     buf.seek(0)
     return buf
@@ -1683,7 +1680,7 @@ def build_company_report(payload, overview, rows):
     S += _section(st, 'Method', 'About this report', 'Where the figures come from, and what they leave out.')
     filled = sum(1 for f_ in QUALITY_FIELDS if sv.get(f_) is not None)
     t = [f"This review is built from {_e(name)}'s own {_e(fy)} filing" + (f" ({_e(sv['source_filename'])})" if sv.get('source_filename') else '')
-         + f". It captured {filled} of {len(QUALITY_FIELDS)} core survey fields; anything the filing did not state is omitted here rather than estimated. Amounts are written in full, in {_e(cur)}."]
+         + f". It captured {filled} of {len(QUALITY_FIELDS)} core survey fields; unavailable fields are identified in the detailed appendix rather than estimated. Amounts are written in full, in {_e(cur)}."]
     review = sv.get('field_review_status') or {}
     appr = sum(1 for v in review.values() if v == 'approved')
     if appr:
@@ -1694,6 +1691,9 @@ def build_company_report(payload, overview, rows):
     t.append("Comparisons with the survey average are shown only where at least two companies supplied the figure. The governance score is illustrative and not a regulatory determination.")
     S += _paras(st, t)
 
+    from comparison_reports import append_details, detail_rows
+    S.append(PageBreak())
+    append_details(S, detail_rows(payload))
     doc.build(S, onFirstPage=cover, onLaterPages=later)
     buf.seek(0)
     return buf

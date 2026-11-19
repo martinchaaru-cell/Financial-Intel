@@ -2206,6 +2206,7 @@ async function loadAnalyticsTrends(){
 // added 2026-09-13, empty until populated). Defaults to whichever
 // company /api/survey-report/default-company scores as most complete.
 const SR_TABS = [
+  {id:'multi-year', label:'Financial Year Comparison'},
   {id:'company-overview', label:'Company Overview'},
   {id:'board-composition', label:'Board Composition'},
   {id:'directors-register', label:"Directors' Register"},
@@ -2483,6 +2484,7 @@ function renderSRTabBody(){
   const body = document.getElementById('srTabBody');
   if (!body) return;
   const data = srDataCache;
+  if (srTab === 'multi-year') return rpCompare(body,'company',data.available_survey_years,srCompanyId);
   if (srTab === 'company-overview') body.innerHTML = srCompanyOverviewTab(data);
   else if (srTab === 'board-composition') {
     body.innerHTML = srBoardCompositionTab(data);
@@ -3843,6 +3845,7 @@ function srDrawDataQualityTrend(data){
 // has data, so trend lines are real multi-year series, never
 // interpolated for a year with nothing on file).
 const IL_TABS = [
+  {id:'multi-year', label:'Comparative Intelligence'},
   {id:'benchmarking', label:'Benchmarking'},
   {id:'survey-insights', label:'Survey Insights'},
   {id:'historical-trends', label:'Historical Trends'},
@@ -3911,6 +3914,7 @@ async function renderILTabBody(){
   const body = document.getElementById('ilTabBody');
   if (!body) return;
   body.innerHTML = `<div class="empty">Loading\u2026</div>`;
+  if (ilTab === 'multi-year') return rpCompare(body,'intelligence',ilCompaniesCache.available_fiscal_years,null,ilCompaniesCache.rows);
   if (ilTab === 'benchmarking') body.innerHTML = ilBenchmarkingTab();
   else if (ilTab === 'survey-insights') body.innerHTML = ilSurveyInsightsTab();
   else if (ilTab === 'historical-trends') body.innerHTML = await ilHistoricalTrendsTab();
@@ -4725,6 +4729,7 @@ function ilGovernanceKeyInsights(withIndep, withGender, indepCompliant, genderCo
 // beyond the ones actually on file) are shown as "Not available" rather
 // than the design mockup's illustrative numbers.
 const SA_TABS = [
+  {id:'multi-year', label:'Multi-Year Survey Comparison'},
   {id:'executive-summary', label:'Executive Summary'},
   {id:'board-overview', label:'Board Overview'},
   {id:'directors-remuneration', label:"Directors' Remuneration"},
@@ -4839,6 +4844,7 @@ function renderSATabBody(){
   const body = document.getElementById('saTabBody');
   if (!body) return;
   const ov = saOverviewCache;
+  if (saTab === 'multi-year') return rpCompare(body,'survey',ov.available_fiscal_years);
   if (saTab === 'executive-summary') body.innerHTML = saExecutiveSummaryTab(ov);
   else if (saTab === 'board-overview') body.innerHTML = saBoardOverviewTab(ov);
   else if (saTab === 'directors-remuneration') body.innerHTML = saDirectorsRemunerationTab(ov);
@@ -9791,3 +9797,43 @@ function showToast(text){
 }
 
 window.addEventListener('load', () => setTimeout(connectLiveUpdates, 3000), {once:true});
+
+// V5: comparison requests are opt-in, never part of initial navigation.
+function rpCompare(body, scope, years, companyId, companyRows=[]){
+  const options = [...new Set(fullYears(years))].filter(y=>/^FY\d{4}$/.test(y)).sort().reverse();
+  body.innerHTML = `<div class="panel"><h3>${scope==='company'?'Financial Year Comparison':scope==='survey'?'Multi-Year Survey Comparison':'Comparative Intelligence'}</h3><p>Choose 2–10 financial years. Missing figures are not zero.</p><div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">${options.map((y,i)=>`<label><input type="checkbox" data-year="${y}" ${i<2?'checked':''}> ${escapeHtml(y)}</label>`).join('')}</div><div style="display:flex;flex-wrap:wrap;gap:10px;margin:16px 0">${scope!=='company'?'<select data-cohort aria-label="Company cohort"><option value="all">All reporting companies</option><option value="matched">Same companies in all selected years</option></select>':''}${scope==='intelligence'?`<select data-sector aria-label="Sector"><option value="">All sectors</option>${[...new Set(companyRows.map(r=>r.sector).filter(Boolean))].sort().map(s=>`<option>${escapeHtml(s)}</option>`).join('')}</select><select data-companies multiple aria-label="Companies (optional)" title="Ctrl-click to select multiple companies">${companyRows.map(r=>`<option value="${Number(r.company_id)}">${escapeHtml(r.name)}</option>`).join('')}</select>`:''}<button class="btn" data-run>Compare years</button><select data-format aria-label="Export format"><option>pdf</option><option>docx</option><option>xlsx</option></select><select data-detail aria-label="Report detail"><option value="full">Comprehensive</option><option value="summary">Comparison matrix only</option></select><button class="btn" data-export>Download comparison</button></div><div data-result></div></div>`;
+  const result=body.querySelector('[data-result]'); let seq=0;
+  function query(){
+    const selected=[...body.querySelectorAll('[data-year]:checked')].map(e=>e.dataset.year);
+    if(selected.length<2||selected.length>10){showToast('Select 2–10 financial years.');return null;}
+    const q=new URLSearchParams(); selected.forEach(y=>q.append('year',y));
+    if(companyId)q.append('company_id',companyId);
+    const cohort=body.querySelector('[data-cohort]'); if(cohort)q.set('cohort',cohort.value);
+    const sector=body.querySelector('[data-sector]'); if(sector&&sector.value)q.set('sector',sector.value);
+    const cs=body.querySelector('[data-companies]'); if(cs)[...cs.selectedOptions].forEach(o=>q.append('company_id',o.value));
+    q.set('detail',body.querySelector('[data-detail]').value);return q;
+  }
+  const f=v=>v===null||v===undefined?'Not available':typeof v==='number'?v.toLocaleString(undefined,{maximumFractionDigits:2}):typeof v==='boolean'?(v?'Yes':'No'):String(v);
+  body.querySelector('[data-run]').onclick=async()=>{
+    const q=query();if(!q)return;const token=++seq;result.textContent='Loading comparison…';
+    try{const res=await fetch('/api/comparisons/'+scope+'?'+q);const d=await res.json();if(token!==seq||!result.isConnected)return;if(!res.ok)throw Error(d.error||'Comparison failed');
+      result.innerHTML=`<h3>${escapeHtml(d.title)}</h3><p>${d.years.map(escapeHtml).join(' · ')}</p><div data-advanced></div><input data-filter placeholder="Filter comparison metrics" aria-label="Filter comparison metrics"><div style="overflow:auto;max-height:620px"><table style="width:100%;border-collapse:collapse"><thead><tr>${['Metric',...d.years,'Change','Change %','CAGR %'].map(v=>`<th style="padding:9px;text-align:left;position:sticky;top:0;background:var(--bg-panel,#172a22)">${escapeHtml(v)}</th>`).join('')}</tr></thead><tbody></tbody></table></div><details><summary>Methodology and coverage</summary>${Object.entries(d.methodology).map(([k,v])=>`<p><strong>${escapeHtml(k)}:</strong> ${escapeHtml(v)}</p>`).join('')}</details>`;
+      const tb=result.querySelector('tbody');const draw=()=>{const text=result.querySelector('[data-filter]').value.toLowerCase();tb.innerHTML=d.rows.filter(r=>r.metric.toLowerCase().includes(text)).map(r=>`<tr>${[r.metric.replaceAll('_',' '),...r.values,r.change,r.change_pct==null?null:f(r.change_pct)+'%',r.cagr==null?null:f(r.cagr)+'%'].map(v=>`<td style="padding:8px;border-bottom:1px solid var(--border,#294337)">${escapeHtml(f(v))}</td>`).join('')}</tr>`).join('');};result.querySelector('[data-filter]').oninput=draw;draw(); rpAdvanced(result.querySelector('[data-advanced]'),d,f);
+    }catch(e){if(token===seq&&result.isConnected)result.textContent=e.message;}
+  };
+  body.querySelector('[data-export]').onclick=async()=>{
+    const q=query();if(!q)return;const btn=body.querySelector('[data-export]');btn.disabled=true;const ext=body.querySelector('[data-format]').value;q.set('format',ext);
+    try{const base='/api/comparisons/'+scope;const res=await fetch(base+'/jobs?'+q,{method:'POST',credentials:'same-origin'});const d=await res.json();if(!res.ok)throw Error(d.error||'Queue failed');
+      for(let i=0;i<300;i++){await new Promise(r=>setTimeout(r,2000));const rr=await fetch(base+'/jobs/'+encodeURIComponent(d.job),{cache:'no-store'});const j=await rr.json();if(!rr.ok||j.status==='failed')throw Error(j.error||'Report generation failed');btn.textContent='Report: '+j.status;if(j.status==='ready'){await docDownload(base+'/export.'+ext+'?job='+encodeURIComponent(d.job));return;}}
+      throw Error('Report did not finish within 10 minutes.');
+    }catch(e){showToast(e.message);}finally{btn.disabled=false;btn.textContent='Download comparison';}
+  };
+}
+function rpAdvanced(el,d,f){
+  const metrics=d.rows.filter(r=>r.values.some(v=>typeof v==='number'&&Number.isFinite(v))&& !r.metric.includes('Director register'));
+  el.innerHTML=`<div class="panel" style="margin:12px 0"><label>Historical trend <select data-trend aria-label="Trend metric"></select></label><div data-plot></div></div><details><summary>Historical ranking movements (${(d.rankings||[]).length})</summary><div style="overflow:auto;max-height:350px" data-ranks></div></details><details><summary>Director identity candidates (${(d.director_matches||[]).length})</summary><div data-identities></div></details>`;
+  const sel=el.querySelector('[data-trend]');metrics.forEach((r,i)=>sel.add(new Option(r.metric.replaceAll('_',' '),i)));
+  const plot=()=>{const r=metrics[Number(sel.value)];const p=el.querySelector('[data-plot]');if(!r){p.textContent='No numerical data';return;}const vs=r.values.filter(v=>typeof v==='number'&&Number.isFinite(v));let lo=Math.min(...vs,0),hi=Math.max(...vs,0);if(hi===lo)hi=lo+1;const x=i=>65+i*650/Math.max(1,d.years.length-1),y=v=>25+(hi-v)*150/(hi-lo);let lines='';r.values.forEach((v,i)=>{if(typeof v!=='number'||!Number.isFinite(v))return;if(i&&typeof r.values[i-1]==='number'&&Number.isFinite(r.values[i-1]))lines+=`<line x1="${x(i-1)}" y1="${y(r.values[i-1])}" x2="${x(i)}" y2="${y(v)}" stroke="#48c89e" stroke-width="3"/>`;lines+=`<circle cx="${x(i)}" cy="${y(v)}" r="5" fill="#48c89e"><title>${escapeHtml(d.years[i]+': '+f(v))}</title></circle>`;});p.innerHTML=`<svg viewBox="0 0 780 220" role="img" aria-label="Historical trend" style="width:100%;max-height:280px"><text x="4" y="20" fill="currentColor" font-size="12">${escapeHtml(f(hi))}</text><text x="4" y="185" fill="currentColor" font-size="12">${escapeHtml(f(lo))}</text>${lines}${d.years.map((yr,i)=>`<text x="${x(i)}" y="205" text-anchor="middle" fill="currentColor" font-size="12">${escapeHtml(yr)}</text>`).join('')}</svg>`;};sel.onchange=plot;plot();
+  el.querySelector('[data-ranks]').innerHTML=(d.rankings||[]).map(r=>`<p>${escapeHtml(r.company+' · '+r.metric+' · '+(r.currency||'')+' · '+d.years.map(y=>y+': '+f(r.ranks[y])).join(' | ')+' · movement '+f(r.movement))}</p>`).join('');
+  el.querySelector('[data-identities]').innerHTML=(d.director_matches||[]).map(r=>`<p>${escapeHtml(r.normalized_name+' · '+r.table_kind+' · '+r.status+' · '+Object.entries(r.years).map(([y,v])=>y+': '+v.filed_name+' ('+v.role+')').join(' | '))}</p>`).join('');
+}

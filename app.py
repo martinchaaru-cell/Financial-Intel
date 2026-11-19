@@ -5056,13 +5056,13 @@ def export_survey_pdf():
         for fy in _survey_years_on_file():
             ov = build_survey_overview(fy)
             if ov.get('has_data'):
-                files.append((f"Board_Remuneration_Survey_{_safe_filename(fy)}.pdf", build_survey_pdf(ov).getvalue()))
+                files.append((f"Board_Remuneration_Survey_{_safe_filename(fy)}.pdf", build_survey_pdf(ov, _director_appendix(fy,build_company_rows(fy).get('rows',[]))).getvalue()))
         return _zip_download(files, 'Board_Remuneration_Survey_All_Years.zip')
     overview = build_survey_overview(request.args.get('fiscal_year'))
     if not overview.get('has_data'):
         return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
 
-    buf = build_survey_pdf(overview)
+    buf = build_survey_pdf(overview, _director_appendix(overview['fiscal_year'],build_company_rows(overview['fiscal_year']).get('rows',[])))
     filename = f"Board_Remuneration_Survey_{_safe_filename(overview['fiscal_year'])}.pdf"
     return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
@@ -5079,14 +5079,14 @@ def export_combined_report_pdf():
             ov = build_survey_overview(y)
             if not ov.get('has_data'):
                 continue
-            buf = build_combined_report(ov, build_company_rows(y).get('rows', []), trends)
+            buf = build_combined_report(ov, build_company_rows(y).get('rows', []), trends, _director_appendix(y,build_company_rows(y).get('rows',[])))
             files.append((f"Board_Remuneration_and_Governance_Report_{_safe_filename(y)}.pdf", buf.getvalue()))
         return _zip_download(files, 'Board_Remuneration_and_Governance_Reports_All_Years.zip')
     overview = build_survey_overview(fy)
     if not overview.get('has_data'):
         return jsonify({'error': 'No survey data on file for this fiscal year yet.'}), 404
     rows = build_company_rows(overview['fiscal_year']).get('rows', [])
-    buf = build_combined_report(overview, rows, build_historical_trends())
+    buf = build_combined_report(overview, rows, build_historical_trends(), _director_appendix(overview['fiscal_year'],rows))
     filename = f"Board_Remuneration_and_Governance_Report_{_safe_filename(overview['fiscal_year'])}.pdf"
     return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
@@ -5138,6 +5138,135 @@ def intelligence_layer_historical_trends():
     has data - real multi-year series for the Historical Trends tab, no
     interpolation for years with nothing on file."""
     return jsonify(build_historical_trends())
+
+
+# V6: complete appendices, assembled only for requested exports.
+def _director_appendix(year, rows):
+    from comparison_reports import detail_rows
+    return {f"{r['name']} (#{r['company_id']})": detail_rows(company_survey_report(r['company_id'], fiscal_year=year).get_json()) for r in rows}
+
+from report_jobs import ReportJobs
+_comparison_jobs = ReportJobs()
+
+@app.route('/api/comparisons/<scope>/jobs', methods=['POST'])
+@require_role('admin', 'user')
+def queue_comparison(scope):
+    import comparison_reports as cr
+    ext=request.args.get('format')
+    if scope not in ('company','survey','intelligence') or ext not in ('pdf','docx','xlsx'):
+        return jsonify({'error':'Invalid report scope or format'}),400
+    try: cr.years_arg(request.args.getlist('year'))
+    except ValueError as e: return jsonify({'error':str(e)}),400
+    uid=current_user().id
+    from urllib.parse import urlencode
+    query=urlencode([(k,v) for k,v in request.args.items(multi=True) if k in ('year','company_id','cohort','sector','detail')])
+    def work():
+        with app.test_request_context('/api/comparisons/'+scope+'/export.'+ext+'?'+query):
+            session['user_id']=uid
+            response=app.make_response(multi_year_comparison(scope,ext))
+            if response.status_code!=200: raise ValueError('Report generation failed')
+            response.direct_passthrough=False
+            try: return response.get_data(),response.headers.get('Content-Disposition'),response.mimetype
+            finally: response.close()
+    try: key=_comparison_jobs.submit(uid,scope,ext,work)
+    except ValueError as e: return jsonify({'error':str(e)}),429
+    return jsonify({'job':key}),202
+
+@app.route('/api/comparisons/<scope>/jobs/<key>')
+@require_role('admin','user')
+def comparison_job_status(scope,key):
+    j=_comparison_jobs.get(key,current_user().id,scope)
+    if not j: return jsonify({'error':'Report expired or unavailable'}),404
+    return jsonify({'status':j['status'],'format':j['extension']})
+
+# V5 comparisons use the same read-only source builders as the existing pages.
+@app.route('/api/comparisons/<scope>', methods=['GET'])
+@app.route('/api/comparisons/<scope>/export.<extension>', methods=['GET'])
+@require_role('admin', 'user')
+def multi_year_comparison(scope, extension=None):
+    import comparison_reports as cr
+    from survey_aggregate import PAY_FIELDS
+    if scope not in ('company', 'survey', 'intelligence') or extension not in (None, 'pdf', 'docx', 'xlsx'):
+        return jsonify({'error': 'Unknown comparison or format.'}), 404
+    from advanced_comparison import enrich, align_directors, rankings
+    if extension and request.args.get('job'):
+        j=_comparison_jobs.get(request.args['job'],current_user().id,scope,extension)
+        if not j or j['status']!='ready': return jsonify({'error':'Report unavailable'}),404
+        response=send_file(io.BytesIO(j['data']),mimetype=j['mime'])
+        response.headers['Content-Disposition']=j['name']
+        _comparison_jobs.remove(request.args['job'])
+        return response
+    try:
+        years = cr.years_arg(request.args.getlist('year'))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    details, series, payloads, rank_rows = {}, {}, {}, {}
+    methodology = {'Missing values': 'Not available means no usable value on file, not zero.',
+                   'Change': 'Last selected year minus first selected year; percentage uses absolute first-year denominator. Currency-specific fields are not compared across currencies.',
+                   'Pay': 'Independent director pay unit; missing unit follows the existing whole-currency policy and remains subject to source verification.'}
+    if scope == 'company':
+        cid = request.args.get('company_id', type=int)
+        if not cid:
+            return jsonify({'error': 'Select a company.'}), 400
+        company = Company.query.get_or_404(cid)
+        title = company.name + ' — financial year comparison'
+        for y in years:
+            payload = company_survey_report(cid, fiscal_year=y).get_json()
+            payloads[y] = payload
+            series[y] = cr.company_metrics(payload, PAY_FIELDS, tab_modules.FIELD_KIND)
+            if extension and request.args.get('detail') != 'summary': details[y] = cr.detail_rows(payload)
+    else:
+        title = 'Multi-year survey comparison' if scope == 'survey' else 'Comparative intelligence'
+        pairs = db.session.query(SurveyCompanyData, Company).join(Company, SurveyCompanyData.company_id == Company.id).filter(SurveyCompanyData.fiscal_year.in_(years)).all()
+        groups = {y: [p for p in pairs if p[0].fiscal_year == y] for y in years}
+        matched = request.args.get('cohort') == 'matched'
+        common = set.intersection(*[{p[0].company_id for p in groups[y]} for y in years])
+        sector = request.args.get('sector', '').strip()
+        ids = request.args.getlist('company_id', type=int)
+        if len(ids) > 60: return jsonify({'error': 'Select at most 60 companies.'}), 400
+        methodology['Cohort'] = 'Same companies in all selected years' if matched else 'All reporting companies in each year'
+        methodology['Coverage'] = 'Per-metric disclosure counts can still vary; monetary survey statistics retain the source overview scale and currency.'
+        for y in years:
+            selected = [p for p in groups[y] if (not matched or p[0].company_id in common) and (not sector or (p[0].sector or p[1].sector) == sector) and (not ids or p[0].company_id in ids)]
+            ov = build_survey_overview(y, years=years, pairs=selected)
+            rows = build_company_rows(y, pairs=selected).get('rows', [])
+            rank_rows[y] = rows
+            vals = {'Companies surveyed': len(selected)}
+            for section in ('executive_summary','board_overview','directors_remuneration','committee_remuneration','ceo_remuneration','extended','ned_benefits_summary'):
+                for k,v in cr.flatten(ov.get(section,{}),section):
+                    if not isinstance(v,(int,float)) and v is not None: continue
+                    if any(part.isdigit() for part in k.split(' / ')): continue
+                    vals[k + ' [' + str(ov.get('currency','')) + '; ' + str(ov.get('unit','')) + ' headline]'] = v
+            for sec in ov.get('sector_comparison',[]):
+                for k,v in sec.items():
+                    if k != 'sector': vals[f"Sector / {sec['sector']} / {k} [{ov.get('currency','')}]"] = v
+            if scope == 'intelligence':
+                for row in rows:
+                    for k,v in cr.flatten(row):
+                        if k not in ('fiscal_year','company_id','name'):
+                            vals[f"{row['name']} (#{row['company_id']}) / {k} [{row.get('currency','')}]" ] = v
+            series[y] = vals
+            if extension and request.args.get('detail') != 'summary': details[y] = {'Survey overview':ov, 'Company intelligence rows':rows, 'Individual company records':_director_appendix(y,rows)}
+    methodology['CAGR']='Annualized endpoint growth over actual fiscal-year interval; undefined for nonpositive starting values or negative ending values.'
+    methodology['Ranking']='Descending disclosed values within selected cohort and currency; ties share rank, positive movement means improved rank.'
+    identities=align_directors(payloads)
+    # Candidate-aligned pay series supplement, never replace, the original filed-name rows.
+    from advanced_comparison import name_key
+    from monetary_units import pay_scale
+    for candidate in identities:
+        for y in candidate['years']:
+            p=payloads[y]; sv=p.get('survey') or {}
+            r=next(r for r in p.get('director_rows',[]) if name_key(r.get('director_name'))==candidate['normalized_name'] and str(r.get('table_kind') or '')==candidate['table_kind'])
+            for field,v in {'total':r.get('total'),**(r.get('components') or {})}.items():
+                key=f"Candidate director / {candidate['normalized_name']} / {candidate['table_kind']} / {field} ({sv.get('currency') or 'KES'})"
+                series[y][key]=v*pay_scale(sv.get('director_figures_unit')) if isinstance(v,(int,float)) else None
+    ranks=rankings(rank_rows)
+    data = {'title':title,'years':years,'rows':enrich(cr.matrix(series),years),'methodology':methodology,'details':details,'rankings':ranks,'director_matches':identities}
+    if extension:
+        types={'pdf':'application/pdf','docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}
+        return send_file(cr.export(data, extension, request.args.get('detail') != 'summary'), as_attachment=True, download_name=f'{scope}_comparison_{years[0]}_{years[-1]}.{extension}', mimetype=types[extension])
+    data.pop('details', None)  # detailed records belong in on-demand exports
+    return jsonify(data)
 
 
 @app.route('/api/admin/export-db', methods=['GET'])
