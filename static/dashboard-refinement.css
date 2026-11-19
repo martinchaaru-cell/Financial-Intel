@@ -36,3 +36,15 @@
 @media(max-width:1250px){.rp-dashboard .db-kpis{grid-template-columns:repeat(3,minmax(0,1fr));}}
 @media(max-width:900px){.rp-dashboard .db-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media(max-width:560px){.rp-dashboard .db-kpis{grid-template-columns:1fr 1fr;}.rp-dashboard .bl-stat-value{font-size:19px;}.rp-dashboard-intro{padding:18px;}.rp-dashboard-intro h2{font-size:22px;}.rp-settings-nav{padding:10px 12px 0;}}
+
+/* V14.1: keep administrative navigation visible on short desktop viewports. */
+.sidebar .nav-list {overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--border) transparent;}
+.sidebar .nav-list::-webkit-scrollbar {display:block;width:5px;}
+.sidebar .nav-list::-webkit-scrollbar-thumb {background:var(--border);border-radius:5px;}
+@media (min-width:769px) and (max-height:850px) {
+  .sidebar {padding-top:14px;padding-bottom:14px;}
+  .sidebar .brand {padding-bottom:12px;}
+  .sidebar .nav-list {gap:2px;}
+  .sidebar .nav-list .nav-btn {flex:1 0 32px;min-height:32px;max-height:43px;padding:5px 10px;font-size:13px;}
+  .sidebar .sidebar-footer {margin-top:7px;padding-top:7px;}
+}

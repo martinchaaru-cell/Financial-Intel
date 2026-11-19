@@ -1,7 +1,7 @@
 // Remuneration Practice service worker.
 // Deliberately light: caches static assets only. Pages and /api/ data always go to the
 // network so financial figures are never served stale. Offline shows a friendly message.
-const CACHE = 'remuneration-practice-static-v15-comparison12';
+const CACHE = 'remuneration-practice-static-v15-comparison14-sidebar1';
 const PRECACHE = [
   '/static/manifest.json',
   '/static/icons/icon-192.png',
@@ -95,7 +95,7 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  if (url.pathname === '/static/app-runtime.js' && url.search === '?v=comparison12' || PRECACHE.includes(url.pathname) && !url.search) { // release-versioned static assets only
+  if (url.pathname === '/static/app-runtime.js' && url.search === '?v=comparison14' || PRECACHE.includes(url.pathname) && !url.search) { // release-versioned static assets only
     e.respondWith(caches.open(CACHE).then(async cache => {
       const hit = await cache.match(req);
       if (hit) return hit;

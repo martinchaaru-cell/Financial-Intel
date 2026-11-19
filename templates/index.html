@@ -1461,8 +1461,8 @@ details.panel > summary::-webkit-details-marker{display:none;}
 <!-- Chart.js 4.4.4 is served from the app itself: loading it from a CDN in the page head held the whole page
      (and the installed app's splash screen) until the CDN answered, which on a slow mobile connection could be never. -->
 <script defer src="/static/vendors/chart.umd.min.js"></script>
-<link rel="stylesheet" href="/static/dashboard-refinement.css">
-<link rel="stylesheet" href="/static/comparison-v8.css?v=12">
+<link rel="stylesheet" href="/static/dashboard-refinement.css?v=14.1">
+<link rel="stylesheet" href="/static/comparison-v8.css?v=14">
 <link rel="stylesheet" href="/static/compact-header.css?v=1">
 </head>
 <body>
@@ -1656,7 +1656,7 @@ details.panel > summary::-webkit-details-marker{display:none;}
   </div>
 </div>
 
-<script defer src="/static/app-runtime.js?v=comparison12"></script>
+<script defer src="/static/app-runtime.js?v=comparison14"></script>
 <script>
 // Only register the offline helper when the app is opened in its own tab or installed. Inside a frame (such as
 // Replit's preview pane) a service worker can serve a stale page and keep the preview from loading.
