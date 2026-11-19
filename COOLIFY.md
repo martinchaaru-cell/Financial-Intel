@@ -1,0 +1,6 @@
+# Coolify deployment
+Use a private GitHub repository, Dockerfile build pack, root build context, port 5000, HTTPS domain, one replica initially. Set environment variables in Coolify using coolify.env.example (do not commit real secrets). Use PostgreSQL; preserve existing data with pg_dump/restore. Existing email verification, reset, invites, contact acknowledgements retained; invoice/payment notices to explicit billing inbox. One Gunicorn web process as existing config requires.
+
+Exclude embedded credentials and database snapshots from Git; rotate any previously committed secrets. Original archive files are preserved for migration, not for public sharing. Back up before deployment. SMTP uses TLS; validate with a test inbox before enabling real notifications. New notifications are best effort, not a durable retry queue; a failed email does not undo an operation. No live SMTP, Docker build or production database test has been performed in this environment.
+
+Remuneration Practice: health check `/healthz`, port 5000. SMTP requires STARTTLS on port 587 or implicit TLS on 465. Invoice and payment notices are best effort; subscription reminders, failed payments, extraction completion and scheduled report email remain pending.

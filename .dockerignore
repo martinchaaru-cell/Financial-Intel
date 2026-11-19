@@ -55,3 +55,12 @@ Thumbs.db
 
 # Docker
 docker-compose.yml
+# Never bake local data or release archives into the image
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+instance/
+exports/
+*.zip
+*.patch

@@ -47,7 +47,7 @@ def test_website_pages_load_for_guests(client, plans, path):
     r = client.get(path)
     assert r.status_code == 200
     html = r.get_data(as_text=True)
-    assert 'Financial Intel' in html and '<nav class="nav"' in html
+    assert 'Remuneration Practice' in html and '<nav class="nav"' in html
 
 
 def test_pricing_lists_the_plans(client, plans):

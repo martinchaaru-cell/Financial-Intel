@@ -5436,6 +5436,16 @@ def export_raw_csv(company_id):
         fh.write(output.getvalue())
     return send_file(filepath, as_attachment=True, mimetype='text/csv')
 
+@app.route('/healthz')
+def healthz():
+    try:
+        from sqlalchemy import text
+        db.session.execute(text('SELECT 1'))
+        return jsonify({'status': 'ok'})
+    except Exception:
+        db.session.rollback()
+        return jsonify({'status': 'unavailable'}), 503
+
 @app.route('/api/system/status')
 def system_status():
     """Live check of what's actually configured right now - not what the

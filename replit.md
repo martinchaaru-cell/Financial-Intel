@@ -18,7 +18,7 @@
 
 ## Product overview
 
-This is **Finance Intel**, a financial and governance intelligence platform for NSE-listed (Nairobi Securities
+This is **Remuneration Practice**, a financial and governance intelligence platform for NSE-listed (Nairobi Securities
 Exchange) companies. It has two linked layers: a **financial statement layer** (import, store, and analyze company
 financials, ratios, risks, and management guidance) and a **survey layer** (board composition, director
 remuneration, governance/committee structure, and policy disclosures, benchmarked across companies for a fiscal
@@ -29,7 +29,7 @@ The app is a single Flask application with a server-rendered, single-page HTML/J
 client/server monorepo. There is no separate build step for the frontend.
 
 > Note: this repository originally held a different, unrelated project (a React/Express sports-prediction
-> engine). That codebase was fully replaced by the current Finance Intel application; nothing from the old
+> engine). That codebase was fully replaced by the current Remuneration Practice application; nothing from the old
 > project remains in use.
 
 ## User Preferences

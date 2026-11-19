@@ -1,9 +1,9 @@
 {% extends "public_base.html" %}
-{% block title %}NSE-Listed Companies: Board Composition & Governance | Finance Intel{% endblock %}
-{% block description %}Browse board size, independence and gender balance for NSE-listed companies, compiled from published annual reports by Finance Intel.{% endblock %}
+{% block title %}NSE-Listed Companies: Board Composition & Governance | Remuneration Practice{% endblock %}
+{% block description %}Browse board size, independence and gender balance for NSE-listed companies, compiled from published annual reports by Remuneration Practice.{% endblock %}
 {% block canonical %}{{ site_url }}/companies{% endblock %}
 {% block jsonld %}
-<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"CollectionPage","name":"NSE-listed companies: board composition and governance","url": site_url ~ "/companies","isPartOf":{"@type":"WebSite","name":"Finance Intel","url": site_url ~ "/"}} | tojson }}</script>
+<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"CollectionPage","name":"NSE-listed companies: board composition and governance","url": site_url ~ "/companies","isPartOf":{"@type":"WebSite","name":"Remuneration Practice","url": site_url ~ "/"}} | tojson }}</script>
 {% endblock %}
 {% block content %}
 <h1>NSE-listed companies</h1>
@@ -20,5 +20,5 @@
 {% else %}
 <p class="muted">No company pages are published yet.</p>
 {% endif %}
-<div class="cta"><b>Want the remuneration detail?</b><br><span class="muted">Director pay, peer benchmarks and year-on-year comparisons are available inside the dashboard.</span><br><a class="btn" href="/">Open Finance Intel</a></div>
+<div class="cta"><b>Want the remuneration detail?</b><br><span class="muted">Director pay, peer benchmarks and year-on-year comparisons are available inside the dashboard.</span><br><a class="btn" href="/">Open Remuneration Practice</a></div>
 {% endblock %}

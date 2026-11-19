@@ -344,6 +344,7 @@ def create_invoice(org, description, amount, currency='KES', kind='custom', sub=
         db.session.add(inv)
         try:
             db.session.commit()
+            _billing_notice(inv, "Invoice issued")
             return inv
         except IntegrityError:
             db.session.rollback()
@@ -372,6 +373,7 @@ def apply_payment(inv, amount, method, reference=None, user_id=None, note=None, 
         if inv.subscription_id:
             _activate_period(db.session.get(Subscription, inv.subscription_id), inv)
     db.session.commit()
+    _billing_notice(inv, "Payment recorded", pay.amount)
     return pay
 
 
@@ -1404,3 +1406,14 @@ def register(app, current_user, require_super_admin, activity_log=None, Activity
     @staff
     def billing_admin_sweep():
         return jsonify(run_sweep())
+
+def _billing_notice(inv, event, amount=None):
+    try:
+        import mailer
+        address = inv.organisation.billing_email
+        if not address: return
+        text = f'{event}: {inv.number}\nInvoice total: {inv.currency} {inv.total:,.0f}\nStatus: {inv.status}'
+        if amount is not None: text += f'\nPayment: {inv.currency} {amount:,.0f}'
+        mailer.send(address, f'Remuneration Practice: {event}', text, kind='billing')
+    except Exception:
+        log.exception('Billing notification failed')

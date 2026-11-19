@@ -6,7 +6,6 @@ psycopg2-binary
 pdfplumber
 pypdf
 python-docx
-docx
 reportlab
 sqlalchemy
 pymupdf

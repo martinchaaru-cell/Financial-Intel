@@ -21,11 +21,11 @@ const PAGE_TIMEOUT_MS = 8000;
 const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Back shortly | Remuneration Practice</title>
 <style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-background:#0a0f1c;color:#f5f7fc;font-family:system-ui,sans-serif;text-align:center;padding:24px}
+background:#101c18;color:#f5fcf9;font-family:system-ui,sans-serif;text-align:center;padding:24px}
 .card{max-width:420px}.icon{font-size:40px;margin-bottom:12px}
-h1{font-size:21px;margin:0 0 10px}p{color:#aab4cc;margin:0 0 8px;line-height:1.5}
-.note{font-size:13px;color:#7f8aa3;margin:16px 0 20px}
-button{background:#5b9bff;color:#0a0f1c;border:0;border-radius:8px;padding:10px 22px;font-size:15px;font-weight:600;cursor:pointer}</style>
+h1{font-size:21px;margin:0 0 10px}p{color:#aaccbb;margin:0 0 8px;line-height:1.5}
+.note{font-size:13px;color:#7fa391;margin:16px 0 20px}
+button{background:#48cfa0;color:#101c18;border:0;border-radius:8px;padding:10px 22px;font-size:15px;font-weight:600;cursor:pointer}</style>
 </head><body><div class="card">
 <div class="icon" id="icon">&#128295;</div>
 <h1 id="title">We'll be back shortly</h1>

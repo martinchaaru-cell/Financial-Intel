@@ -45,3 +45,10 @@ backup.dump
 instance/
 exports/
 .agents/
+
+# Local release artifacts and secrets
+*.zip
+*.patch
+.env.*
+!.env.example
+!coolify.env.example

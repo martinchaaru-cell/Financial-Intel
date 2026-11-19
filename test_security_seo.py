@@ -9,17 +9,17 @@ def https_client(app, monkeypatch):
 
 
 def test_plain_http_on_a_public_host_is_redirected_to_https(https_client):
-    r = https_client.get('/', base_url='http://financeintel.example.com')
-    assert r.status_code == 301 and r.headers['Location'].startswith('https://financeintel.example.com')
+    r = https_client.get('/', base_url='http://remuneration.example.com')
+    assert r.status_code == 301 and r.headers['Location'].startswith('https://remuneration.example.com')
 
 
 def test_proxy_header_saying_https_is_trusted_and_gets_hsts(https_client):
-    r = https_client.get('/', base_url='http://financeintel.example.com', headers={'X-Forwarded-Proto': 'https'})
+    r = https_client.get('/', base_url='http://remuneration.example.com', headers={'X-Forwarded-Proto': 'https'})
     assert r.status_code == 200 and 'max-age' in r.headers['Strict-Transport-Security']
 
 
 def test_health_check_and_localhost_are_never_redirected(https_client):
-    assert https_client.get('/api/system/status', base_url='http://financeintel.example.com').status_code != 301
+    assert https_client.get('/api/system/status', base_url='http://remuneration.example.com').status_code != 301
     assert https_client.get('/', base_url='http://localhost').status_code == 200
 
 
@@ -33,16 +33,16 @@ def test_api_responses_are_noindex(client):
 
 
 def test_robots_and_sitemap_use_the_configured_site_url(client, monkeypatch):
-    monkeypatch.setenv('SITE_URL', 'https://financeintel.example.com/')
+    monkeypatch.setenv('SITE_URL', 'https://remuneration.example.com/')
     robots = client.get('/robots.txt').get_data(as_text=True)
-    assert 'Disallow: /api/' in robots and 'Sitemap: https://financeintel.example.com/sitemap.xml' in robots
-    assert '<loc>https://financeintel.example.com/</loc>' in client.get('/sitemap.xml').get_data(as_text=True)
+    assert 'Disallow: /api/' in robots and 'Sitemap: https://remuneration.example.com/sitemap.xml' in robots
+    assert '<loc>https://remuneration.example.com/</loc>' in client.get('/sitemap.xml').get_data(as_text=True)
 
 
 def test_home_page_has_seo_tags(client, monkeypatch):
-    monkeypatch.setenv('SITE_URL', 'https://financeintel.example.com')
+    monkeypatch.setenv('SITE_URL', 'https://remuneration.example.com')
     html = client.get('/').get_data(as_text=True)
-    for needle in ('<title>Financial Intel |', 'name="description"', 'rel="canonical" href="https://financeintel.example.com/"',
+    for needle in ('<title>Remuneration Practice |', 'name="description"', 'rel="canonical" href="https://remuneration.example.com/"',
                    'og:image', 'application/ld+json', '<h1>Know what boards'):
         assert needle in html
     assert client.get('/static/og-image.png').status_code == 200
