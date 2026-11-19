@@ -21,8 +21,8 @@
 <style>
 :root{
   --navy:#064e3b; --navy-2:#08634a; --ink:#1c3529; --text:#2b503e; --dim:#5b826f; --faint:#8aab9b;
-  --line:#e4f0ea; --bg:#ffffff; --soft:#f5fbf8; --blue:#047857; --blue-soft:#ebfcf4; --gold:#f5b301; --gold-2:#ffc935;
-  --green:#15803d; --radius:14px; --shadow:0 10px 30px rgba(6,78,59,.08);
+  --line:#e4f0ea; --bg:#ffffff; --soft:#f5fbf8; --blue:#047857; --blue-soft:#ebfcf4; --gold:#c5a46d; --gold-2:#dfc596;
+  --green:#15803d; --radius:12px; --shadow:0 6px 20px rgba(6,78,59,.06);
   --serif:'Merriweather',Georgia,'Times New Roman',serif; --sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
 }
 *{box-sizing:border-box}
@@ -42,7 +42,7 @@ p{margin:0 0 14px}
 .btn{display:inline-flex;align-items:center;gap:8px;font:600 15px/1 var(--sans);padding:14px 22px;border-radius:10px;border:1.5px solid transparent;cursor:pointer;transition:transform .15s,box-shadow .15s,background .15s;white-space:nowrap}
 .btn:hover{text-decoration:none;transform:translateY(-1px)}
 .btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.btn-gold{background:var(--gold);color:var(--navy);box-shadow:0 6px 18px rgba(245,179,1,.35)} .btn-gold:hover{background:var(--gold-2)}
+.btn-gold{background:var(--gold);color:var(--navy);box-shadow:none} .btn-gold:hover{background:var(--gold-2)}
 .btn-navy{background:var(--navy);color:#fff} .btn-navy:hover{background:var(--navy-2)}
 .btn-line{border-color:rgba(255,255,255,.55);color:#fff} .btn-line:hover{background:rgba(255,255,255,.1)}
 .btn-ghost{border-color:var(--line);color:var(--navy);background:#fff} .btn-ghost:hover{border-color:var(--navy)}
@@ -66,8 +66,8 @@ p{margin:0 0 14px}
 .burger span{display:block;width:20px;height:2px;background:var(--navy);margin:4px 0;border-radius:2px}
 
 /* page band (inner pages) */
-.band{background:linear-gradient(120deg,var(--navy) 0%,var(--navy-2) 100%);color:#fff;padding:64px 0 56px;position:relative;overflow:hidden}
-.band::after{content:'';position:absolute;right:-120px;top:-120px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(72,207,160,.28),transparent 65%)}
+.band{background:linear-gradient(120deg,var(--navy) 0%,var(--navy-2) 100%);color:#fff;padding:44px 0 40px;position:relative;overflow:hidden}
+.band::after{content:'';position:absolute;right:-120px;top:-120px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(72,207,160,.10),transparent 65%)}
 .band h1{color:#fff;font-size:clamp(30px,4vw,44px);margin-bottom:12px}
 .band .lead{color:#c9f2de}
 .crumbs{font-size:13.5px;color:#a9e0c5;margin-bottom:14px} .crumbs a{color:#dffbed}
@@ -131,12 +131,13 @@ ul.list{list-style:none;padding:0;margin:0} ul.list li{padding:14px 0;border-bot
 }
 {% block style %}{% endblock %}
 </style>
-</head>
+<link rel="stylesheet" href="/static/corporate-refinement.css">
+<link rel="icon" href="/static/icons/icon-192.png"><style>.logo{background:#fff!important;padding:0!important;overflow:hidden;box-shadow:none!important;border:1px solid #e1e5e2}.logo img{width:100%;height:100%;object-fit:contain}</style></head>
 <body>
 <header class="top" id="top">
   <div class="wrap">
     <a class="brand" href="/" aria-label="Remuneration Practice home">
-      <span class="logo"><i style="height:9px"></i><i style="height:15px"></i><i style="height:21px"></i></span>
+      <span class="logo"><img src="/static/icons/icon-192.png" alt=""></span>
       <span><span class="brand-name">Remuneration Practice</span><br><span class="brand-tag">Board &amp; executive pay intelligence</span></span>
     </a>
     <button class="burger" aria-label="Menu" onclick="document.getElementById('top').classList.toggle('open')"><span></span><span></span><span></span></button>
@@ -164,7 +165,7 @@ ul.list{list-style:none;padding:0;margin:0} ul.list li{padding:14px 0;border-bot
   <div class="wrap">
     <div class="foot-grid">
       <div class="foot-brand">
-        <a class="brand" href="/"><span class="logo"><i style="height:9px"></i><i style="height:15px"></i><i style="height:21px"></i></span>
+        <a class="brand" href="/"><span class="logo"><img src="/static/icons/icon-192.png" alt=""></span>
           <span><span class="brand-name">Remuneration Practice</span><br><span class="brand-tag">Board &amp; executive pay intelligence</span></span></a>
         <p style="margin-top:18px;max-width:340px;">Board composition, director fees and CEO pay benchmarks for Kenya's listed companies, taken from their published annual reports and checked line by line.</p>
       </div>

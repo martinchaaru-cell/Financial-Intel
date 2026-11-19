@@ -1,14 +1,14 @@
 // Remuneration Practice service worker.
 // Deliberately light: caches static assets only. Pages and /api/ data always go to the
 // network so financial figures are never served stale. Offline shows a friendly message.
-const CACHE = 'finance-intel-static-v8';
+const CACHE = 'remuneration-practice-static-v9';
 const SHELL = '/__shell';   // the last good copy of the app page (header + navigation)
 const PRECACHE = [
   '/static/manifest.json',
   '/static/icons/icon-192.png',
   '/static/icons/icon-512.png',
   '/static/icons/apple-touch-icon.png',
-  '/static/vendor/chart.umd.min.js'
+  '/static/vendors/chart.umd.min.js'
 ];
 // How long the installed app waits for the server before showing the last saved copy of the app (or the
 // "back shortly" page, which reloads by itself). Without a limit, a server that is asleep, waking up or

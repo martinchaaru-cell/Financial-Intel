@@ -2114,17 +2114,7 @@ def event_stream():
 
 @app.route('/favicon.ico')
 def favicon():
-    # Keep the browser request valid without adding a binary asset to the
-    # deployment. The same mark is used by the application shell.
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
-        '<rect width="64" height="64" rx="14" fill="#4285f4"/>'
-        '<path d="M18 16h28v32H18z" fill="#fff" opacity=".95"/>'
-        '<path d="M24 24h16M24 31h16M24 38h10" stroke="#4285f4" '
-        'stroke-width="4" stroke-linecap="round"/>'
-        '</svg>'
-    )
-    return Response(svg, mimetype='image/svg+xml')
+    return app.send_static_file('icons/icon-192.png')
 
 # ---------- UPLOAD PROGRESS (live, per-file backend stage log) ----------
 # The frontend generates a batch_id per upload attempt, opens

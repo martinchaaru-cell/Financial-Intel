@@ -23,7 +23,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Remuneration Practice">
 <meta name="robots" content="index, follow">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23101c18'/%3E%3Cpath d='M20 72V52h14v20zm23 0V34h14v38zm23 0V22h14v50z' fill='%2348cfa0'/%3E%3C/svg%3E">
+<link rel="icon" href="/static/icons/icon-192.png">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Remuneration Practice">
 <meta property="og:title" content="Remuneration Practice | NSE Board &amp; Director Remuneration Benchmarking">
@@ -1460,7 +1460,8 @@ details.panel > summary::-webkit-details-marker{display:none;}
 </style>
 <!-- Chart.js 4.4.4 is served from the app itself: loading it from a CDN in the page head held the whole page
      (and the installed app's splash screen) until the CDN answered, which on a slow mobile connection could be never. -->
-<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="/static/vendors/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/dashboard-refinement.css">
 </head>
 <body>
 <noscript><h1>Remuneration Practice</h1><p>Board composition, director remuneration and governance benchmarks for NSE-listed companies. Please enable JavaScript to use the application.</p></noscript>
@@ -1468,9 +1469,9 @@ details.panel > summary::-webkit-details-marker{display:none;}
   <aside class="sidebar">
     <div class="brand">
       <div class="mark">
-        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Remuneration Practice logo"><rect width="100" height="100" fill="#101c18"/><path d="M20 72V52h14v20zm23 0V34h14v38zm23 0V22h14v50z" fill="#48cfa0"/></svg>
+        <img src="/static/icons/icon-192.png" alt="The Remuneration Practice">
       </div>
-      <div><div class="name">Remuneration Practice</div><div class="sub">NSE Board &amp; Remuneration</div></div>
+      <div><div class="name">The Remuneration Practice</div><div class="sub">NSE Board &amp; Remuneration</div></div>
     </div>
     <div class="nav-list" id="navList"></div>
     <div class="sidebar-footer">
@@ -1499,6 +1500,7 @@ details.panel > summary::-webkit-details-marker{display:none;}
       </div>
     </div>
     <div id="billingBanner"></div>
+    <nav id="settingsSectionNav" class="rp-settings-nav" aria-label="Settings sections" hidden></nav>
     <div class="content" id="app"></div>
 
   </div>
@@ -1827,7 +1829,7 @@ function updateUserBadge(){
   if (u.logged_in) {
     dd.innerHTML = `
       <button onclick="openProfileModal()">My Profile</button>
-      ${u.role === 'admin' ? `<button onclick="goTo('settings')">Settings</button>` : ''}
+      ${(u.role === 'admin' || u.role === 'user') ? `<button onclick="goTo('settings')">Settings</button>` : ''}
       <button onclick="location.href='/'">Back to website</button>
       <div class="dd-theme" onclick="event.stopPropagation()"><span>Appearance</span><div class="seg">
         ${[['light', '☀ Light'], ['dark', '☾ Dark'], ['system', 'System']].map(([k, l]) => `<button class="${themePref() === k ? 'on' : ''}" onclick="setThemePref('${k}')">${l}</button>`).join('')}
@@ -2051,7 +2053,7 @@ function applyPermGating(){
 
 function renderNav(){
   const role = window.currentUser.role;
-  const pages = PAGES.filter(p => (!p.adminOnly || role === 'admin') && (!p.userOnly || role === 'admin' || role === 'user')
+  const pages = PAGES.filter(p => !['activity','billing'].includes(p.id) && (!p.adminOnly || role === 'admin') && (!p.userOnly || role === 'admin' || role === 'user')
     && (!p.memberOnly || role === 'user'));
   document.getElementById('navList').innerHTML = pages.map(p => (role === 'user' && !pageAllowed(p)) ? `
     <button class="nav-btn locked" onclick="showUpgrade('${p.id}')" title="Included in the ${escapeHtml(pageLockedTier(p))} plan">
@@ -2067,8 +2069,8 @@ function renderNav(){
   // Settings: pinned at the bottom of the sidebar, admins only.
   const st = document.getElementById('navSettings');
   if (st) {
-    st.innerHTML = role === 'admin' ? `
-      <button class="nav-btn ${currentPage==='settings'?'active':''}" onclick="goTo('${SETTINGS_PAGE.id}')">
+    st.innerHTML = role === 'admin' || role === 'user' ? `
+      <button class="nav-btn ${['settings','activity','billing'].includes(currentPage)?'active':''}" onclick="goTo('${SETTINGS_PAGE.id}')">
         <span class="ic">${SETTINGS_PAGE.icon}</span><span>${SETTINGS_PAGE.label}</span>
       </button>` : '';
   }
@@ -2150,6 +2152,17 @@ async function render(){
   }
   if (window.currentUser.role === 'user' && currentPage === 'overview') { currentPage = 'home'; renderNav(); }
   if (window.currentUser.role === 'admin' && currentPage === 'home') { currentPage = 'overview'; renderNav(); }
+  const settingsNav = document.getElementById('settingsSectionNav');
+  const inSettings = ['settings','activity','billing'].includes(currentPage);
+  const isAdmin = window.currentUser.role === 'admin';
+  if (settingsNav) {
+    settingsNav.hidden = !inSettings;
+    settingsNav.innerHTML = inSettings ? [
+      ...(isAdmin ? [['settings','General settings'],['activity','Activity log']] : [['settings','Settings']]),
+      ['billing','Billing & Plan']
+    ].map(([id,label]) => `<button class="${currentPage===id?'active':''}" aria-current="${currentPage===id?'page':'false'}" onclick="goTo('${id}')">${label}</button>`).join('') : '';
+  }
+  if (currentPage === 'activity' && !isAdmin) { goTo('settings'); return; }
   const pageDef = PAGES.find(p => p.id === currentPage);
   if (window.currentUser.role === 'user' && pageDef && !pageAllowed(pageDef)) {
     title.textContent = pageDef.label;
@@ -8652,7 +8665,7 @@ async function renderSettingsPage(){
   const app = document.getElementById('app');
   if (SETTINGS_SUPER_ONLY.has(settingsTab) && !window.currentUser.is_super_admin) settingsTab = 'overview';
   if (window.currentUser.role !== 'admin') {
-    app.innerHTML = `<div class="panel">${blEmpty('shield', 'Admins only', 'Settings is only available to admin accounts.')}</div>`;
+    app.innerHTML = `<div class="panel"><h2>Account settings</h2><p class="bl-faint">Manage your subscription, invoices and payment details.</p><button onclick="goTo('billing')">Open Billing &amp; Plan</button></div>`;
     return;
   }
   app.innerHTML = `<div class="st-console"><div class="bl-loading"><span></span><span></span><span></span></div></div>`;
@@ -10402,11 +10415,11 @@ function blRevenueChart(months){
   const vals = months.map(m => m.amounts[cur] || 0);
   const max = Math.max(...vals);
   if (!max) return blEmpty('trend', 'No revenue yet', 'Monthly totals appear here once payments come in.');
-  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(max))); return Math.ceil(max / p) * p; })();
+  const nice = (() => { if (!max) return 1; const p = Math.pow(10, Math.floor(Math.log10(max))); return Math.ceil(max / p) * p; })();
   const W = 520, H = 190, L = 56, B = 26, T = 12, bw = (W - L - 10) / months.length;
   const y = v => T + (H - T - B) * (1 - v / nice);
   const short = v => v >= 1e6 ? (v / 1e6).toFixed(v % 1e6 ? 1 : 0) + 'M' : v >= 1e3 ? Math.round(v / 1e3) + 'k' : String(v);
-  const grid = [0, .5, 1].map(f => `<line x1="${L}" x2="${W - 6}" y1="${y(nice * f)}" y2="${y(nice * f)}" class="bl-gridline"/><text x="${L - 8}" y="${y(nice * f) + 4}" text-anchor="end" class="bl-axis">${short(nice * f)}</text>`).join('');
+  const grid = (max ? [0, .5, 1] : [0]).map(f => `<line x1="${L}" x2="${W - 6}" y1="${y(nice * f)}" y2="${y(nice * f)}" class="bl-gridline"/><text x="${L - 8}" y="${y(nice * f) + 4}" text-anchor="end" class="bl-axis">${short(nice * f)}</text>`).join('');
   const bars = vals.map((v, i) => {
     const x = L + i * bw + bw * .2, w = bw * .6, top = y(v);
     return `<g><title>${months[i].label}: ${cur} ${v.toLocaleString('en-KE')}</title>
@@ -11007,7 +11020,7 @@ function dbRevenueChart(months){
     return Object.keys(c).sort((a, b) => c[b] - c[a])[0] || 'KES'; })();
   const vals = months.map(m => m.amounts[cur] || 0);
   const max = Math.max(...vals);
-  if (!max) return blEmpty('trend', 'No payments yet', 'Money received each month appears here as soon as payments come in.');
+  if (!months.length) return blEmpty('trend', 'No payment history', 'Monthly totals will appear when records are available.');
   const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(max))); return Math.ceil(max / p) * p; })();
   const W = 640, H = 210, L = 84, B = 26, T = 14, bw = (W - L - 8) / months.length;
   const y = v => T + (H - T - B) * (1 - v / nice);
@@ -11021,7 +11034,7 @@ function dbRevenueChart(months){
   }).join('');
   const total = vals.reduce((a, b) => a + b, 0);
   return `<svg viewBox="0 0 ${W} ${H}" class="bl-chart" role="img" aria-label="Money received per month">${grid}${bars}</svg>
-    <div class="bl-faint" style="margin-top:6px;">${cur} ${full(total)} received in the last 12 months · hover a bar for the month's total</div>`;
+    <div class="bl-faint" style="margin-top:6px;">${cur} ${full(total)} received in the last 12 months${max ? ' · hover a bar for details' : ' · no payments recorded yet'}</div>`;
 }
 
 async function renderBusinessDashboard(){
@@ -11055,7 +11068,9 @@ async function renderBusinessDashboard(){
       <td class="num bl-mono">${c.balance_due ? `<span class="${c.overdue ? 'bl-neg' : ''}">${blMoney(c.balance_due, c.currency)}</span>` : '<span class="bl-faint">—</span>'}</td>
     </tr>`).join('');
 
-  app.innerHTML = `<div class="st-console">
+  app.innerHTML = `<div class="st-console rp-dashboard">
+    <section class="rp-dashboard-intro"><div><div class="rp-eyebrow">BUSINESS INTELLIGENCE / ADMINISTRATION</div><h2>Business performance</h2><p>Monitor subscriptions, revenue and client engagement in one place.</p></div><div class="rp-quick"><button onclick="goTo('survey-timeline')">Survey administration</button><button onclick="goTo('billing')">Manage billing</button></div></section>
+    <div class="rp-section-label">Key performance indicators <span>Current reporting period</span></div>
     <div class="bl-stats db-kpis">
       ${s('users', 'blue', 'Paying customers', d.paying, `${d.trialing} on free trial · ${d.new_this_month} new this month`)}
       ${s('trend', 'green', 'Monthly recurring revenue', dbMoneyMap(d.mrr), `${dbMoneyMap(d.arr)} a year`)}
@@ -11065,9 +11080,9 @@ async function renderBusinessDashboard(){
     </div>
 
     <div class="db-grid">
-      <div class="panel"><div class="bl-card-head"><div><div class="bl-card-title">Money received</div><div class="st-sub">Payments by month, last 12 months</div></div>
+      <div class="panel"><div class="bl-card-head"><div><div class="bl-card-title">Revenue performance</div><div class="st-sub">Payments by month, last 12 months</div></div>
         <span class="bl-faint">Last 30 days: <b style="color:var(--text);">${dbMoneyMap(d.collected_30d)}</b></span></div>${dbRevenueChart(d.revenue_by_month)}</div>
-      <div class="panel"><div class="bl-card-head"><div><div class="bl-card-title">Where the revenue comes from</div><div class="st-sub">Monthly recurring revenue by plan</div></div></div>
+      <div class="panel"><div class="bl-card-head"><div><div class="bl-card-title">Revenue by subscription plan</div><div class="st-sub">Monthly recurring revenue by plan</div></div></div>
         ${d.plan_mix.length ? `<div class="db-mix">${d.plan_mix.map(p => `<div class="db-mix-row">
             <div class="db-mix-top"><span class="bl-strong">${escapeHtml(p.plan)}</span><span class="bl-mono">${blMoney(p.mrr, p.currency)}</span></div>
             <div class="db-mix-bar"><i style="width:${Math.max(3, p.mrr / maxMix * 100)}%"></i></div>
@@ -11083,7 +11098,7 @@ async function renderBusinessDashboard(){
     <div class="panel bl-flush">
       <div class="bl-card-head padded" style="margin-bottom:12px;flex-wrap:wrap;">
         <div><div class="bl-card-title">Customer health</div><div class="st-sub">Who is using what they pay for. Customers needing attention come first; click one to open it.</div></div>
-        <div class="bl-head-act">${d.at_risk ? `<span class="bl-pill bl-red">${d.at_risk} need${d.at_risk === 1 ? 's' : ''} attention</span>` : '<span class="bl-pill bl-green">All healthy</span>'}</div>
+        <div class="bl-head-act">${d.at_risk ? `<span class="bl-pill bl-red">${d.at_risk} need${d.at_risk === 1 ? 's' : ''} attention</span>` : (d.customers.length ? '<span class="bl-pill bl-green">All healthy</span>' : '<span class="bl-pill">No customers enrolled</span>')}</div>
       </div>
       ${rows ? `<div class="bl-table-wrap"><table class="bl-table"><thead><tr><th>Customer</th><th>Health</th><th class="num">Plan price</th><th>Active users</th><th>Last active</th><th class="num">Downloads</th><th>Renews / ends</th><th class="num">Owes</th></tr></thead><tbody>${rows}</tbody></table></div>`
         : blEmpty('users', 'No customers yet', 'Customers appear here once they sign up or you add them under Billing & Plan.', `<button onclick="goTo('billing')">Open Billing & Plan</button>`)}
