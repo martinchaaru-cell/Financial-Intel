@@ -9,7 +9,8 @@ import uuid
 import queue
 import threading
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, send_file, session, Response
+import performance
+from flask import Flask, render_template, request, jsonify, send_file, session, Response, g
 from datetime import datetime
 import openpyxl
 
@@ -193,7 +194,10 @@ def current_user():
     uid = session.get('user_id')
     if not uid:
         return None
-    return User.query.get(uid)
+    if getattr(g, "_rp_user_id", None) != uid:
+        g._rp_user = db.session.get(User, uid)
+        g._rp_user_id = uid
+    return g._rp_user
 
 def current_role():
     u = current_user()
@@ -1151,6 +1155,7 @@ def all_alerts():
 # ---------- API: COMPANIES ----------
 
 @app.route('/api/companies', methods=['GET'])
+@performance.admin_read(current_user)
 def list_companies():
     sort = request.args.get('sort', 'name')
     companies = Company.query.all()
@@ -2082,6 +2087,8 @@ _event_subscribers_lock = threading.Lock()
 
 def _event_emit(event):
     """Broadcast a JSON-serializable event to connected dashboard clients."""
+    if event.get("type") == "data_changed":
+        performance.cache.clear()
     with _event_subscribers_lock:
         subscribers = list(_event_subscribers)
     for subscriber in subscribers:
@@ -3174,21 +3181,30 @@ def _apply_ai_item(item):
             if t.get('printed_total') is not None and t.get('reconciled') is not False:
                 rows_out.append((t, {'name': 'Total', 'total': t['printed_total'], 'role': 'unknown', 'components': {},
                                      'page': t.get('printed_total_page')}, True))
-        if rows_out and period is not None and gaps_now & {'pay_rows', 'pay_reconcile'}:
+        from monetary_units import convert_pay
+        converted_rows = []
+        try:
+            for t, r, is_total in rows_out:
+                target = row.director_figures_unit or 'units'
+                converted = dict(r, total=convert_pay(r.get('total'), t.get('unit'), target),
+                                 components={k: convert_pay(v, t.get('unit'), target)
+                                             for k, v in (r.get('components') or {}).items()})
+                converted_rows.append((t, converted, is_total))
+        except (ValueError, TypeError, OverflowError):
+            converted_rows = []
+            applied['skipped'].append('pay rows (missing unit or invalid amount; review needed)')
+        if converted_rows and period is not None and gaps_now & {'pay_rows', 'pay_reconcile'}:
             _replaceable_pay_rows(period.id).delete(synchronize_session=False)
-            for i, (t, r, is_total) in enumerate(rows_out):
+            for i, (t, r, is_total) in enumerate(converted_rows):
                 db.session.add(DirectorRemunerationRow(
                     period_id=period.id, source_document_id=item.source_document_id, director_name=r['name'][:150],
                     role=r.get('role') or 'unknown', table_kind='ai', is_grand_total=is_total, is_total_row=False,
                     total=r.get('total'), components=json.dumps(r.get('components') or {}), order_index=i,
                     page=r.get('page'), confidence=0.9 if t.get('reconciled') else 0.75))
                 applied['pay_rows'] += 0 if is_total else 1
-            units = {t.get('unit') for t, _r, _x in rows_out if t.get('unit')}
-            if len(units) == 1:
-                row.director_figures_unit = units.pop()
         elif rows_out:
             applied['skipped'].append('pay rows (rules already read them)')
-        pay_unit = row.director_figures_unit or 'thousands'
+        pay_unit = row.director_figures_unit or 'units'
         for p in data.get('policy', []):
             if p.get('verified') and hasattr(row, p['field']):
                 val = p['value'] * (_AI_TO_MILLIONS[p['unit']] / _AI_TO_MILLIONS[pay_unit])
@@ -4562,6 +4578,7 @@ def review_survey_fields_bulk(company_id, fiscal_year):
 
 
 @app.route('/api/survey/companies', methods=['GET'])
+@performance.admin_read(current_user)
 def list_survey_companies():
     """Every company with at least one SurveyCompanyData row, with the
     fiscal years available for each - lets the frontend build a fiscal-
@@ -4678,6 +4695,7 @@ def delete_survey_company_data(company_id, fiscal_year):
 
 
 @app.route('/api/survey/overview', methods=['GET'])
+@performance.admin_read(current_user)
 def survey_overview():
     """Everything the Survey page needs for one fiscal year, aggregated
     live across every company with a SurveyCompanyData row for that
@@ -5102,6 +5120,7 @@ def export_company_report_pdf(company_id):
 
 
 @app.route('/api/intelligence-layer/companies', methods=['GET'])
+@performance.admin_read(current_user)
 def intelligence_layer_companies():
     """Per-company rows (with an illustrative governance score) for one
     fiscal year - the Intelligence Layer's Benchmarking, Company
@@ -5112,6 +5131,7 @@ def intelligence_layer_companies():
 
 
 @app.route('/api/intelligence-layer/historical-trends', methods=['GET'])
+@performance.admin_read(current_user)
 def intelligence_layer_historical_trends():
     """One build_survey_overview() call per fiscal year that actually
     has data - real multi-year series for the Historical Trends tab, no
@@ -5137,6 +5157,7 @@ def export_database_snapshot():
 
 
 @app.route('/api/survey/data-quality', methods=['GET'])
+@performance.admin_read(current_user)
 def survey_data_quality():
     """Portfolio-wide Complete/Needs Review/Missing field counts across
     every company's latest SurveyCompanyData row - used by Overview's
@@ -5146,6 +5167,7 @@ def survey_data_quality():
 
 
 @app.route('/api/survey-report/company-ranking', methods=['GET'])
+@performance.admin_read(current_user)
 def survey_report_company_ranking():
     """All companies ranked fewest -> most missing survey fields (each on its own latest survey year); orders the Survey
     Report page's company drop-down. See data_quality.missing_ranking()."""
@@ -5154,6 +5176,7 @@ def survey_report_company_ranking():
 
 
 @app.route('/api/survey/data-quality-average', methods=['GET'])
+@performance.admin_read(current_user)
 def survey_data_quality_average():
     """Average data-quality score across the companies surveyed for one fiscal year (?fiscal_year=FY2025, default the
     newest year on file), with a per-company breakdown and per-section averages - the Data Quality tab of Survey
@@ -5168,7 +5191,8 @@ def list_periods(company_id):
     period selector. Full statement/line-item detail is fetched separately
     via /periods/<period_label> to avoid over-fetching every time."""
     Company.query.get_or_404(company_id)
-    periods = FinancialPeriod.query.filter_by(company_id=company_id) \
+    from sqlalchemy.orm import selectinload
+    periods = FinancialPeriod.query.options(selectinload(FinancialPeriod.statements), selectinload(FinancialPeriod.calculated_metrics)).filter_by(company_id=company_id) \
         .order_by(FinancialPeriod.period_label.desc()).all()
     return jsonify([
         {
@@ -6106,6 +6130,7 @@ accounts_email.register(app, current_user, require_super_admin)
 
 import compression  # noqa: E402
 compression.register(app)
+performance.register(app)
 
 
 if __name__ == '__main__':

@@ -113,7 +113,8 @@ def _pay_scale(r):
     into raw currency units. Unlike _unit_scale, a missing director_figures_unit means
     'was stored as raw currency' (app.py's own to_pay_unit defaults the same way when
     nothing was detected), not 'unrecognized' - so this defaults to 1 rather than None."""
-    return UNIT_SCALE.get((r.director_figures_unit or 'units').strip().lower(), 1)
+    from monetary_units import pay_scale
+    return pay_scale(r.director_figures_unit)
 
 
 def _avg(values):
@@ -177,18 +178,18 @@ def default_fiscal_year():
     return max(years, key=_fy_sort_key)
 
 
-def build_survey_overview(fiscal_year=None):
+def build_survey_overview(fiscal_year=None, *, years=None, pairs=None):
     """Returns the full aggregated payload for one fiscal year, or
     {'has_data': False, ...} if there's nothing on file for it (or at
     all, if none was ever uploaded)."""
-    all_years = available_fiscal_years()
+    all_years = available_fiscal_years() if years is None else years
 
     if not fiscal_year:
-        fiscal_year = default_fiscal_year()
+        fiscal_year = max(all_years, key=_fy_sort_key) if all_years else None
         if not fiscal_year:
             return {'has_data': False, 'available_fiscal_years': []}
 
-    row_pairs = db.session.query(SurveyCompanyData, Company).join(
+    row_pairs = pairs if pairs is not None else db.session.query(SurveyCompanyData, Company).join(
         Company, SurveyCompanyData.company_id == Company.id
     ).filter(SurveyCompanyData.fiscal_year == fiscal_year).all()
     rows = [r for r, c in row_pairs]
@@ -678,8 +679,12 @@ def build_historical_trends():
     simply doesn't appear in the series."""
     years = sorted(available_fiscal_years())
     series = []
+    grouped = {}
+    if years:
+        for pair in db.session.query(SurveyCompanyData, Company).join(Company, SurveyCompanyData.company_id == Company.id).filter(SurveyCompanyData.fiscal_year.in_(years)).all():
+            grouped.setdefault(pair[0].fiscal_year, []).append(pair)
     for y in years:
-        ov = build_survey_overview(fiscal_year=y)
+        ov = build_survey_overview(fiscal_year=y, years=years, pairs=grouped.get(y, []))
         if ov.get('has_data'):
             series.append(ov)
     return {'has_data': len(series) > 0, 'years': years, 'series': series}

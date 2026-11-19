@@ -37,6 +37,7 @@ from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table, Tab
 from reportlab.graphics.shapes import Drawing, Rect, String, Line, PolyLine, Circle, Wedge
 
 from survey_aggregate import UNIT_SCALE, MIN_COMPANIES_FOR_AVERAGE, QUALITY_FIELDS
+from monetary_units import pay_scale as remuneration_scale
 
 APP_NAME = 'Remuneration Practice'
 APP_TAGLINE = 'Financial Intelligence'
@@ -1260,8 +1261,8 @@ def build_company_report(payload, overview, rows):
     name, fy = co['name'], sv['fiscal_year']
     cur = (sv.get('currency') or 'KES')
     perf_scale = UNIT_SCALE.get((sv.get('unit') or 'units').strip().lower(), 1)
-    pay_scale = UNIT_SCALE.get((sv.get('director_figures_unit') or 'units').strip().lower(), 1)
-    fig_scale = UNIT_SCALE.get((sv.get('director_figures_unit') or sv.get('unit') or 'units').strip().lower(), 1)
+    pay_scale = remuneration_scale(sv.get('director_figures_unit'))
+    fig_scale = pay_scale
     sector = sv.get('sector') or co.get('sector')
     generated = datetime.utcnow().strftime('%d %B %Y')
     ticker = co.get('ticker')

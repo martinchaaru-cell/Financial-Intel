@@ -110,7 +110,7 @@ class SurveyCompanyData(db.Model):
     market_cap = db.Column(db.Float)
     currency = db.Column(db.String(10), default='KES')
     unit = db.Column(db.String(20), default='millions')   # e.g. "millions", "billions" — states the scale of turnover/net_profit/market_cap ONLY
-    director_figures_unit = db.Column(db.String(20))       # scale of director/committee/CEO pay and benefit figures (chairperson_annual_retainer, ceo_monthly_*, SurveyDirectorBenefit.total_amount, etc.) - NULLABLE, and deliberately separate from `unit` above: a real filing (confirmed: KCB Group Plc's FY2025 report) states its headline turnover/profit in billions but its director remuneration TABLES in thousands, so one column can't correctly describe both scales for that company. NULL means "same as `unit`" (the common case, where a filing only ever uses one scale) - a caller reads director_figures_unit and falls back to `unit` when it's NULL, never the other way around.
+    director_figures_unit = db.Column(db.String(20))  # Independent pay scale; NULL means whole currency, never headline unit.
 
     # ---- Board composition (Board Overview / Executive Summary) ----
     board_size = db.Column(db.Integer)

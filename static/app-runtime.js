@@ -2251,7 +2251,7 @@ async function renderSurveyReportPage(){
   if (seq !== reportRequest || currentPage !== 'survey-report') return;
   srDataCache = data;
   // Director tables / benefits are stored in the unit the filing printed them in; write them out in full.
-  FILED_UNIT_CTX = (data && data.survey) ? (data.survey.director_figures_unit || data.survey.unit || 'units') : 'units';
+  FILED_UNIT_CTX = (data && data.survey) ? (data.survey.director_figures_unit || 'units') : 'units';
   if (!data) {
     app.innerHTML = `<div class="panel"><div class="empty">Could not load this company's survey report.</div></div>`;
     return;
@@ -6534,6 +6534,7 @@ let reviewSub = 'uploads';
 const REVIEW_SUBS = [{id:'approvals', label:'Approvals', k:'ap'}, {id:'uploads', label:'Uploads', k:'up'}, {id:'ai-results', label:'AI results', k:'ai'}, {id:'conflicts', label:'Conflicts', k:'cf'},
                      {id:'issues', label:'Issues', k:'is'}];
 async function renderReviewTab(body){
+  clearTimeout(reviewPollTimer);
   const [sum, approvals] = await Promise.all([fetch('/api/review/summary').then(r=>r.json()).catch(()=>({})),fetch('/api/approvals/count').then(r=>r.json()).catch(()=>({}))]);
   const apCount = approvals.pending || 0;
   const count = {ap: apCount, up: (sum.uploads_ready || 0) + (sum.uploads_processing || 0), ai: sum.ai_ready || 0, cf: sum.conflicts_open || 0, is: sum.issues_open || 0};
@@ -6585,9 +6586,15 @@ async function approvalDecide(id, action, btn){
 }
 
 // ---- Uploads awaiting approval (the review gate)
-let reviewPollTimer = null;
+let reviewPollTimer = null, reviewDraftPage = 1;
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden && currentPage==='review' && reviewSub==='uploads' && !document.getElementById('reviewDraftDetail')?.textContent.trim()) renderReviewTab(document.getElementById('app')); });
+function reviewDraftMove(page){ reviewDraftPage=page; renderReviewTab(document.getElementById('app')); }
 async function renderReviewUploads(box){
-  const drafts = await fetch('/api/review/drafts').then(r => r.json());
+  const response = await fetch('/api/review/drafts?page='+reviewDraftPage+'&limit=25');
+  if (!response.ok) { box.textContent = 'Unable to load drafts. Please retry.'; return; }
+  const result = await response.json();
+  if (!box.isConnected || currentPage !== 'review' || reviewSub !== 'uploads') return;
+  const drafts = result.items;
   const pill = d => ({processing:'⏳ reading…', ready:'🟢 imported', approved:'✅ approved', failed:'❌ failed'}[d.status] || d.status);
   const co = d => { const c = d.company || {}; return c.matched ? escapeHtml(c.matched.name) : c.will_create ? `<b>NEW:</b> ${escapeHtml(c.new_name || c.detected || '')}` : escapeHtml(c.detected || '-'); };
   const rows = drafts.map(d => `<tr>
@@ -6596,16 +6603,23 @@ async function renderReviewUploads(box){
       <td>${pill(d)}${d.error ? `<div class="muted">${escapeHtml(d.error)}</div>` : ''}</td>
       <td>${d.status === 'processing' ? '' : (d.checks_failed ? `<span style="color:var(--red,#c0392b)">⚠ ${d.checks_failed} check(s) failed</span>` : '✓ checks pass') + (d.warnings ? ` · ${d.warnings} note(s)` : '')}</td>
       <td>${d.status !== 'processing' ? `<button class="btn" onclick="reviewViewDraft(${d.id})">View</button> ${d.status !== 'approved' && d.status !== 'failed' ? `<button class="btn primary" id="apprBtn${d.id}" onclick="reviewApprove(${d.id})">Approve</button> ` : ''}${d.source_document_id ? `<button class="btn danger" onclick="reviewReject(${d.id})">Reject</button>` : `<button class="btn" onclick="reviewDiscard(${d.id})">Discard</button>`}` : ''}</td></tr>`).join('');
-  const ready = drafts.filter(d => d.status === 'ready').length;
+  const ready = result.ready;
   box.innerHTML = `<div class="panel">
       <p class="muted">Every uploaded PDF is parsed and saved to the Survey Report immediately. This list is for confirming that afterward: <b>Approve</b> marks a report as checked, <b>Reject</b> deletes everything it saved (removing it from the Survey Report page). Typed survey files are already human-made and are never listed here.</p>
       ${ready > 1 ? `<button class="btn primary" onclick="reviewApproveAll()">Approve all ${ready}</button>` : ''}
       <table class="tbl" style="margin-top:10px"><thead><tr><th>File</th><th>Company</th><th>Period</th><th>Status</th><th>Checks</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6" class="muted">No uploads yet. Upload reports from the Overview page; they will appear here once saved.</td></tr>'}</tbody></table></div>
-    <div id="reviewDraftDetail"></div>`;
+    <div class="panel"><button class="btn" ${reviewDraftPage<=1?'disabled':''} onclick="reviewDraftMove(${reviewDraftPage-1})">Previous</button> Page ${reviewDraftPage} · ${result.total} drafts <button class="btn" ${result.has_more?'':'disabled'} onclick="reviewDraftMove(${reviewDraftPage+1})">Next</button></div><div id="reviewDraftDetail"></div>`;
   clearTimeout(reviewPollTimer);
-  if (drafts.some(d => d.status === 'processing')) {
-    reviewPollTimer = setTimeout(() => { if (currentPage === 'review' && reviewSub === 'uploads') renderReviewTab(document.getElementById('app')); }, 4000);
+  if (result.processing) {
+    const poll = () => {
+      if (currentPage !== 'review' || reviewSub !== 'uploads') return;
+      if (document.hidden || document.getElementById('reviewDraftDetail')?.textContent.trim()) {
+        reviewPollTimer = setTimeout(poll, 15000); return;
+      }
+      renderReviewTab(document.getElementById('app'));
+    };
+    reviewPollTimer = setTimeout(poll, 15000);
   }
 }
 async function reviewViewDraft(id){
@@ -8233,7 +8247,7 @@ function unitMultiplier(unit){
 function fmtFull(val, unit){
   if (val === null || val === undefined || val === '') return '-';
   const raw = Number(val);
-  if (Number.isNaN(raw)) return '-';
+  if (!Number.isFinite(raw)) return '-';
   const num = Math.round(raw * unitMultiplier(unit) * 100) / 100;   // also removes float noise (211.8*1e9)
   const formatted = Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   return num < 0 ? `-${formatted}` : formatted;
@@ -8248,7 +8262,7 @@ function fmtMillions(val){ return fmtFull(val, 'millions'); }
 function fmtMoney(val){ return fmtAmount(val); }
 // Per-company Survey Report figures: the unit each company's own filing used. Set on every
 // Survey Report load (see renderSurveyReportPage).
-let FILED_UNIT_CTX = 'units';   // director_rows / benefits "as filed": director_figures_unit, else the headline unit
+let FILED_UNIT_CTX = 'units';   // director_rows / benefits "as filed": director_figures_unit, else whole currency
 function fmtFiled(val){ return fmtFull(val, FILED_UNIT_CTX); }
 function timeAgo(isoString){
   if (!isoString) return '';
@@ -8784,7 +8798,7 @@ async function blAdminOverview(){
 }
 
 function blRevenueChart(months){
-  const cur = (() => { const c = {}; months.forEach(m => Object.keys(m.amounts).forEach(k => { c[k] = (c[k] || 0) + m.amounts[k]; }));
+  const cur = (() => { const c = {}; months.forEach(m => Object.keys(m.amounts || {}).forEach(k => { c[k] = (c[k] || 0) + (Number(m.amounts[k]) || 0); }));
     return Object.keys(c).sort((a, b) => c[b] - c[a])[0] || 'KES'; })();
   const vals = months.map(m => m.amounts[cur] || 0);
   const max = Math.max(...vals);
@@ -9409,12 +9423,12 @@ function dbAgo(iso){
 function dbOpenCustomer(id){ blState.tab = 'customers'; blState.orgId = id; goTo('billing'); }
 
 function dbRevenueChart(months){
-  const cur = (() => { const c = {}; months.forEach(m => Object.keys(m.amounts).forEach(k => { c[k] = (c[k] || 0) + m.amounts[k]; }));
+  const cur = (() => { const c = {}; months.forEach(m => Object.keys(m.amounts || {}).forEach(k => { c[k] = (c[k] || 0) + (Number(m.amounts[k]) || 0); }));
     return Object.keys(c).sort((a, b) => c[b] - c[a])[0] || 'KES'; })();
-  const vals = months.map(m => m.amounts[cur] || 0);
-  const max = Math.max(...vals);
+  const vals = months.map(m => Number.isFinite(Number(m.amounts?.[cur])) ? Number(m.amounts[cur]) : 0);
+  const max = Math.max(0, ...vals.filter(Number.isFinite));
   if (!months.length) return blEmpty('trend', 'No payment history', 'Monthly totals will appear when records are available.');
-  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(max))); return Math.ceil(max / p) * p; })();
+  const nice = (() => { if (!(max > 0)) return 1; const p = Math.pow(10, Math.floor(Math.log10(max))); return Math.ceil(max / p) * p; })();
   const W = 640, H = 210, L = 84, B = 26, T = 14, bw = (W - L - 8) / months.length;
   const y = v => T + (H - T - B) * (1 - v / nice);
   const full = v => Math.round(v).toLocaleString('en-US');
@@ -9776,4 +9790,4 @@ function showToast(text){
   el._hideTimer = setTimeout(() => { el.style.opacity = '0'; }, 4500);
 }
 
-connectLiveUpdates();
+window.addEventListener('load', () => setTimeout(connectLiveUpdates, 3000), {once:true});

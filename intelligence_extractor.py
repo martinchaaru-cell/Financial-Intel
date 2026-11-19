@@ -1140,14 +1140,8 @@ def extract_survey_schema(pdf_path: str, start_page: int = 1, end_page=None,
         result['unit'] = doc_unit
         field_sources['unit'] = doc_unit_note
         field_confidence['unit'] = doc_unit_confidence
-    # director_figures_unit is only SET when it's genuinely DIFFERENT
-    # from the document's own headline unit - see models_survey.py's
-    # SurveyCompanyData.director_figures_unit docstring. Leaving it
-    # NULL for the (much more common) single-scale filing means a
-    # caller's fallback-to-`unit` logic is exercised, rather than this
-    # extractor redundantly writing the same value into both columns
-    # every time.
-    if rem_unit and rem_unit != doc_unit:
+    # Keep an explicitly detected remuneration scale even if it equals the headline scale.
+    if rem_unit:
         result['director_figures_unit'] = rem_unit
         field_sources['director_figures_unit'] = rem_unit_note
         field_confidence['director_figures_unit'] = rem_unit_confidence

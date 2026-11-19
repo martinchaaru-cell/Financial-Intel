@@ -1,9 +1,8 @@
 // Remuneration Practice service worker.
 // Deliberately light: caches static assets only. Pages and /api/ data always go to the
 // network so financial figures are never served stale. Offline shows a friendly message.
-const CACHE = 'remuneration-practice-static-v11-compact1';
+const CACHE = 'remuneration-practice-static-v13-integrity3';
 const PRECACHE = [
-  '/static/app-runtime.js?v=compact1',
   '/static/manifest.json',
   '/static/icons/icon-192.png',
   '/static/icons/icon-512.png',
@@ -82,10 +81,7 @@ self.addEventListener('fetch', e => {
         const network = fetch(req);
         // Authenticated HTML is never stored by this worker.
 
-        const res = await Promise.race([
-          network.then(r => r.clone()),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), PAGE_TIMEOUT_MS)),
-        ]);
+        const res = await network;
         // A redirect (e.g. to the sign-in page after the person was signed out) is passed straight to the browser.
         // Page requests do not follow redirects inside the service worker, so they arrive here as "opaqueredirect";
         // treating that as "server down" showed the maintenance page to anyone who was signed out.
@@ -99,7 +95,7 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  if (url.pathname === '/static/app-runtime.js' && url.search === '?v=perf1' || PRECACHE.includes(url.pathname) && !url.search) { // release-versioned static assets only
+  if (url.pathname === '/static/app-runtime.js' && url.search === '?v=integrity3' || PRECACHE.includes(url.pathname) && !url.search) { // release-versioned static assets only
     e.respondWith(caches.open(CACHE).then(async cache => {
       const hit = await cache.match(req);
       if (hit) return hit;
