@@ -1,0 +1,9 @@
+/* Compact page navigation; native keyboard-accessible selects. */
+#rpHeaderSelectors,.rp-company-pickers{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+#rpHeaderSelectors:empty,#rpCompanyControls:empty{display:none}
+.topbar{flex-wrap:wrap;gap:10px;padding-block:12px}
+.topbar-title{flex:1 1 210px}.topbar-right{flex:0 1 auto;flex-wrap:wrap;justify-content:flex-end;gap:9px;min-width:0;max-width:100%}
+#rpHeaderSelectors select,.rp-company-pickers select{width:auto;max-width:220px;min-height:36px;background:var(--bg-panel-2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:12px;font-weight:600;cursor:pointer}
+#rpHeaderSelectors select:focus-visible,.rp-company-pickers select:focus-visible{outline:2px solid #c5a46d;outline-offset:2px}
+.content{padding-top:16px}.sa-header-row{margin-top:0}.sr-company-card{margin-top:0}
+@media(max-width:760px){.topbar-right{flex:1 1 100%;justify-content:flex-start}.topbar{padding:10px 14px}.topbar-title{flex-basis:150px}#rpHeaderSelectors select,.rp-company-pickers select{max-width:100%}.content{padding-top:12px}}

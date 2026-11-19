@@ -1,9 +1,9 @@
 // Remuneration Practice service worker.
 // Deliberately light: caches static assets only. Pages and /api/ data always go to the
 // network so financial figures are never served stale. Offline shows a friendly message.
-const CACHE = 'remuneration-practice-static-v9';
-const SHELL = '/__shell';   // the last good copy of the app page (header + navigation)
+const CACHE = 'remuneration-practice-static-v11-compact1';
 const PRECACHE = [
+  '/static/app-runtime.js?v=compact1',
   '/static/manifest.json',
   '/static/icons/icon-192.png',
   '/static/icons/icon-512.png',
@@ -61,7 +61,7 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE && (k.startsWith('remuneration-practice-static-') || k.startsWith('finance-intel-static-'))).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -76,16 +76,12 @@ self.addEventListener('fetch', e => {
   // server restart left the preview stuck on the offline page, because the frame never reloads the real app page.
   if (req.mode === 'navigate' && req.destination !== 'document') return;
 
-  if (req.mode === 'navigate') {                           // pages: network first, cached shell when the server is down or slow
+  if (req.mode === 'navigate') {                           // pages: network only, offline notice when unavailable
     e.respondWith((async () => {
       try {
         const network = fetch(req);
-        // Keep the latest good copy even if it arrives after the timeout below.
-        e.waitUntil(network.then(async r => {
-          if (r.ok && r.headers.get('X-Finance-Intel') === '1' && url.pathname === '/app') {
-            const c = await caches.open(CACHE); await c.put(SHELL, r.clone());
-          }
-        }).catch(() => {}));
+        // Authenticated HTML is never stored by this worker.
+
         const res = await Promise.race([
           network.then(r => r.clone()),
           new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), PAGE_TIMEOUT_MS)),
@@ -98,17 +94,18 @@ self.addEventListener('fetch', e => {
         if (res.ok && res.headers.get('X-Finance-Intel') === '1') return res;
         if (res.headers.get('X-Finance-Intel') === '1') return res;     // a real app error page (e.g. 403)
       } catch (err) { /* network down */ }
-      const cached = await (await caches.open(CACHE)).match(SHELL);
-      return cached || new Response(OFFLINE_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      return new Response(OFFLINE_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
     })());
     return;
   }
 
-  if (url.pathname.startsWith('/static/')) {               // static: stale-while-revalidate
+  if (url.pathname === '/static/app-runtime.js' && url.search === '?v=perf1' || PRECACHE.includes(url.pathname) && !url.search) { // release-versioned static assets only
     e.respondWith(caches.open(CACHE).then(async cache => {
       const hit = await cache.match(req);
-      const net = fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); return res; }).catch(() => hit);
-      return hit || net;
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res.ok) await cache.put(req, res.clone());
+      return res;
     }));
   }
 });
